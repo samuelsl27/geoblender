@@ -1760,6 +1760,29 @@ class DesignWriter:
         self._vectors[provenance.ROAD_LAYER_TABLE] = _Declared(provenance.ROAD_LAYER_TABLE, planned, rows)
         return planned
 
+    def route_layer_steps(self, rows: Iterable[Any]) -> Generator[None, None, DatasetSpec]:
+        """Prepara la capa propuesta del trazado (``rpl``; spec 017, T27; RF-017-28, P-8, D-19) con ``rows`` (la línea con su Z de la propuesta: una :class:`~.road_layer.RouteLayerRow`; la tabla
+        se escribe **entera** al crear o repetir la operación, ``design.road_layer.write_route_layer``), **sin registrar nada**: una capa de líneas con Z del GeoPackage del proyecto
+        **editable a mano en QGIS** (``DatasetSpec.qgis_editable``: no se bloquea como las capas de versión) y sin el estilo de Geoblender, cuyo hash calcula la operación al registrarla, de lo
+        escrito en su transacción. Devuelve su ``DatasetSpec`` en ``StopIteration.value``. Se rechaza al llamar, como :meth:`road_layer_steps` (``ValueError``; ``TypeError`` si una fila no es una
+        :class:`~.road_layer.RouteLayerRow`); dos filas con el mismo nombre las rechaza ``write_route_layer`` al confirmar, sin escribir nada."""
+        from .road_layer import RouteLayerRow  # al usarlo: ``road_layer`` importa este módulo
+
+        self._produces(provenance.ROUTE_LAYER_TABLE, "vector")
+        chosen = tuple(rows)
+        for item in chosen:
+            if not isinstance(item, RouteLayerRow):
+                raise TypeError(f"una fila de la capa propuesta es una RouteLayerRow, no {item!r}")
+        return self._route_layer_steps(chosen)
+
+    def _route_layer_steps(self, rows: tuple[Any, ...]) -> Generator[None, None, DatasetSpec]:
+        planned = provenance.dataset_spec(provenance.ROUTE_LAYER_TABLE, self.name, self.version_code, crs_epsg=self.crs.epsg)
+        with self.project.read() as conn:
+            self._check_place(conn, planned)
+        yield
+        self._vectors[provenance.ROUTE_LAYER_TABLE] = _Declared(provenance.ROUTE_LAYER_TABLE, planned, rows)
+        return planned
+
     @property
     def specs(self) -> tuple[DatasetSpec, ...]:
         """Las salidas preparadas, en el orden de su tipo (las de una familia con partes, en el
@@ -1824,6 +1847,11 @@ class DesignWriter:
             from .road_layer import write_road_layer  # al usarlo: ``road_layer`` importa este módulo
 
             write_road_layer(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
+            return
+        if declared.family == provenance.ROUTE_LAYER_TABLE:
+            from .road_layer import write_route_layer  # al usarlo: ``road_layer`` importa este módulo
+
+            write_route_layer(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg, name=self.name)
             return
         write = write_entity_layer if declared.family == provenance.ENTITY_MAP_TABLE else write_declared
         write(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
@@ -3952,8 +3980,6 @@ def run_refit(project: StoreProject, request: RefitRequest, *, version: str | No
     return handle, _refit_run(project, handle, request, loaded, prepared, budget_s)
 
 
-_ROAD_TASKS: Mapping[str, str] = MappingProxyType({provenance.ROAD_PROPOSE: "proponer el trazado, T27"})
-"""Qué tarea de la 017 da su cálculo a cada tipo que aún no lo tiene (el aviso de ``recompute_run``; la accesibilidad lo tiene desde la T17b y la pista, desde la T22)."""
 _NO_REST_TYPES = frozenset({provenance.ENVELOPE, provenance.EXCAVATION_AREA, provenance.DECLARE_CONSTRAINTS,
                             provenance.ENTITY_LAYER, *provenance.STOCKPILE_DETECT_TYPES, provenance.ROAD_ACCESS,
                             provenance.ROAD_PROPOSE, provenance.ROAD_LAYER})
@@ -4092,11 +4118,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import road_layer  # al usarlo: road_layer importa este módulo
 
         return road_layer.recompute_road_layer(request, budget_s=budget_s)
-    if request.op_type in provenance.ROAD_VERSION_TYPES:
-        # El otro tipo de la 017 que aún no tiene cálculo (T03): «Proponer el trazado», T27 (la accesibilidad es de la T17b y la pista, de la T22,
-        # arriba). Nunca cae en un escalonado.
-        raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 017 que crea su operación "
-                                  f"({_ROAD_TASKS[request.op_type]})")
+    if request.op_type == provenance.ROAD_PROPOSE:  # la propuesta del trazado (T27): la última de la 017; nunca cae en un escalonado
+        from . import road_store  # al usarlo: road_store importa este módulo
+
+        return road_store.recompute_propose(request, budget_s=budget_s)
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
                       supersedes=request.operation_uid, budget_s=budget_s, released=released)

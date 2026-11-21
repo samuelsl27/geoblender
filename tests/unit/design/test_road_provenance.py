@@ -10,7 +10,7 @@ comportamiento** todavía: ninguna operación de estos tipos existe hasta que la
 
 Los ajustes y la petición de cada tipo (``road_settings``, ``road_request``…) dependen de ``RoadRequest`` y
 ``AccessRequest`` (T05) y de los campos de la capa del diálogo: los hacen la T17 (accesibilidad) y la T19 a T21 (pista)
-junto a su preparación; ``des.road_propose`` es de la T27.
+junto a su preparación; ``des.road_propose`` (T27) tiene los suyos (``propose_settings``, ``propose_request``).
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 import unittest
 from typing import Any
+from unittest import mock
 
 from tests.support import entity_fixtures as efx
 from tests.support import quarry_fixtures as qfx
@@ -31,6 +32,7 @@ entities = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
 entity_layer = import_geoblender("design.entity_layer")
 messages = import_geoblender("design.messages")
+road_store = import_geoblender("design.road_store")
 store = import_geoblender("design.store")
 reproduce_mod = import_geoblender("design.reproduce")
 contract = import_geoblender("core.provenance.contract")
@@ -673,7 +675,7 @@ class RoadRegistryProjectTest(efx.EntityProjectCase):
 class ClosedListsTest(unittest.TestCase):
     """Las listas cerradas por tipo de operación del lado del dominio (plan 017 §2.1): cada tipo nuevo está en todas, o la
     prueba lo nombra. Lo que repite, lo que reproduce y lo que calcula lo ponen las tareas que crean cada operación (**T17b la
-    accesibilidad: hecha**; **T21 y T22 la pista: hechas**; T27 la propuesta: sin comportamiento todavía)."""
+    accesibilidad: hecha**; **T21 y T22 la pista: hechas**; **T27 la propuesta: hecha**)."""
 
     def test_recomputed_lists_the_three_types_after_the_016(self) -> None:
         """RF-008-26, RF-017-01: ``RECOMPUTED`` (lo que repite «Recalcular lo obsoleto») lleva los tres tipos de la 017
@@ -686,15 +688,13 @@ class ClosedListsTest(unittest.TestCase):
 
     def test_recompute_run_has_a_branch_for_each_type_and_none_falls_to_another_design(self) -> None:
         """RF-008-26: ``recompute_run`` repite cada tipo de ``RECOMPUTED`` por su rama y **ninguno cae en la última** (que
-        repite un escalonado): un tipo sin cálculo todavía (la propuesta) dice qué tarea lo hace (``NotImplementedError``), no repite
-        otra operación; **la accesibilidad (T17b) y la pista (T22) tienen su rama real**: con unos ajustes que no son los suyos, un
-        ``ValueError`` (nada de «aún no») y no la de ningún escalonado; la accesibilidad y la propuesta no dejan una superficie que se
+        repite un escalonado): **la accesibilidad (T17b), la pista (T22) y la propuesta (T27) tienen su rama real**: con unos ajustes que no son los suyos, un
+        ``ValueError`` (nada de «aún no») y no la de ningún escalonado, y la de la propuesta es ``road_store.recompute_propose``; la accesibilidad y la propuesta no dejan una superficie que se
         apoye en una entidad: soltar un apoyo es un error del programa (``ValueError``); la pista sí, y darlo por bueno lo hace la T24 (``recompute_run(released=)`` la pasa a ``recompute_road``)."""
         request = recompute_mod.RecomputeRequest(object(), "uid", PROPOSE, {}, (), ())
-        with self.assertRaises(NotImplementedError) as caught:
-            store.recompute_run(request)
-        self.assertIn(PROPOSE, str(caught.exception))
-        self.assertIn("017", str(caught.exception))
+        with mock.patch.object(road_store, "recompute_propose", return_value="de la propuesta") as branch:
+            self.assertEqual(store.recompute_run(request), "de la propuesta")
+        branch.assert_called_once_with(request, budget_s=store.STEP_BUDGET_S)
         for op_type in (ACCESS, ROAD):
             request = recompute_mod.RecomputeRequest(object(), "uid", op_type, {}, (), ())
             with self.subTest(op_type=op_type), self.assertRaises(ValueError) as caught:
@@ -721,19 +721,13 @@ class ClosedListsTest(unittest.TestCase):
 
     def test_the_reproduce_functions_exist_for_each_type(self) -> None:
         """RF-009-11: ``design.reproduce`` tiene la función de reproducir de cada tipo (la de ``bl`` la importa al usarla); la
-        propuesta, sin comportamiento todavía: ``NotImplementedError`` con el tipo y la tarea que la hace (la accesibilidad es real
-        desde la T17b, ``milestone_access_operation``, y la pista desde la T22, ``milestone_road_recompute``); lo que no es una
-        petición, ``TypeError``; una de otro tipo, ``ValueError`` (errores del programa)."""
+        propuesta es real desde la T27 (``milestone_road_propose``), la accesibilidad desde la T17b (``milestone_access_operation``) y la pista
+        desde la T22 (``milestone_road_recompute``); lo que no es una petición, ``TypeError``; una de otro tipo, ``ValueError`` (errores del programa)."""
         for op_type, name in ((ROAD, "reproduce_road"), (ACCESS, "reproduce_road_access"),
                               (PROPOSE, "reproduce_road_propose")):
             function = getattr(reproduce_mod, name)
             request = versions_reproduce.ReproduceRequest(op_type, {}, (), {}, ".", None)
             with self.subTest(op_type=op_type):
-                if op_type == PROPOSE:
-                    with self.assertRaises(NotImplementedError) as caught:
-                        function(request)
-                    self.assertIn(op_type, str(caught.exception))
-                    self.assertIn("017", str(caught.exception))
                 with self.assertRaises(TypeError):
                     function("petición")
                 with self.assertRaises(ValueError):

@@ -61,14 +61,21 @@ __all__ = [
     "FIGURE_COLUMNS",
     "GEOMETRY_TYPE",
     "LAYER_STATES",
+    "ROUTE_COLUMNS",
+    "ROUTE_COLUMN_NAMES",
+    "ROUTE_COLUMN_TITLES",
+    "ROUTE_IDENTIFIER",
     "PreparedRoadLayer",
     "RoadHead",
     "RoadLayerRow",
     "RoadSource",
+    "RouteLayerRow",
     "create_road_layer_table",
+    "create_route_layer_table",
     "layer_differences",
     "prepare_road_layer",
     "read_road_layer",
+    "read_route_layer",
     "recompute_road_layer",
     "road_heads",
     "road_layer_pending",
@@ -78,8 +85,10 @@ __all__ = [
     "road_layer_sync_steps",
     "road_layer_table",
     "road_sources",
+    "route_layer_table",
     "run_road_layer",
     "write_road_layer",
+    "write_route_layer",
     "written_rows",
 ]
 
@@ -294,6 +303,106 @@ def read_road_layer(conn: sqlite3.Connection, table: str) -> tuple[RoadLayerRow,
             raise ValueError(f"la fila {fid} de «{table}» no tiene geometría")
         found.append(RoadLayerRow(code=code, name=name, class_name=class_name, state=state, profile=profile, points=_line(blob), layer=table, fid=int(fid),
                                   **dict(zip((column for column, _key in FIGURE_COLUMNS), figures, strict=True))))
+    return tuple(found)
+
+
+# --- La capa propuesta del trazado (spec 017, T27; RF-017-28, P-8, D-19) --------------------------------------
+# ``des_rpl_<nombre>_<vNN>``: lo que deja ``des.road_propose`` («Proponer el trazado…»). **No es una salida bloqueada** como ``des_rax_``: es una tabla de proyecto normal, **editable en QGIS**
+# (``DatasetFamily.qgis_editable``), que no es una entidad ni lleva estilo propio de Geoblender, y que una pista «eje 3D» lee con su Z (T23-a) como entrada con su hash.
+
+ROUTE_IDENTIFIER = "Trazado propuesto"
+"""El principio del identificador de la capa propuesta en ``gpkg_contents`` (lleva el nombre de la propuesta)."""
+ROUTE_COLUMNS: tuple[ColumnDef, ...] = (ColumnDef("name", "TEXT", True),)
+ROUTE_COLUMN_NAMES: tuple[str, ...] = tuple(column.name for column in ROUTE_COLUMNS)
+"""Las columnas de la capa propuesta además de ``fid`` y ``geom``: **solo el nombre** de la línea (por el que una pista «eje 3D» la elige). Las cifras de la propuesta (longitud, pendiente máxima) son de
+la operación: una cifra en la tabla quedaría mal en cuanto se edite la línea en QGIS, y todas las columnas cuentan en el hash que deja obsoleta a una pista que la usa."""
+ROUTE_COLUMN_TITLES: Mapping[str, str] = MappingProxyType({"name": "Nombre"})
+"""Los títulos en español de las columnas, que QGIS muestra como alias."""
+
+
+def route_layer_table(version_code: str, name: str) -> str:
+    """La tabla de la capa propuesta del trazado ``name`` en la versión ``version_code`` («V01»): ``des_rpl_<nombre>_<vNN>`` (:func:`~.provenance.dataset_locator` de ``rpl``: el nombre en ASCII y
+    en minúsculas, ``gis.provenance.dataset_slug``). ``ValueError`` con un código que no es el de una versión; ``GisError`` si el nombre no tiene ninguna letra ni cifra."""
+    return provenance.dataset_locator(provenance.ROUTE_LAYER_TABLE, name, version_code)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RouteLayerRow:
+    """Una línea de la capa propuesta (una fila de ``des_rpl_<nombre>_<vNN>``): su ``name`` y su eje por estaciones ``points`` ``(n, 3)`` con **la rasante en la Z** (coordenadas absolutas, float64, de
+    solo lectura). ``layer`` y ``fid``: la tabla y la fila, de una leída. Los errores son del programa (``TypeError`` o ``ValueError``)."""
+
+    name: str
+    points: object
+    layer: str = ""
+    fid: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _text(self.name, "el nombre de una línea propuesta"))
+        object.__setattr__(self, "points", _points(self.points))
+        object.__setattr__(self, "layer", str(self.layer))
+        object.__setattr__(self, "fid", int(self.fid))
+
+
+def create_route_layer_table(conn: sqlite3.Connection, table: str, srs_id: int, name: str = "") -> bool:
+    """Crea en la transacción de ``conn`` la capa de líneas ``table`` de un trazado propuesto (:data:`ROUTE_COLUMNS`, ``LINESTRING`` **con Z** y el CRS ``srs_id``, el del proyecto) con los títulos en
+    español de :data:`ROUTE_COLUMN_TITLES`, y la registra en ``gpkg_contents`` y ``gpkg_geometry_columns``; ``True`` si la creó y ``False`` si ya estaba (no hace nada). ``name`` es el de la propuesta
+    (para el título que ve QGIS). ``ValueError`` si ``table`` no es un nombre de tabla; ``ValidationError`` de ``core.gpkg`` si ``srs_id`` no está en ``gpkg_spatial_ref_sys``."""
+    _check_table(table)
+    if _exists(conn, table):
+        return False
+    label = f"{ROUTE_IDENTIFIER} {name}".strip() if name else f"{ROUTE_IDENTIFIER} ({table})"
+    create_feature_table(conn, table, GEOMETRY_TYPE, srs_id, True, ROUTE_COLUMNS, label,
+                         f"{ROUTE_IDENTIFIER}, de Geoblender: eje con su rasante en la Z, editable a mano en QGIS (es del usuario desde que se crea)")
+    set_column_titles(conn, table, ROUTE_COLUMN_TITLES)
+    return True
+
+
+def write_route_layer(conn: sqlite3.Connection, table: str, rows: Iterable[RouteLayerRow], *, srs_id: int | None = None, name: str = "") -> tuple[int, ...]:
+    """Reescribe la tabla ``table`` de la capa propuesta con ``rows`` y devuelve sus ``fid`` (RF-017-28): al crear la propuesta o repetirla es **la operación quien la escribe** —entera, por nombre y con
+    los ``fid`` desde 1—, de modo que las mismas filas dan siempre los mismos bytes y el mismo hash de contenido; después es **de la persona** (se edita en QGIS) y Geoblender no la vuelve a escribir
+    sin que la operación se repita. Si la tabla no existe, la crea con el CRS ``srs_id``; si existe, ``srs_id`` (si se da) es el suyo. Con la geometría **absoluta en float64** y la rasante en la Z
+    (``core.gpkg.wkb``).
+
+    ``ValueError`` (errores del programa) si dos filas repiten el nombre, ``table`` no es una capa registrada, o falta el SRS de una tabla que no existe o no es el de la que existe; ``TypeError`` si una
+    fila no es una :class:`RouteLayerRow`. No escribe nada si rechaza alguna; no confirma la transacción."""
+    found = tuple(rows)
+    _check_table(table)
+    for item in found:
+        if not isinstance(item, RouteLayerRow):
+            raise TypeError(f"una fila de la capa propuesta es una RouteLayerRow, no {item!r}")
+    names = [item.name for item in found]
+    if len(set(names)) != len(names):
+        raise ValueError(f"dos líneas de la capa propuesta repiten el nombre: {sorted(each for each in set(names) if names.count(each) > 1)}")
+    if _exists(conn, table):
+        srs = _srs_of(conn, table)
+        if srs_id is not None and srs_id != srs:
+            raise ValueError(f"«{table}» está en el SRS {srs}, no en el {srs_id}")
+    elif srs_id is None:
+        raise ValueError(f"«{table}» no existe: crearla pide el SRS del proyecto")
+    else:
+        srs = srs_id
+    create_route_layer_table(conn, table, srs, name)
+    conn.execute(f'DELETE FROM "{table}"')
+    conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
+    fids: list[int] = []
+    for item in sorted(found, key=lambda row: row.name):
+        blob = encode_geometry(GEOMETRY_TYPE, np.asarray(item.points), srs, True)
+        cursor = conn.execute(f'INSERT INTO "{table}" (geom, name) VALUES (?, ?)', (blob, item.name))
+        fids.append(int(cursor.lastrowid or 0))
+    return tuple(fids)
+
+
+def read_route_layer(conn: sqlite3.Connection, table: str) -> tuple[RouteLayerRow, ...]:
+    """Las líneas de la tabla ``table`` de la capa propuesta, por ``fid``; ninguna si la tabla no existe. Con su capa (``table``) y su ``fid``. **Solo lee**: la tabla es de la persona (se edita en
+    QGIS) y se lee tal como esté. ``ValueError`` si una fila no tiene geometría, no es una línea o no tiene su Z."""
+    _check_table(table)
+    if not _exists(conn, table):
+        return ()
+    found = []
+    for fid, blob, name in conn.execute(f'SELECT fid, geom, name FROM "{table}" ORDER BY fid'):
+        if blob is None:
+            raise ValueError(f"la fila {fid} de «{table}» no tiene geometría")
+        found.append(RouteLayerRow(str(name), _line(blob), table, int(fid)))
     return tuple(found)
 
 

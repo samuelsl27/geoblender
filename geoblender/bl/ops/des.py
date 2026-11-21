@@ -714,10 +714,9 @@ def reproduce_body(request: ReproduceRequest) -> Iterator[Progress]:
 
 
 # Los tres tipos de la 017 (T03; plan 017 §5.2.3): el mismo camino que los de las specs anteriores. Su recálculo lo hace
-# ``design.store.recompute_run`` y su reproducción, ``design.reproduce``; **«Proponer el trazado» sin comportamiento todavía** (T27: hasta
-# entonces no hay ninguna operación de ese tipo que recalcular ni reproducir y ambas dicen qué tarea falta). **La accesibilidad ya los tiene**
-# (T17b: ``access_store.recompute_access`` y ``reproduce.reproduce_road_access``) y **la pista también** (T22: ``road_store.recompute_road``
-# y ``reproduce.reproduce_road``).
+# ``design.store.recompute_run`` y su reproducción, ``design.reproduce``. **Los tres tienen ya su cálculo**: la accesibilidad (T17b:
+# ``access_store.recompute_access`` y ``reproduce.reproduce_road_access``), la pista (T22: ``road_store.recompute_road`` y ``reproduce.reproduce_road``) y
+# «Proponer el trazado» (T27: ``road_store.recompute_propose`` y ``reproduce.reproduce_road_propose``).
 
 
 def recompute_road(request: RecomputeRequest) -> OperationHandle:
@@ -852,7 +851,7 @@ repetibles (T05); de la 015, la plataforma, la declaración de restricciones y l
 de la versión y repetibles (T04); la capa de entidades no se reproduce (T30); de la 016 (T03), la
 detección de acopios, su retirada, el contrafuerte y el cuerpo apoyado, de la versión, repetibles y
 reproducibles, sin comportamiento todavía; de la 017 (T03), la pista, la accesibilidad de las pistas y «Proponer el trazado», de la
-versión, repetibles y reproducibles (la accesibilidad, con su cálculo desde la T17b; la pista y la propuesta, sin comportamiento todavía), y la edición de los
+versión, repetibles y reproducibles (la accesibilidad, con su cálculo desde la T17b; la pista, desde la T22; la propuesta, desde la T27), y la edición de los
 perfiles de pista, del proyecto y sin repetición."""
 DEFINITIONS: tuple[core_params.ParamDef, ...] = (
     *design_params.DEFINITIONS, *design_params.QUARRY_DEFINITIONS)

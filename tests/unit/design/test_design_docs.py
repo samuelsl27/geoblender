@@ -185,6 +185,9 @@ PENDING_015_API: frozenset[str] = frozenset({
     "road_run", "RoadSummary",
     # La 017, T22b (a qué entidad apunta el origen o el destino de una pista y cómo se re-apunta al traerla a otra versión: ``design.entities``):
     "refers_to", "with_code",
+    # La 017, T27 («Proponer el trazado»: lo que anotan sus ajustes y lo que lee como parámetros, ``design.provenance``; la rasante a CSV, ``design.export``; lo demás es de ``design.road_store`` y
+    # ``design.road_layer``, módulos pendientes):
+    "propose_params", "propose_resolved", "StoredRoad", "export_road_csv", "road_csv_bytes", "stored_road",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 017, T04 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):

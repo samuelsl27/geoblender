@@ -70,8 +70,9 @@ T22; RF-017-01 a RF-017-03, RF-015-02, RF-009-11): :func:`reproduce_road` (con e
 origen, la partida y las máscaras congeladas —con **los pesos de «preferible no afectar»** de su informe—, los parámetros congelados de su entidad y del perfil —``road_store.frozen_profile``—, la
 geometría de origen leída de lo congelado —``road_store.frozen_geometry``: **el eje por estaciones de la pista en cuyo eje está el origen** y la huella de la entidad de destino, que anotó la
 operación como entradas— y **los otros diseños de la versión que difieren en su huella**, con los que se repite el aviso del informe; la superficie entera, la huella, el eje por estaciones y el
-informe, y las cifras, con ``des.supported_m3`` de lo que rellena sobre otras entidades). **El otro tipo de la 017** (spec 017, T03; :func:`reproduce_road_propose`) existe igual, **sin
-comportamiento todavía**: dice qué tarea lo hace (T27) con ``NotImplementedError``.
+informe, y las cifras, con ``des.supported_m3`` de lo que rellena sobre otras entidades). **El otro tipo de la 017** (spec 017, T27; :func:`reproduce_road_propose`: «Proponer el trazado»,
+con el cálculo que comparte con el proyecto, ``road_store.propose_compute_steps`` sobre el mismo ``RoadJob``: la partida y las máscaras congeladas, los valores congelados del perfil y los ajustes
+de la operación, que llevan la petición entera y lo que resolvió la preparación; la capa propuesta, una tabla de líneas con Z, y las dos cifras).
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -120,7 +121,7 @@ from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, zone_runs_step
 from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
-from . import access_store, entities, entity_store, fronts, pipeline, provenance, quarry, removal, road_store, stockpile_store, store, supported_store
+from . import access_store, entities, entity_store, fronts, pipeline, provenance, quarry, removal, road_layer, road_store, stockpile_store, store, supported_store
 from .compose import admitted, admitted_in
 from .model import BenchSense, BodySense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
 from .params import (
@@ -136,7 +137,7 @@ from .params import (
 from .buttress import ButtressJob
 from .platform import PlatformJob
 from .removal import RemovalJob
-from .road_model import AccessCells, BermGrid, RoadJob, RoadMode, RouteParams
+from .road_model import AccessCells, BermGrid, RoadGeometry, RoadJob, RoadMode, RouteParams
 from .seeds import (
     SectorRef,
     SeedSet,
@@ -1247,8 +1248,49 @@ def _reproduce_road_access(request: ReproduceRequest, budget_s: float) -> Iterat
 
 
 def reproduce_road_propose(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """Reproduce ``des.road_propose`` (spec 017, T03; RF-017-28, RF-009-11): sin comportamiento todavía (T27)."""
-    return _not_yet(request, provenance.ROAD_PROPOSE, "la T27", "017")
+    """Reproduce ``des.road_propose`` (spec 017, T27; RF-017-28, RF-015-02, RF-009-11) con la superficie de partida, las máscaras —con los pesos de «preferible no afectar» de su informe— y la capa de
+    la zona de un destino por cota congeladas, los valores congelados del perfil (``des.roadprofile.{p}.*``) y los ajustes de su operación (la petición entera y **lo que resolvió la preparación**: los
+    puntos del origen y del destino y las cotas de inicio y de fin, :func:`~.provenance.propose_resolved`; una propuesta no es una entidad y no tiene parámetros de entidad), **sin el proyecto**: el
+    mismo cálculo (``road_store.propose_compute_steps`` sobre el mismo ``RoadJob``). Sus pasos y, el último, el ``ReproducedResult`` con la capa propuesta (``des_rpl_``, una tabla de líneas con Z) y las
+    dos cifras. Lo que no es una ``ReproduceRequest`` es ``TypeError``; una de otro tipo, ``ValueError``."""
+    return _reproduce_road_propose(_check(request, provenance.ROAD_PROPOSE), budget_s)
+
+
+def _route_layer_output(request: ReproduceRequest, rows: Sequence[road_layer.RouteLayerRow], crs: CrsRef) -> ReproducedOutput:
+    """Escribe la capa propuesta ``rows`` como la salida ``rpl`` de la operación, en su GeoPackage de la carpeta de trabajo (una tabla de **líneas con Z**: ``road_layer.write_route_layer``)."""
+    found = provenance.FAMILIES_BY_CODE[provenance.ROUTE_LAYER_TABLE]
+    name = str(request.settings.get("name", ""))
+    table = provenance.dataset_locator(provenance.ROUTE_LAYER_TABLE, name, "V01")
+    path = Path(request.workdir) / f"{found.role}.gpkg"
+    check_path_length(path, obj=_OBJ)
+    with GpkgConnection.open_write(path, create=True) as gpkg, gpkg.transaction() as conn:
+        create_base(conn, crs)
+        road_layer.write_route_layer(conn, table, rows, srs_id=crs.epsg, name=name)
+    return ReproducedOutput(found.role, found.reader, {"main": path}, {"layer": table})
+
+
+def _reproduce_road_propose(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    asked = provenance.propose_request(request.settings)
+    settled = provenance.propose_resolved(request.settings)
+    code = road_store.PROPOSE_CODE
+    values = road_store.road_values(asked, code, start_ref=asked.start, start_level_m=settled["start_level_m"], end_level_m=settled["end_level_m"])
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = replace(frozen.masks(), weights=MappingProxyType(frozen.weights()))
+    start_item = frozen.item(provenance.SURFACE_ROLE)
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida").values
+    if settled["destination"] is None:  # destino por cota: su zona es la capa congelada
+        zone = frozen.features(str(asked.dest_zone).partition(":")[0].strip())
+        geometry = RoadGeometry(origin=settled["origin"], destination=road_store._zone_destination(zone, asked, code))
+    else:
+        geometry = RoadGeometry(origin=settled["origin"], destination=settled["destination"])
+    whole = (slice(0, frozen.grid.nrows), slice(0, frozen.grid.ncols))
+    cut, fill = admitted(masks, BenchSense.CUT)[whole], admitted(masks, BenchSense.FILL)[whole]
+    job = RoadJob(asked, code, road_store.frozen_profile(frozen.values, asked.profile), frozen.grid, start, cut, fill, road_store.untouchable_cells(masks), geometry,
+                  RouteParams.from_values(values), settled["start_level_m"], settled["end_level_m"], road_store.avoid_weight(masks))
+    outcome = yield from road_store.propose_compute_steps(job, surface=start_item.name, budget_s=budget_s)
+    made = _route_layer_output(request, road_store.propose_layer_rows(outcome), frozen.crs)
+    yield Progress(_PHASE, 1, 1, "Trazado reproducido", result=ReproducedResult((made,), tuple(outcome.figures)))
 
 
 REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({

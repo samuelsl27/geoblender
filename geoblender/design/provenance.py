@@ -406,6 +406,7 @@ __all__ = [
     "REMOVED_STOCKPILE_ROLE",
     "REPORT_TABLE",
     "REPRODUCIBLE",
+    "RESOLVED",
     "ROAD",
     "ROAD_ACCESS",
     "ROAD_ACCESS_BERMS_ROLE",
@@ -574,6 +575,10 @@ __all__ = [
     "road_request",
     "road_settings",
     "propose_figures",
+    "propose_params",
+    "propose_request",
+    "propose_resolved",
+    "propose_settings",
     "sector_inputs",
     "settings_decisions",
     "settings_entities",
@@ -1556,7 +1561,7 @@ ROAD_OPERATION_TYPES: tuple[OperationType, ...] = (
 )
 """Los tipos de operación de la 017 (plan 017 §5.2.3), aparte de los de las cuatro specs anteriores: de la versión, repetibles y
 reproducibles salvo la capa de ejes (T26-a: es una vista regenerable que incluye el estado de cada pista, deducido del grafo; ``drops_discarded``: su recálculo
-reúne él mismo las pistas vivas, como la capa de entidades), **sin comportamiento todavía** (cada tarea que crea una operación le da su cálculo). La definición de la pista y de la
+reúne él mismo las pistas vivas, como la capa de entidades), **con su cálculo ya** (la accesibilidad, T17b; la pista, T22; la capa de ejes, T26; la propuesta, T27). La definición de la pista y de la
 accesibilidad son sus **parámetros** (``des.road.{e}.*``, ``des.access.{e}.*``): los ajustes no declaran ninguno. Salidas: la pista, su
 superficie entera (``des_psf_``), su huella (``des_epr_``: es lo que sale en la capa de entidades), su eje por estaciones
 (``des_rdx_``) y su informe, y deja también ``des.supported_m3`` (lo que se le apoya: RF-015-15); la accesibilidad, lo alcanzable, sus
@@ -3970,6 +3975,83 @@ def road_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]) -> 
         feature=_value_text(values, "feature", values_what), support=_value_text(values, "support", values_what), origin=_value_text(values, "origin", values_what),
         destination=_value_text(values, "destination", values_what), dest_zone=_value_text(values, "dest_zone", values_what),
         search_budget=_value_integer(values, "search_budget", values_what), **numbers_found)
+
+
+_PROPOSE_TEXTS = ("layer", "profile", "start", "origin", "destination", "dest_zone")
+_PROPOSE_NUMBERS = tuple(param.value for param in _ROAD_NUMBERS)
+
+
+RESOLVED = "resolved"
+"""La clave de los ajustes de ``des.road_propose`` donde queda **lo que resolvió la preparación** (:func:`propose_resolved`): los puntos del origen y del destino y las cotas de inicio y de fin con
+que se calculó. Es lo que lee la reproducción (sin proyecto: el eje de otra pista o la superficie de una entidad no se leen de lo congelado); recalcular **no** lo usa: lo resuelve otra vez de lo
+vigente."""
+
+
+def propose_settings(request: RoadRequest, resolved: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Los ajustes de ``des.road_propose`` (spec 017, T27; RF-017-28, RF-015-02; JSON sin rutas): **toda la petición** —el nombre de la propuesta, la capa de origen y el campo de sus nombres, el
+    perfil, la partida, el origen y el destino (o el destino por cota con su tolerancia y su zona), las cotas de inicio y de fin y los parámetros de la ruta con su presupuesto de estados—. Una
+    propuesta **no es una entidad** (P-8): no tiene código ni parámetros de entidad (``des.road.{e}.*``) y lo que se pide vive aquí; lo que lee como parámetros es el perfil
+    (:func:`propose_params`). Con ``resolved`` (lo que resolvió la preparación: ``origin`` y ``destination`` —``(x, y)`` absolutos; ``None`` en un destino por cota—, ``start_level_m`` y
+    ``end_level_m``), lo anota bajo :data:`RESOLVED` para reproducirla sin el proyecto. Solo «trazar» (P-14: la propuesta usa la ruta, A1 a A5). Es un diccionario nuevo; ``TypeError`` si ``request``
+    no es una ``RoadRequest`` y ``ValueError`` si no es de «trazar»."""
+    from .road_model import RoadMode, RoadRequest  # al usarlo: habilitar no la crea (RNF-001-03)
+    if not isinstance(request, RoadRequest):
+        raise TypeError(f"los ajustes de una propuesta salen de una RoadRequest, no {request!r}")
+    if request.mode is not RoadMode.TRACE:
+        raise ValueError(f"«Proponer el trazado» usa la ruta (modo «trazar»), no «{request.mode.value}» (P-14)")
+    found: dict[str, Any] = {"name": request.name, "name_field": request.fields.name_field}
+    found.update({key: getattr(request, key) for key in _PROPOSE_TEXTS})
+    found.update({key: getattr(request, key) for key in (*_PROPOSE_NUMBERS, "search_budget")})
+    if resolved is not None:
+        found[RESOLVED] = {key: (list(value) if isinstance(value, tuple | list) else value) for key, value in dict(resolved).items()}
+    return found
+
+
+def propose_resolved(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """Lo que resolvió la preparación de una propuesta y anotan sus ajustes (:data:`RESOLVED`; spec 017, T27): ``origin`` y ``destination`` como ``(x, y)`` absolutos float64 (``destination`` es
+    ``None`` en un destino por cota) y ``start_level_m`` y ``end_level_m`` (``None`` los que no hay). ``ValueError`` si los ajustes no lo llevan o no es lo que toca."""
+    what = "los ajustes de una propuesta del trazado"
+    data = _mapping(_mapping(settings, what).get(RESOLVED), f"{what}, «{RESOLVED}»,")
+
+    def point(key: str, *, required: bool) -> tuple[float, float] | None:
+        value = data.get(key)
+        if value is None and not required:
+            return None
+        if (not isinstance(value, tuple | list) or len(value) != 2
+                or any(isinstance(item, bool) or not isinstance(item, numbers.Real) or not math.isfinite(float(item)) for item in value)):
+            raise ValueError(f"{what}, «{RESOLVED}», llevan «{key}» como (x, y), no {value!r}")
+        return float(value[0]), float(value[1])
+
+    return {"origin": point("origin", required=True), "destination": point("destination", required=False),
+            "start_level_m": _number(data, "start_level_m", what), "end_level_m": _number(data, "end_level_m", what)}
+
+
+def propose_request(settings: Mapping[str, Any]) -> RoadRequest:
+    """La petición que repiten los ajustes ``settings`` de una operación ``des.road_propose`` (los de :func:`propose_settings`): al recalcularla y al reproducirla (spec 017, T27; RF-017-28,
+    RF-015-02). Es su inversa: no hay otra fuente (la propuesta no es una entidad). ``ValueError`` si no son los de una propuesta (nombrando el campo)."""
+    from .road_model import LayerFields, RoadRequest  # al usarlo: habilitar no la crea (RNF-001-03)
+    what = "los ajustes de una propuesta del trazado"
+    data = _mapping(settings, what)
+    texts = {key: _optional_text(data, key, what) for key in _PROPOSE_TEXTS}
+    for key in ("layer", "profile", "start"):
+        if not texts[key] or not str(texts[key]).strip():
+            raise ValueError(f"{what} llevan «{key}» (un texto), no {data.get(key)!r}")
+    if data.get("mode", "trace") != "trace":
+        raise ValueError(f"{what} son de «trazar», no de {data.get('mode')!r}")
+    budget = data.get("search_budget")
+    if budget is not None and (isinstance(budget, bool) or not isinstance(budget, numbers.Integral)):
+        raise ValueError(f"{what} llevan «search_budget» como un número entero, no {budget!r}")
+    return RoadRequest(
+        name=_required_text(data, "name", what), fields=LayerFields(str(texts["layer"]), _optional_text(data, "name_field", what)), mode="trace", profile=str(texts["profile"]),
+        start=str(texts["start"]), origin=texts["origin"], destination=texts["destination"], dest_zone=texts["dest_zone"], search_budget=None if budget is None else int(budget),
+        **{key: _number(data, key, what) for key in _PROPOSE_NUMBERS})
+
+
+def propose_params(profile: str) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.road_propose`` (``begin_operation(params=…)``; spec 017, T27; RF-017-28; plan 017 §5.2.2): **los valores del perfil de pista ``profile``** (su código) que
+    cambian su resultado —los 14 menos su clase normativa— y **ninguno de una entidad**: una propuesta no lo es, y ``begin_operation`` crearía en el proyecto la fila de cada parámetro que falte
+    (trampa de la T04 de la 015). Cambiar uno deja obsoleta la propuesta con su causa. ``ValueError`` si ``profile`` no es un código de perfil."""
+    return _unique(road_profile_key(profile, item) for item in _ROAD_PROFILE_READ)
 
 
 def access_inputs(surface: str, entries_layer: str, masks: Iterable[Use] = (), *, final: str | None = None,

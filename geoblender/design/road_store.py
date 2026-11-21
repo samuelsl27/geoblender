@@ -12,7 +12,8 @@ y sin escribir nada); **el resumen, las dos confirmaciones y con qué se compara
 :func:`resolve_level`, :class:`LevelFollow` y :func:`write_followed`) y **reproducir** (T22: lo que lee de lo congelado, :func:`frozen_profile` y
 :func:`frozen_geometry`; la función de reproducir es ``design.reproduce.reproduce_road``); traer a otra versión y «Cambiar parámetro…», de la T22b; los modos «sobre un eje» y «eje 3D», de la T23: la línea con su Z de una línea de rotura o de la capa propuesta
 (:class:`Lines3D`, :func:`read_layer_3d`, :func:`read_lines_3d` y :func:`line_3d`), la Z de cada estación en la abscisa de la línea y el radio de su planta medido en las estaciones
-(``road_axis.plan_of_line``, ``road_gradient.check_axis_3d``).
+(``road_axis.plan_of_line``, ``road_gradient.check_axis_3d``); **«Proponer el trazado»** (T27, al final: ``des.road_propose``, la ruta y la rasante de «trazar» sin la sección, como una capa de líneas con Z editable
+en QGIS, ``des_rpl_``: :func:`prepare_propose_units`, :func:`propose_compute_steps`, :func:`create_propose_steps`, :func:`run_propose` y :func:`recompute_propose`).
 
 - :func:`prepare_road_units` y :func:`prepare_road` (de una vez): la versión editable (RF-009-21), el código ``RDW-nnn`` y el nombre únicos, **la partida** (RF-017-05, D-3: la persona
   la elige; sin ella, :func:`default_start`: la de explotación de la cantera de la 014 de la versión y, si no, la última de la cadena de entidades) con la cadena (una pista por
@@ -81,6 +82,7 @@ from . import (
     road_axis,
     road_engrave,
     road_gradient,
+    road_layer,
     road_net,
     road_profiles,
     road_route,
@@ -110,6 +112,7 @@ from .road_model import (
     EntryPoint,
     LayerFields,
     LevelDestination,
+    ProposalOutcome,
     RoadGeometry,
     RoadJob,
     RoadMode,
@@ -128,6 +131,7 @@ from .zones import polygons_cells
 __all__ = [
     "COMPUTE_PHASE",
     "CONFIRMED",
+    "PROPOSE_CODE",
     "AxisReference",
     "DefaultStart",
     "DerivedLevel",
@@ -136,6 +140,7 @@ __all__ = [
     "Lines3D",
     "OtherReader",
     "PointReference",
+    "PreparedProposal",
     "PreparedRoad",
     "ResolvedLevel",
     "RoadConfirmed",
@@ -144,6 +149,8 @@ __all__ = [
     "carriageway_notices",
     "check_road_confirmed",
     "confirmed_of",
+    "create_propose",
+    "create_propose_steps",
     "create_road",
     "create_road_steps",
     "default_start",
@@ -154,10 +161,15 @@ __all__ = [
     "other_designs",
     "other_reader",
     "parse_reference",
+    "prepare_propose",
+    "prepare_propose_units",
     "prepare_road",
     "prepare_road_units",
     "read_layer_3d",
+    "propose_compute_steps",
+    "propose_layer_rows",
     "read_lines_3d",
+    "recompute_propose",
     "recompute_road",
     "resolve_level",
     "road_axis_rows",
@@ -172,6 +184,7 @@ __all__ = [
     "road_report_rows",
     "road_summary",
     "road_values",
+    "run_propose",
     "run_road",
     "start_is_final_notice",
     "summary_of",
@@ -198,6 +211,8 @@ _FEATURE_PREFIX = _GIS_FAMILIES[_FEATURES].prefix
 """El comienzo del nombre de una capa de entidades del proyecto (``gis_fea_``: guarda solo X e Y)."""
 _LINES_3D_PREFIXES = (_GIS_FAMILIES[_BREAKLINES].prefix, provenance.FAMILIES_BY_CODE[provenance.ROUTE_LAYER_TABLE].prefix)
 """Las capas que dan la Z de una línea en el modo «eje 3D» (T23-a): las líneas de rotura (``gis_brk_``) y la capa propuesta de «Proponer el trazado…» (``des_rpl_``)."""
+_ROUTE_PREFIX = provenance.FAMILIES_BY_CODE[provenance.ROUTE_LAYER_TABLE].prefix
+"""El comienzo del nombre de la capa propuesta (``des_rpl_``): un dato **de una versión**, no del proyecto."""
 _LINE_NAME_FIELD = "line_id"
 """El campo del nombre de una línea de rotura (``gis_brk_``): lo que identifica una línea en su capa si la persona no elige otro campo."""
 _ROUTE_PARAMS = (RoadParam.MESH, RoadParam.LEVEL_STEP, RoadParam.MAX_CUT_FILL, RoadParam.LAMBDA, RoadParam.TURN, RoadParam.MARGIN, RoadParam.SIMPLIFY, RoadParam.ARRIVAL_TOL,
@@ -665,17 +680,18 @@ def read_lines_3d(conn: sqlite3.Connection, table: str) -> Lines3D:
     return Lines3D(layer, tuple(found))
 
 
-def read_layer_3d(project: StoreProject, request: RoadRequest, code: str) -> Lines3D:
+def read_layer_3d(project: StoreProject, request: RoadRequest, code: str, *, version_uid: str = "") -> Lines3D:
     """La capa de líneas con Z ``request.layer`` del proyecto para el modo «eje 3D» (T23-a, decisión de la sesión principal): una **línea de rotura** (``gis_brk_``) o la **capa propuesta**
     (``des_rpl_``). Una capa de **entidades** (``gis_fea_``) guarda solo X e Y (``docs/trampas.md`` §6) y se rechaza con ``des.road_line_no_z`` (nombrando la capa, la pista, el campo y el valor);
-    un dato que no existe, ``gis.dataset_unknown``; cualquier otra capa es un error del programa (``ValueError``: el diálogo solo ofrece las anteriores). **Solo lee.**"""
+    un dato que no existe, ``gis.dataset_unknown``; cualquier otra capa es un error del programa (``ValueError``: el diálogo solo ofrece las anteriores). **Solo lee.** La capa propuesta es un dato **de
+    una versión** (``des_rpl_<nombre>`` en la versión ``version_uid``: T27; una línea de rotura es del proyecto): sin ``version_uid`` se busca entre los del proyecto."""
     name = request.layer
     if name.startswith(_FEATURE_PREFIX):
         raise _reject("des.road_line_no_z", request, code, RoadParam.FEATURE, str(request.feature))
     if not name.startswith(_LINES_3D_PREFIXES):
         raise ValueError(f"«{name}» no es una capa de líneas con Z del proyecto ({' o '.join(prefix + '…' for prefix in _LINES_3D_PREFIXES)})")
     with project.read() as conn:
-        record = dataset_registry.get(conn, name)
+        record = dataset_registry.get(conn, name, version_uid=version_uid if name.startswith(_ROUTE_PREFIX) else "")
         if record is None:
             raise GisError("gis.dataset_unknown", obj="Dato de topografía", field="dato", value=name)
         return read_lines_3d(conn, record.locator)
@@ -1192,7 +1208,7 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     line: np.ndarray | None = None
     fid = 0
     if mode is RoadMode.AXIS_3D:  # la Z de la línea sale de una línea de rotura o de la capa propuesta; una capa de entidades no la guarda (T23-a)
-        lines = read_layer_3d(project, request, chosen)
+        lines = read_layer_3d(project, request, chosen, version_uid=version.uid)
         layer = lines.layer
         line, fid = line_3d(lines, request, chosen)
     else:
@@ -2294,3 +2310,277 @@ def _in_cells(grid: Grid, point: tuple[float, float], cells: np.ndarray) -> bool
     """Si el punto absoluto cae en alguna de las celdas ``cells`` (``fila · columnas + columna``) de la rejilla."""
     cell = _cell_of(grid, *point)
     return cell is not None and bool(np.isin(cell[0] * grid.ncols + cell[1], cells))
+
+
+# --- Proponer el trazado (spec 017, T27; HU-017-1 y HU-017-4; RF-017-28, RF-017-27, RF-015-02, RF-015-29; plan 017 §5.2.3 «des.road_propose», §5.4 A1 a A5, §5.7 P-8 y P-14; D-19) --------------------------------
+
+PROPOSE_CODE = "RDW-000"
+"""El código de pista con el que una propuesta nombra el campo de sus rechazos (``des.road.rdw_000.origin``): **no es el de una entidad** (las entidades empiezan en ``RDW-001`` y una propuesta no
+lo es: no está en el registro, no encadena y no tiene parámetros de entidad), sino el de la ficha de campos de la pista de la que la propuesta toma sus rechazos (P-14: lo mismo hasta la ruta y la rasante)."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedProposal:
+    """Lo que se lee y se comprueba antes de calcular «Proponer el trazado» (:func:`prepare_propose_units`): el ``job`` (el ``RoadJob`` «trazar»: todo lo leído y nada del proyecto), lo que anotará la
+    operación (``start``: su tipo ``des.road_propose``, sus ajustes con lo que resolvió la preparación —:data:`~.provenance.RESOLVED`—, sus entradas y los parámetros del perfil), la ``version`` (la
+    editable), el nombre del dato de la superficie de partida (``start_surface``), la capa de origen (``layer``), el ``profile`` (el perfil de pista de la versión, ya comprobado), sus ``values``
+    resueltos y comprobados (por último segmento de su clave) y el ``fid`` del primer punto que es de la capa. **No lleva** código de entidad, filas de parámetros de entidad, apoyos ni avisos de la
+    partida: una propuesta no es una entidad (P-8) y no graba ninguna superficie."""
+
+    job: RoadJob
+    start: OperationStart
+    version: Version
+    start_surface: str
+    layer: str
+    profile: road_profiles.RoadProfile
+    values: Mapping[str, Any]
+    fid: int = 0
+
+    @property
+    def op_type(self) -> str:
+        """El tipo de la operación (``des.road_propose``)."""
+        return self.start.op_type
+
+    @property
+    def version_uid(self) -> str:
+        """El uid de la versión de la propuesta."""
+        return self.version.uid
+
+
+def prepare_propose_units(project: StoreProject, request: RoadRequest, version: Version, masks: access.MaskSet, *, supersedes: str | None = None) -> Generator[None, None, PreparedProposal]:
+    """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan «Proponer el trazado» ``request`` en la versión editable ``version`` con las máscaras al día ``masks``
+    (RF-017-28, P-14): **lo mismo que la pista «trazar» hasta la ruta y la rasante** (:func:`prepare_road_units`) y nada de lo que es de una entidad —ni el código ni el nombre únicos en el
+    registro, ni la cadena (la propuesta no parte de la cadena de nadie), ni los apoyos que declara una pista, ni los avisos de su partida—: la capa de los puntos (``gis_fea_``; el origen, un punto
+    por su ``fid`` o su nombre, o un punto del eje de otra pista, ``RDW-001@s``, y el destino, otro punto, uno que cae en la huella de una entidad o una cota con su zona y su tolerancia), el
+    perfil, la superficie de partida (por defecto, :func:`default_start`) comparada con la rejilla del proyecto **antes de leer una celda**, las cotas de inicio y de fin (D-13), los parámetros de
+    la ruta (:func:`road_values`: ninguno tiene valor por defecto salvo el presupuesto), el destino por cota, las máscaras (RF-017-06: lo intocable y el peso de «preferible no afectar») y **la
+    búsqueda de intocables** de los sectores que toca el pasillo (RF-015-07). **Nada se escribe** (RF-015-03). Los rechazos nombran la capa, la propuesta, el campo (con :data:`PROPOSE_CODE`) y el
+    valor, y salen al avanzar y en este orden: la versión, la capa, el perfil, la superficie, los puntos, las cotas, los parámetros, la malla de la ruta, el destino por cota y un sector pendiente.
+    ``supersedes``: la operación hecha a la que sustituye (un recálculo). ``ValueError`` (un error del programa) si ``request`` no es de «trazar» o las máscaras no son de la versión."""
+    if masks.version_uid != version.uid:
+        raise ValueError(f"las máscaras son de otra versión, no de {version.code}")
+    if request.mode is not RoadMode.TRACE:
+        raise ValueError(f"«Proponer el trazado» usa la ruta (modo «trazar»), no «{request.mode.value}» (P-14)")
+    code, name = PROPOSE_CODE, request.name
+    registry = entities.registry(project, version.uid)
+    start_ref = request.start.strip()
+    if not start_ref:
+        proposed = default_start(project, version)
+        if proposed is None:
+            raise _reject("des.entity_param_missing", request, code, RoadParam.START, None)
+        start_ref = proposed.ref
+    start_name = _start_dataset(registry, version, name, code, start_ref, RoadParam.START)
+    yield
+    layer = _layer(project, request.layer)
+    _kind(layer, "point", request, code)
+    profile = _profile(project, version, request, code)
+    yield
+    frame = project_frame(project)
+    grid = frame.grid
+    surface = yield from read_surface_steps(project, start_name, version_uid=version.uid, expect=frame, role=_START_ROLE)
+    values_start = surface.values
+    if not grid.same_geometry(masks.grid):
+        raise ValueError("la rejilla de las máscaras no es la del proyecto")
+    resolved = yield from _resolve_points(project, version, registry, request, code, name, layer, grid, values_start, start_name, frame)
+    start_level, end_level = resolved.origin_level, resolved.destination_level
+    if any(getattr(request, attr) is not None for attr in ("dest_level_m", "dest_tol_m", "dest_zone")) and request.destination is None:
+        end_level = None
+    chosen_levels: dict[RoadParam, float | None] = {RoadParam.START_LEVEL: None, RoadParam.END_LEVEL: None}
+    for param, asked_level, derived in ((RoadParam.START_LEVEL, request.start_level_m, start_level), (RoadParam.END_LEVEL, request.end_level_m, end_level)):
+        level = resolve_level(param, asked_level, None, derived)
+        if level.origin is None:  # la da la persona: se comprueba contra el terreno (RF-017-04)
+            _check_level(request, code, param, level.value_m, values_start)
+        chosen_levels[param] = level.value_m
+    resolved_start, resolved_end = chosen_levels[RoadParam.START_LEVEL], chosen_levels[RoadParam.END_LEVEL]
+    values = road_values(request, code, start_ref=start_ref, start_level_m=resolved_start, end_level_m=resolved_end)
+    yield
+    try:
+        road_net.mesh_factor(grid, values[RoadParam.MESH.value])
+    except ValueError:
+        raise _reject("des.road_mesh_not_multiple", request, code, RoadParam.MESH, values[RoadParam.MESH.value], step=grid.dx) from None
+    route = RouteParams.from_values(values)
+    destination: LevelDestination | None = None
+    zone_layer: str | None = None
+    if request.destination is None:
+        destination, zone_layer = _level_destination(project, request, code)
+    cut, fill = admitted_pair(masks, (slice(0, grid.nrows), slice(0, grid.ncols)))
+    untouchable = untouchable_cells(masks)
+    weight = avoid_weight(masks)
+    geometry = RoadGeometry(origin=resolved.origin, destination=destination if destination is not None else resolved.destination)
+    asked = replace(request, start=start_ref)
+    job = RoadJob(asked, code, profile, grid, values_start, cut, fill, untouchable, geometry, route, resolved_start, resolved_end, weight)
+    yield
+    sectors = design_sectors(project, version.uid)
+    mesh: road_net.RouteMesh | None = None
+    if destination is not None or any(item.pending for item in sectors):
+        mesh = road_net.route_mesh(grid, values_start, route.mesh_m, untouchable, avoid_weight=weight)
+    if destination is not None:
+        assert mesh is not None
+        nodes = Grid(west=grid.west, north=grid.north, dx=mesh.mesh_m, dy=mesh.mesh_m, ncols=mesh.shape[1], nrows=mesh.shape[0])
+        if not bool((polygons_cells(destination.zone, nodes) & mesh.walkable).any()):
+            raise _reject("des.road_dest_zone_empty", request, code, RoadParam.DEST_ZONE, str(request.dest_zone))
+        road_route.route_target(job, mesh)  # ``des.road_dest_level_out_of_zone``: la cota que ningún nodo de la zona alcanza
+    yield
+    if any(item.pending for item in sectors):
+        zone = yield from _pending_zone(job, mesh)
+        refs, labels = sector_layout(project, masks)
+        touched = pipeline.touched_in(refs, labels, zone)
+        refuse_pending(item for item in sectors if item.code in touched)  # RF-015-07
+    yield
+    inputs = provenance.road_inputs(request.layer, start_name, masks.uses(), ())
+    read: list[Use] = []
+    if resolved.axis is not None:  # lo que lee del eje de otra pista (RF-017-03): entrada, para que si cambia la propuesta quede obsoleta; sin apoyo declarado: una propuesta no es una entidad
+        read.append(Use(resolved.axis, provenance.ROAD_AXIS_ROLE))
+    for item in resolved.surfaces.values():  # la superficie y la huella de la entidad del destino: lo que lee, no lo que pisa
+        if item.surface != start_name:
+            read.extend((Use(item.surface, provenance.ROAD_OTHER_DESIGN_ROLE), Use(item.table, provenance.ROAD_OTHER_DESIGN_ROLE)))
+    if zone_layer is not None:
+        read.append(Use(zone_layer, provenance.ENTITY_LAYER_ROLE))
+    settled = {"origin": resolved.origin, "destination": None if destination is not None else resolved.destination, "start_level_m": resolved_start, "end_level_m": resolved_end}
+    begun = _start(project, provenance.ROAD_PROPOSE, name, version, masks, provenance.propose_settings(asked, settled), (*inputs, *(use for use in read if use not in inputs)),
+                   provenance.propose_params(profile.code), supersedes)
+    yield
+    return PreparedProposal(job, begun, version, start_name, request.layer, profile, MappingProxyType(values), resolved.fid)
+
+
+def prepare_propose(project: StoreProject, request: RoadRequest, *, version: str | None, masks: access.MaskSet | None = None, supersedes: str | None = None) -> PreparedProposal:
+    """La preparación entera de :func:`prepare_propose_units` de una vez (sin ceder el hilo): la :class:`PreparedProposal`, con los mismos rechazos y sin escribir nada. ``version``: la versión activa
+    (su uid o su código; ``VersionError`` ``core.version_required`` si no hay y ``core.version_not_editable`` si no se edita, RF-009-21); ``masks``: las de esa versión (al día; sin ellas se
+    cargan, compilándolas antes si faltan)."""
+    found = require_version(project, version, provenance.ROAD_PROPOSE)
+    work = prepare_propose_units(project, request, found, _loaded_masks(project, found, masks), supersedes=supersedes)
+    while True:
+        try:
+            next(work)
+        except StopIteration as stop:
+            result: PreparedProposal = stop.value
+            return result
+
+
+def propose_compute_steps(job: RoadJob, *, surface: str | None = None, budget_s: float = road_net.STEP_BUDGET_S) -> Generator[Progress, None, ProposalOutcome]:
+    """Los pasos que calculan «Proponer el trazado» de ``job`` (RF-017-28, RF-015-03, RF-015-29; plan 017 §5.4 A1 a A5, P-14), **sin proyecto y sin escribir nada** (``yield from``; cerrar el
+    generador, Esc, no deja nada ni cambia ninguna entrada): devuelve (valor de ``StopIteration``) el :class:`~.road_model.ProposalOutcome`, por pasos de ``budget_s`` como mucho (RNF-017-06).
+    **La ruta y la rasante de «trazar» y nada de la sección** (A6 a A9: la propuesta no toca ninguna superficie, D-19): la red 2D desde el destino y desde el origen, el pasillo, la ruta 3D
+    con su presupuesto de estados (sin ruta, el rechazo de RF-017-12), el eje con curvas (A4, con el rechazo de RF-017-14) y la rasante acotada (A5, con el rechazo de RF-017-16); los avisos del
+    eje y de la pendiente media (**avisa y no pide confirmación**: no graba nada). ``surface`` es el nombre del dato de la superficie de partida (para el rechazo por falta de dato). Las dos cifras
+    del plan: la longitud del eje y la pendiente máxima. ``ValueError`` si el trabajo no es de «trazar»."""
+    if not isinstance(job, RoadJob):
+        raise TypeError(f"el trabajo de una propuesta es RoadJob, no {job!r}")
+    if job.mode is not RoadMode.TRACE:
+        raise ValueError(f"«Proponer el trazado» usa la ruta (modo «trazar»), no «{job.mode.value}» (P-14)")
+    name = job.request.name
+    shown = job.request.start if surface is None else surface
+    yield _stage(0, f"Calculando el trazado «{name}»…")
+    route, corridor = yield from _route_steps(job, budget_s)
+    arrival = road_route.arrival_of(job, route)
+    yield _stage(3, f"Formando el eje y la rasante de «{name}»…")
+    axis = _form_axis(job, route, arrival)
+    terrain = _terrain_on(job, axis, shown)
+    levels = _levels(job, axis, terrain)
+    found, exceeded = _axis_notices(job, axis, levels)
+    yield _stage(_STAGES - 1, f"Cifras del trazado «{name}»…")
+    stations = axis.stations
+    steps = np.abs(np.diff(levels)) / np.diff(stations)
+    figures = provenance.propose_figures(name, {"des.road_length_m": axis.length_m, "des.road_gradient_max_pct": float(steps[int(np.argmax(steps))]) * 100.0})
+    assert job.route is not None and route.cost is not None
+    summary = RouteReport(route.mesh.mesh_m, job.route.margin_m, corridor.nodes, corridor.lower_bound_m, len(route.nodes), route.expanded, route.seen, route.budget, float(route.cost), route.turns,
+                          arrival)
+    outcome = ProposalOutcome(name, axis, terrain, levels, figures, found, summary, exceeded)
+    yield _stage(_STAGES, f"Trazado «{name}» calculado")
+    return outcome
+
+
+def propose_layer_rows(outcome: ProposalOutcome) -> tuple[road_layer.RouteLayerRow, ...]:
+    """La fila de la capa propuesta ``des_rpl_`` (RF-017-28) del resultado ``outcome``: **una**, la línea con su nombre y, por vértice, la x y la y absolutas de cada estación del eje (float64,
+    exactas) y **la rasante en la Z**. Solo depende de lo que se calcula, no del proyecto: lo repite la reproducción desde lo congelado."""
+    if not isinstance(outcome, ProposalOutcome):
+        raise TypeError(f"la capa propuesta sale de un ProposalOutcome, no {outcome!r}")
+    return (road_layer.RouteLayerRow(outcome.name, np.column_stack([outcome.axis.points, outcome.levels])),)
+
+
+def create_propose_steps(project: StoreProject, writer: DesignWriter, prepared: PreparedProposal, outcome: ProposalOutcome, *, budget_s: float = road_net.STEP_BUDGET_S
+                         ) -> Generator[Progress, None, Stored]:
+    """**«Crear» una propuesta del trazado** por pasos (spec 017, T27; RF-017-28, RF-015-29, P-8, D-19): prepara la capa propuesta en su temporal (``des_rpl_``, :func:`propose_layer_rows`) y la
+    registra en **una** transacción (:meth:`~.store.DesignWriter.commit` de ``writer``, el de «Calcular»): la operación (``des.road_propose``: sus entradas —la capa de los puntos, la partida, las
+    máscaras—, sus ajustes y los parámetros del perfil), **la capa, que es del usuario desde que se crea** (``qgis_editable``: se edita en QGIS y no se bloquea), las dos cifras con el ámbito del nombre
+    de la operación y el mensaje. **No escribe ninguna superficie ni ningún parámetro, no llama a ``des.entity_layer`` ni a ``des.declare_constraints``: no es una entidad.** Si algo falla, o lo que
+    consume cambió desde que se calculó (``des.input_changed``), no queda nada y el error sigue. Cerrar el generador antes de que termine borra los temporales. Con un escritor reanudado
+    (``DesignWriter.resume``: un recálculo, :func:`run_propose`) la operación ya empezó y ``commit`` la completa. Devuelve lo guardado (:class:`~.store.Stored`)."""
+    if not isinstance(outcome, ProposalOutcome):
+        raise TypeError(f"se crea la propuesta de un ProposalOutcome, no {outcome!r}")
+    name = outcome.name
+    yield Progress(_STORE_PHASE, 0, 1, f"Guardando el trazado «{name}»…")
+    yield from pipeline.forward(_store_steps(writer.route_layer_steps(propose_layer_rows(outcome)), budget_s, "la capa propuesta del trazado"))
+    yield Progress(_STORE_PHASE, 1, 1, f"Registrando el trazado «{name}»…")
+    return writer.commit(None if writer.handle is not None else prepared.start, figures=outcome.figures, message=outcome.message)
+
+
+def create_propose(project: StoreProject, writer: DesignWriter, prepared: PreparedProposal, outcome: ProposalOutcome) -> Stored:
+    """:func:`create_propose_steps` de una vez (sin ceder el hilo): lo guardado (:class:`~.store.Stored`), con los mismos rechazos y la misma transacción."""
+    work = create_propose_steps(project, writer, prepared, outcome)
+    while True:
+        try:
+            next(work)
+        except StopIteration as stop:
+            result: Stored = stop.value
+            return result
+
+
+def _refuse_edited_proposal(project: StoreProject, prepared: PreparedProposal, supersedes: str | None) -> None:
+    """**Repetir una propuesta no sobrescribe lo que la persona dibujó** (principio 7, P-8): si la capa que va a sustituir se editó fuera de Geoblender (su dato ya no lo escribió la operación que se
+    repite, sino la edición externa), ``des.route_layer_edited`` y no se empieza nada. Sin operación que sustituir, o con la capa tal como la escribió la operación, no hace nada. Solo lee."""
+    if supersedes is None:
+        return
+    dataset = provenance.dataset_name(provenance.ROUTE_LAYER_TABLE, prepared.job.request.name)
+    with project.read() as conn:
+        record = dataset_registry.get(conn, dataset, version_uid=prepared.version.uid)
+    if record is not None and record.live and record.operation_uid != supersedes:
+        raise DesignError("des.route_layer_edited", obj=f"Propuesta «{prepared.job.request.name}»", field="capa propuesta", value=record.locator, table=record.locator,
+                          operation=prepared.job.request.name)
+
+
+def _check_recorded_proposal(handle: OperationHandle, prepared: PreparedProposal) -> None:
+    """Los parámetros que anotó la operación al empezar son los que leyó el cálculo al prepararse (como :func:`_check_recorded`): los del perfil; si uno cambió entre las dos cosas, el resultado
+    ya no le corresponde (``des.input_changed``, con el parámetro)."""
+    profile = prepared.profile
+    read = {road_profile_key(profile.code, param): getattr(profile, param.value) for param in RoadProfileParam if param is not RoadProfileParam.CLASS}
+    for param in handle.params:
+        if param.key in read and param.value != read[param.key]:
+            raise DesignError("des.input_changed", obj=f"Parámetro «{param.key}»", field="parámetros", value=param.key)
+
+
+def run_propose(project: StoreProject, request: RoadRequest, *, version: str | None, masks: access.MaskSet | None = None, supersedes: str | None = None,
+                budget_s: float = road_net.STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Calcula y registra la propuesta ``request`` de **una vez**, sin pedir confirmación (spec 017, T27; RF-017-28, RF-015-02; el recálculo de lo obsoleto, :func:`~.store.recompute_run`; el «Crear»
+    tras «Calcular» es :func:`create_propose_steps`): prepara (:func:`prepare_propose`), empieza la operación ``des.road_propose`` **antes de calcular** —sustituye a ``supersedes``, quedándose con el
+    nombre de su dato— y devuelve su ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama: calculan (:func:`propose_compute_steps`), escriben la capa en su temporal y completan la
+    operación en una transacción (:func:`create_propose_steps` con el escritor reanudado); el último paso lleva lo guardado (:class:`~.store.Stored`). Cerrarlos antes, o un fallo, no dejan nada y la
+    operación queda cancelada o fallida. **No sobrescribe lo que la persona dibujó**: si la capa a la que sustituye se editó en QGIS, ``des.route_layer_edited`` al llamar, sin empezar nada.
+    Al llamar, sin empezar nada: los rechazos de :func:`prepare_propose`."""
+    prepared = prepare_propose(project, request, version=version, masks=masks, supersedes=supersedes)
+    _refuse_edited_proposal(project, prepared, supersedes)
+    handle = prepared.start.begin(project)
+    return handle, _propose_run(project, handle, prepared, budget_s)
+
+
+def _propose_run(project: StoreProject, handle: OperationHandle, prepared: PreparedProposal, budget_s: float) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        _check_recorded_proposal(handle, prepared)
+        outcome: ProposalOutcome = yield from propose_compute_steps(prepared.job, surface=prepared.start_surface, budget_s=budget_s)
+        stored: Stored = yield from create_propose_steps(project, writer, prepared, outcome, budget_s=budget_s)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+
+
+def recompute_propose(request: RecomputeRequest, *, budget_s: float = road_net.STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite la operación ``des.road_propose`` de ``request`` (:func:`~.store.recompute_run`; «Recalcular lo obsoleto», RF-008-26; spec 017, T27; RF-017-28, RF-015-02): la propuesta de sus ajustes
+    (:func:`~.provenance.propose_request`: la petición entera, sin parámetros de entidad) con **lo vigente hoy** —la capa de los puntos, la superficie de partida, las máscaras y los valores del
+    perfil, que son entradas o parámetros de la operación: cambiar uno la deja obsoleta, con su causa, y recalcular la repite con lo nuevo; el origen, el destino y las cotas se resuelven otra
+    vez—. Devuelve lo de :func:`run_propose`, que **no sobrescribe la capa si se editó en QGIS**. ``TypeError`` si la petición no es una ``RecomputeRequest``; ``ValueError`` si no es de
+    ``des.road_propose`` o sus ajustes no son los de una propuesta."""
+    if not isinstance(request, RecomputeRequest):
+        raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
+    if request.op_type != provenance.ROAD_PROPOSE:
+        raise ValueError(f"recompute_propose repite {provenance.ROAD_PROPOSE}, no «{request.op_type}»")
+    project: StoreProject = request.project  # type: ignore[assignment]
+    found = require_version(project, request.version, provenance.ROAD_PROPOSE)
+    return run_propose(project, provenance.propose_request(request.settings), version=found.uid, supersedes=request.operation_uid, budget_s=budget_s)

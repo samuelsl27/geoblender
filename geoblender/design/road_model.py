@@ -83,6 +83,7 @@ __all__ = [
     "LimitCause",
     "NoRouteCause",
     "PlatformReach",
+    "ProposalOutcome",
     "RoadGeometry",
     "RoadJob",
     "RoadMode",
@@ -658,6 +659,41 @@ class RoadOutcome:
             raise ValueError(f"la superficie de partida {whole.shape} no contiene la ventana de la pista ({rows}, {cols})")
         whole[rows, cols] = self.surface
         return whole
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ProposalOutcome:
+    """El cálculo de «Proponer el trazado» (spec 017, T27; RF-017-28; plan 017 §5.4 A1 a A5, P-14): su ``name``, el eje con curvas (``axis``), el terreno de partida bajo sus estaciones (``terrain``, m),
+    la rasante en ellas (``levels``, m), las ``figures`` (la longitud y la pendiente máxima: ``provenance.propose_figures``), los ``notices`` en orden estable, la ruta (``route``: la malla, la holgura
+    del pasillo y lo que expandió la búsqueda; el mismo informe que el de una pista «trazar») y si la pendiente media pasa de la media máxima del perfil (``mean_exceeded``: RF-017-17; una propuesta
+    **avisa** y no pide confirmación: no graba ninguna superficie). **No tiene** superficie, huella, sección ni borde: A6 a A9 no son de la propuesta, que no toca ninguna superficie (D-19)."""
+
+    name: str
+    axis: Axis
+    terrain: np.ndarray
+    levels: np.ndarray
+    figures: tuple[FigureSpec, ...] = ()
+    notices: tuple[Notice, ...] = ()
+    route: RouteReport | None = None
+    mean_exceeded: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _label(self.name, "el nombre de una propuesta"))
+        stations = (int(self.axis.stations.shape[0]),)
+        for attr, what in (("terrain", "el terreno bajo el eje"), ("levels", "la rasante")):
+            object.__setattr__(self, attr, _readonly(getattr(self, attr), stations, np.float64, what))
+        object.__setattr__(self, "figures", _tuple_of(self.figures, FigureSpec, "las cifras de una propuesta"))
+        object.__setattr__(self, "notices", _tuple_of(self.notices, Notice, "los avisos de una propuesta"))
+        object.__setattr__(self, "mean_exceeded", _flag(self.mean_exceeded, "«mean_exceeded» de una propuesta"))
+
+    @property
+    def message(self) -> str:
+        """El mensaje de la operación: la propuesta y la longitud de su eje, en español. Es lo que recibe ``DesignWriter.commit`` al crearla."""
+        found = {figure.key: figure.value for figure in self.figures}
+        head = f"Trazado «{self.name}» propuesto"
+        if found.get("des.road_length_m") is None:
+            return head
+        return f"{head}: {format_value(round(float(found['des.road_length_m']), 2))} m de eje (capa editable en QGIS)"
 
 
 # --- La accesibilidad: lo que se pide --------------------------------------------------------------------------------------

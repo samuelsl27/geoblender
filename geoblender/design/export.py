@@ -13,7 +13,9 @@ superficies de una cantera (``des_exp_``, ``des_fin_``) y sus envolventes (``des
 (``des_rcn_``); de la 015 (T30; RF-015-27; :data:`ENTITY_GRIDS`), la superficie que deja una entidad
 (``des_psf_``), como las de la 013; de la 016 (T34; RF-016-24, RF-016-09; :data:`SUPPORTED_GRIDS`), **la base de los
 acopios** de un material (``des_stb_``), **su espesor** (``des_stt_``), **el terreno sin acopios** (``des_stg_``) y **el
-espesor de un cuerpo apoyado** (``des_bdt_``); las tablas no son rejillas y no se exportan aquí. :func:`stored_grid` (T28)
+espesor de un cuerpo apoyado** (``des_bdt_``); de la 017 (T27; RF-017-27; :data:`ROAD_GRIDS`), **lo alcanzable** de una accesibilidad (``des_acc_``: un
+**código** por celda, 1 alcanzable y 0 no, con su leyenda) —la superficie de una pista es ``des_psf_``, de las de la 015—; las tablas no son rejillas y no se exportan aquí (salvo **la rasante de una pista a
+CSV**, :func:`export_road_csv`). :func:`stored_grid` (T28)
 dice cuál es y de qué versión el dato que elige quien exporta (su uid o su nombre): solo una rejilla
 **viva** del diseño (``des.export_not_grid``); de una entidad, también por su tabla (``des_epr_``, la que
 enseña la vista), que da su superficie.
@@ -59,11 +61,20 @@ abierto el destino (QGIS), ``gis.raster_target_locked`` y el anterior intacto; u
 
 **Por pasos** (RNF-013-07): el primero lee la rejilla registrada (una unidad) y cada uno de los
 siguientes escribe una tesela; el último pone el fichero en su sitio. Cerrar los pasos antes (Esc)
-no deja nada. Python puro (nivel 8).
+no deja nada.
+
+**La rasante de una pista a CSV** (spec 017, T27; RF-017-27; decisión T27-a de la sesión principal; :func:`export_road_csv`, :func:`road_csv_bytes`): su eje por estaciones (``des_rdx_``: abscisa, x, y, cota del
+terreno, cota de la rasante y pendiente, **en m y en %**), con la convención del CSV de la cubicación (``reserves.export``): UTF-8 con BOM, «;» de separador, filas acabadas en CRLF y los números con **coma
+decimal**, sin separador de miles ni exponente, el decimal más corto que vuelve al mismo float64; la primera celda no es «ID». Como exportar a GeoTIFF **no es una operación** (D-29 de la 011): se escribe desde lo
+registrado, con el proyecto en solo lectura si el destino está fuera de él y desde una versión que ya no es editable, y **no modifica nada del proyecto**; mismo destino (:func:`check_target`, con la extensión de
+un CSV), mismo temporal con ``fsync`` y ``os.replace``. Python puro (nivel 8).
 """
 
 from __future__ import annotations
 
+import csv
+import io
+import os
 import sqlite3
 import sys
 from collections.abc import Callable, Generator, Mapping
@@ -82,7 +93,7 @@ from ..core.paths import ReadOnlyDirs, check_path_length
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
 from ..gis.geotiff.reader import read_geotiff
-from ..gis.geotiff.writer import DELIVERABLE_NODATA, temporary_path, write_steps
+from ..gis.geotiff.writer import DELIVERABLE_NODATA, target_locked, temporary_path, write_failed, write_steps
 from ..gis.messages import GisError
 from ..gis.provenance import export_locator, inside_project
 from ..gis.raster import Raster
@@ -94,6 +105,8 @@ from .quarry import CLASS_NAMES
 
 __all__ = [
     "CODE_UNIT",
+    "CSV_COLUMNS",
+    "CSV_SUFFIXES",
     "ENTITY_GRIDS",
     "GRIDS",
     "LEGENDS",
@@ -102,17 +115,22 @@ __all__ = [
     "PART_THICKNESS",
     "PROJECT_VERSION",
     "QUARRY_GRIDS",
+    "ROAD_GRIDS",
     "SUFFIXES",
     "SUPPORTED_GRIDS",
     "UNIT",
     "ExportProject",
     "StoredGrid",
+    "StoredRoad",
     "check_target",
     "compose_ground",
     "export_grid",
     "export_grid_steps",
+    "export_road_csv",
     "metadata_items",
+    "road_csv_bytes",
     "stored_grid",
+    "stored_road",
     "thickness_between",
 ]
 
@@ -131,10 +149,13 @@ SUPPORTED_GRIDS: tuple[str, ...] = (declared.STOCKPILE_BASE_GRID, declared.STOCK
 acopios de un material, el terreno sin acopios (``des_stg_``: se exporta **compuesto entero**, :func:`compose_ground`) y el
 espesor de un cuerpo apoyado (``des_bdt_``). Son datos **dispersos** (sin dato fuera de las huellas) salvo el terreno. Una
 detección del proyecto (D-15) las tiene sin versión."""
+ROAD_GRIDS: tuple[str, ...] = (declared.ACCESS_GRID,)
+"""Las rejillas de la 017 que se pueden exportar (T27; RF-017-27): **lo alcanzable** de una accesibilidad (``des_acc_``), una rejilla de **códigos** (1 alcanzable y 0 no; :data:`LEGENDS`). La superficie
+que deja una pista es ``des_psf_``: una de :data:`ENTITY_GRIDS`."""
 GRIDS: tuple[str, ...] = (declared.ENVELOPE_GRID, declared.DESIGN_GRID, declared.BERMS_GRID,
-                          *QUARRY_GRIDS, *ENTITY_GRIDS, *SUPPORTED_GRIDS)
+                          *QUARRY_GRIDS, *ENTITY_GRIDS, *SUPPORTED_GRIDS, *ROAD_GRIDS)
 """Las familias de datos de ``des`` que son una rejilla (de cotas o de códigos) y se pueden
-exportar: las tres de la 013, las de :data:`QUARRY_GRIDS`, las de :data:`ENTITY_GRIDS` y las de :data:`SUPPORTED_GRIDS`."""
+exportar: las tres de la 013, las de :data:`QUARRY_GRIDS`, las de :data:`ENTITY_GRIDS`, las de :data:`SUPPORTED_GRIDS` y las de :data:`ROAD_GRIDS`."""
 PART_THICKNESS = "thickness"
 """La parte ``thickness`` de una entidad apoyada (``stored_grid(…, part=PART_THICKNESS)``, ``export_grid_steps(…, part=…)``):
 su espesor, en vez de su superficie. El de un cuerpo es el dato que guarda (``des_bdt_``); el de una retirada y el de un
@@ -144,12 +165,13 @@ PROJECT_VERSION = "proyecto"
 LEGENDS: Mapping[str, tuple[tuple[int, str], ...]] = MappingProxyType({
     declared.CLASSIFICATION_GRID: tuple((item.code, CLASS_NAMES[item]) for item in CellClass),
     declared.EXCAVATION_AREA_GRID: ((1, "recinto excavable"),),
+    declared.ACCESS_GRID: ((0, "no alcanzable"), (1, "alcanzable")),
 })
 """Las rejillas de **códigos** (spec 014, T33; RF-014-32; P-1) con su leyenda: por código, el
 nombre de su clase en español, el de la vista y la barra N (T51; la clasificación, los de
 ``CellClass`` con ``quarry.CLASS_NAMES``: 0 sin diferencia, 1 desdoblado, 2 relleno de
-restauración; el recinto, 1 «recinto excavable», como en spec 014 §6). Las demás rejillas son
-cotas en metros."""
+restauración; el recinto, 1 «recinto excavable», como en spec 014 §6; de la 017, T27, lo alcanzable de una accesibilidad: 0 «no alcanzable» y 1
+«alcanzable», como ``des_acc_``). Las demás rejillas son cotas en metros."""
 PARTS: tuple[str, ...] = ("", PART_THICKNESS)
 """Lo que se puede pedir de una entidad al exportarla: su rejilla (``""``) o su espesor (:data:`PART_THICKNESS`)."""
 SUFFIXES: tuple[str, ...] = (".tif", ".tiff")
@@ -365,8 +387,8 @@ def stored_grid(project: ExportProject, ref: str, *, version: str = "", part: st
 
 
 def check_target(path: str | Path, *, project: ExportProject, read_only: ReadOnlyDirs,
-                 overwrite: bool) -> Path:
-    """El destino ``path`` del GeoTIFF, comprobado sin escribir nada (véase el módulo):
+                 overwrite: bool, suffixes: tuple[str, ...] = SUFFIXES, label: str = "GeoTIFF") -> Path:
+    """El destino ``path`` del GeoTIFF (o, con ``suffixes`` y ``label``, de otro entregable: el CSV de la rasante, :data:`CSV_SUFFIXES`; T27), comprobado sin escribir nada (véase el módulo):
     ``GisError`` ``gis.export_extension_invalid``, ``gis.export_inside_project`` o
     ``gis.export_target_exists``; ``DesignError`` ``des.export_read_only_project``;
     ``ProvenanceError`` ``core.write_target_*`` (RF-008-15); ``core.path_too_long``."""
@@ -374,10 +396,10 @@ def check_target(path: str | Path, *, project: ExportProject, read_only: ReadOnl
         raise TypeError(f"«overwrite» es verdadero o falso, no {overwrite!r}")
     target = Path(path)
     name = target.name
-    if target.suffix.lower() not in SUFFIXES:
+    if target.suffix.lower() not in suffixes:
         raise GisError("gis.export_extension_invalid", obj=name, field=_FIELD_EXTENSION,
-                       value=target.suffix or "—", file=name, format="GeoTIFF",
-                       expected="/".join(SUFFIXES))
+                       value=target.suffix or "—", file=name, format=label,
+                       expected="/".join(suffixes))
     root = Path(project.root)
     if inside_project(root, target):
         if not project.writable:
@@ -527,3 +549,114 @@ def export_grid(project: ExportProject, family: str, name: str, path: str | Path
                 next(steps)
             except StopIteration as stop:
                 return stop.value  # type: ignore[no-any-return]
+
+
+# --- La rasante de una pista a CSV (spec 017, T27; RF-017-27; decisión T27-a) -------------------
+
+
+CSV_SUFFIXES: tuple[str, ...] = (".csv",)
+"""La extensión del CSV de la rasante."""
+CSV_COLUMNS: tuple[str, ...] = ("Abscisa (m)", "X (m)", "Y (m)", "Cota del terreno (m)", "Cota de la rasante (m)", "Pendiente (%)")
+"""Los títulos del CSV de la rasante, con su unidad, en su orden (RF-017-27: abscisa, x, y, cota del terreno, cota de la rasante y pendiente, en m y en %). La primera celda no es «ID»: Excel tomaría el
+fichero por SYLK."""
+_CSV_ENCODING = "utf-8-sig"
+_CSV_SEPARATOR = ";"
+_CSV_LINE_END = "\r\n"
+_CSV_DECIMAL = ","
+_ROAD_AXIS_COLUMNS = "station_m, x, y, terrain_m, level_m, gradient_pct"
+_FIELD_ROAD = "pista"
+
+
+def _csv_number(value: float) -> str:
+    """Un número con coma decimal: el decimal más corto que vuelve al mismo float64, sin exponente ni separador de miles; −0, «0» (como el CSV de la cubicación)."""
+    text = np.format_float_positional(value, unique=True, trim="-")
+    return ("0" if text == "-0" else text).replace(".", _CSV_DECIMAL)
+
+
+def road_csv_bytes(stations: object) -> bytes:
+    """El CSV de la rasante de ``stations`` —una tabla ``(n, 6)`` con una fila por estación: abscisa, x, y, cota del terreno, cota de la rasante y pendiente— tal como lo escribe
+    :func:`export_road_csv`: BOM de UTF-8, «;» y CRLF, con los títulos de :data:`CSV_COLUMNS` y cada número con coma decimal y **sin pérdida** (el decimal más corto que vuelve al mismo float64).
+    ``ValueError`` (un error del programa) si no son al menos una estación de seis columnas finitas."""
+    table = np.asarray(stations, dtype=np.float64)
+    if table.ndim != 2 or table.shape[1] != len(CSV_COLUMNS) or table.shape[0] < 1 or not bool(np.isfinite(table).all()):
+        raise ValueError(f"la rasante de una pista son estaciones con {len(CSV_COLUMNS)} columnas finitas ({', '.join(CSV_COLUMNS)}), no una tabla {table.shape}")
+    stream = io.StringIO(newline="")
+    writer_ = csv.writer(stream, delimiter=_CSV_SEPARATOR, lineterminator=_CSV_LINE_END)
+    writer_.writerow(CSV_COLUMNS)
+    writer_.writerows([_csv_number(float(value)) for value in row] for row in table)
+    return stream.getvalue().encode(_CSV_ENCODING)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredRoad:
+    """El eje por estaciones de una pista calculada que se puede exportar (:func:`stored_road`): su dato (``des_rdx_<nombre>``), el nombre de su operación tal como está en el nombre de su dato (``pista_a_p1``)
+    y su versión (su uid y su código)."""
+
+    record: DatasetRecord
+    name: str
+    version_uid: str
+    version_code: str
+
+
+def stored_road(project: ExportProject, name: str, *, version: str) -> StoredRoad:
+    """El eje por estaciones de la pista ``name`` (su nombre de operación) en la versión ``version`` (uid o código): ``des_rdx_<nombre>`` **vivo y vigente** de esa versión. ``VersionError``
+    ``core.version_unknown`` si no existe; ``DesignError`` ``des.export_road_unknown`` si la versión no tiene esa pista calculada (o su dato está bloqueado, sustituido o descartado). No escribe nada.
+    ``TypeError`` si ``name`` o ``version`` no son textos."""
+    shown = _name(name)
+    found = _version(project, version)
+    if found is None:
+        raise ValueError("la rasante de una pista es de una versión: la versión no puede ser vacía")
+    dataset = declared.dataset_name(declared.ROAD_AXIS_TABLE, shown)
+    with project.read() as conn:
+        record = dataset_registry.get(conn, dataset, version_uid=found.uid)
+    if record is None or not record.live or record.status.value != "current":
+        raise DesignError("des.export_road_unknown", obj=shown, field=_FIELD_ROAD, value=shown, version=found.code, dataset=dataset)
+    return StoredRoad(record, record.name[len(declared.FAMILIES_BY_CODE[declared.ROAD_AXIS_TABLE].prefix):], found.uid, found.code)
+
+
+def _discard(temporary: Path) -> None:
+    try:
+        temporary.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _write_bytes(data: bytes, target: Path) -> None:
+    """``data`` en ``target`` por su temporal, ``fsync`` y ``os.replace``: con el destino abierto por otro programa, ``gis.raster_target_locked`` y el anterior intacto; un fallo del disco,
+    ``gis.raster_write_failed``; en los dos, sin temporal."""
+    name = target.name
+    temporary = temporary_path(target)
+    try:
+        with temporary.open("wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException as error:
+        _discard(temporary)
+        if isinstance(error, OSError):
+            raise write_failed(name, error) from None
+        raise
+    try:
+        os.replace(temporary, target)
+    except OSError as error:
+        _discard(temporary)
+        if isinstance(error, PermissionError):  # Windows: otro programa lo tiene abierto
+            raise target_locked(name) from None
+        raise write_failed(name, error) from None
+
+
+def export_road_csv(project: ExportProject, name: str, path: str | Path, *, version: str, read_only: ReadOnlyDirs, overwrite: bool = False) -> Path:
+    """La rasante de la pista ``name`` de la versión ``version`` (uid o código) a CSV en ``path`` (RF-017-27; T27-a; véase el módulo): una fila por estación de su eje por estaciones (``des_rdx_``), con la
+    abscisa, la x y la y, la cota del terreno, la cota de la rasante y la pendiente del tramo que empieza en ella, **en m y en %**. Al llamar, antes de escribir nada, la versión (``VersionError``), que la
+    pista esté calculada en ella (:func:`stored_road`, ``DesignError`` ``des.export_road_unknown``) y el destino (:func:`check_target` con la extensión de un CSV); **no modifica nada del proyecto** (no es una
+    operación). Devuelve ``path``. ``gis.dataset_file_missing`` no aplica (es una tabla); una tabla dañada o vacía (sus filas se borraron fuera de Geoblender) es ``des.export_road_unknown``."""
+    found = stored_road(project, name, version=version)
+    target = check_target(path, project=project, read_only=read_only, overwrite=overwrite, suffixes=CSV_SUFFIXES, label="CSV")
+    try:
+        with project.read() as conn:
+            rows = conn.execute(f'SELECT {_ROAD_AXIS_COLUMNS} FROM "{found.record.locator}" ORDER BY station_m').fetchall()
+        data = road_csv_bytes(np.asarray(rows, dtype=np.float64).reshape(-1, len(CSV_COLUMNS)))
+    except (sqlite3.Error, ValueError):
+        raise DesignError("des.export_road_unknown", obj=name, field=_FIELD_ROAD, value=name, version=found.version_code, dataset=found.record.name) from None
+    _write_bytes(data, target)
+    return target

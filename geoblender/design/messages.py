@@ -561,6 +561,12 @@ CATALOG: tuple[Message, ...] = (
         "({dataset}): elija una envolvente, una superficie de diseño o una rejilla de bermas "
         "calculada en esa versión; no se ha escrito nada.",
     ),
+    # La rasante de una pista a CSV (spec 017, T27; RF-017-27).
+    Message(
+        "des.export_road_unknown",
+        "Version {version} has no haul road «{value}» calculated whose gradient line can be exported ({dataset}): choose a road calculated in that version; nothing has been written.",
+        "La versión {version} no tiene la pista «{value}» calculada de la que exportar su rasante ({dataset}): elija una pista calculada en esa versión; no se ha escrito nada.",
+    ),
     Message(
         "des.export_not_grid",
         "«{value}» is not a live grid of the design (an envelope, a design surface or a berm "
@@ -1917,6 +1923,14 @@ CATALOG: tuple[Message, ...] = (
         "the roads layer of {version}",
         "la capa de ejes de pistas de {version}",
         "note",
+    ),
+    # «Proponer el trazado» (spec 017, T27; RF-017-28, P-8, principio 7): su capa es del usuario desde que se crea; repetir la operación la sobrescribiría.
+    Message(
+        "des.route_layer_edited",
+        "The layer «{table}» of the proposal «{operation}» was edited outside Geoblender (it is yours: it is edited by hand in QGIS) and repeating the proposal would overwrite what you drew: keep it, "
+        "or discard the proposal and propose the route again with another name.",
+        "La capa «{table}» de la propuesta «{operation}» se editó fuera de Geoblender (es suya: se edita a mano en QGIS) y repetir la propuesta sobrescribiría lo que usted dibujó: consérvela, o "
+        "descarte la propuesta y proponga el trazado otra vez con otro nombre.",
     ),
     # Traer las entidades de otra versión (RF-015-18, RF-009-01; D-18; T26): lo que se rechaza y lo que se avisa.
     Message(
