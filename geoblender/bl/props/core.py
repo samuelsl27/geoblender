@@ -218,9 +218,10 @@ OBJECT_KINDS: list[tuple[str, str, str]] = [
     # Spec 015 (T28; RF-015-25; plan 015 §5.1): una entidad de diseño de una versión (la plataforma), con su
     # huella y su eje. Spec 016 (T33; RF-016-14; plan 016 §5.5): también la retirada de un acopio, el contrafuerte
     # y el cuerpo apoyado, y la detección de acopios (la de una versión o la del proyecto), con la huella de cada acopio.
+    # Spec 017 (T31; RF-015-25, RF-017-23; plan 017 §5.1): también la pista, con su huella y su eje 3D (la rasante en la Z).
     ("DESIGN_ENTITY", "Design entity",
-     "A design entity (a platform, the removal of a stockpile, a buttress or a supported body) or a stockpile "
-     "detection, drawn by its footprint"),
+     "A design entity (a platform, a haul road, the removal of a stockpile, a buttress or a supported body) or a "
+     "stockpile detection, drawn by its footprint (a haul road, also by its 3D axis)"),
 ]
 # El estado del dato al cargarlo (gb_dataset.status de un dato vivo, en mayúsculas).
 OBJECT_STATUSES: list[tuple[str, str, str]] = [

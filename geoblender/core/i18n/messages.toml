@@ -9301,8 +9301,8 @@ es = "Zona de una restricción declarada por una entidad"
 ["Design entity"]
 es = "Entidad de diseño"
 
-["A design entity (a platform, the removal of a stockpile, a buttress or a supported body) or a stockpile detection, drawn by its footprint"]
-es = "Una entidad de diseño (una plataforma, la retirada de un acopio, un contrafuerte o un cuerpo apoyado) o una detección de acopios, dibujada por su huella"
+["A design entity (a platform, a haul road, the removal of a stockpile, a buttress or a supported body) or a stockpile detection, drawn by its footprint (a haul road, also by its 3D axis)"]
+es = "Una entidad de diseño (una plataforma, una pista, la retirada de un acopio, un contrafuerte o un cuerpo apoyado) o una detección de acopios, dibujada por su huella (una pista, también por su eje 3D)"
 
 ["Discarded: it stays in the project as a record and is not used"]
 es = "Descartada: queda en el proyecto como registro y no se usa"
@@ -11313,3 +11313,11 @@ es = "Zona «{code}» que requiere acceso: no comunicada; lo alcanzable más pr�
 
 ["Zone «{code}» that requires access: not communicated"]
 es = "Zona «{code}» que requiere acceso: no comunicada"
+
+# --- La pista y la accesibilidad en la vista (spec 017, T31; RF-015-25, RF-017-23, RF-017-25; plan 017 §5.1): bl/scene/entity_views.py y bl/scene/des_views.py ---
+
+["Reachable by the roads"]
+es = "Lo alcanzable por las pistas"
+
+["The road «{name}» has no usable axis by stations: its axis is drawn at the height of its surface"]
+es = "La pista «{name}» no tiene un eje por estaciones utilizable: su eje se dibuja a la cota de su superficie"

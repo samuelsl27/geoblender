@@ -109,6 +109,7 @@ __all__ = [
     "prepare_access_units",
     "prepared_summary",
     "reachable_grid",
+    "read_access_surface",
     "read_access_zones",
     "read_zone_table",
     "recompute_access",
@@ -887,6 +888,14 @@ _ACCESS_OUTPUTS = (
 _ACCESS_INPUT = (
     "SELECT d.name FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
     "WHERE io.operation_uid = ? AND io.direction = 'in' AND io.item_kind = 'dataset' AND io.role = ? ORDER BY io.fid")
+
+
+def read_access_surface(conn: sqlite3.Connection, operation_uid: str) -> str | None:
+    """El nombre de la superficie (el de su dato) sobre la que se hizo la accesibilidad de la operación ``operation_uid`` (spec 017, T31; RF-015-25, RF-017-24; lo que dibuja la
+    vista de lo alcanzable, ``bl.scene.des_views``, para poner cada celda alcanzable a la cota de su superficie): su **entrada con el papel de superficie**
+    (:data:`~.provenance.SURFACE_ROLE`), no la final de una cantera ni la capa de entradas. ``None`` si la operación no la consumió. Solo lee."""
+    found = conn.execute(_ACCESS_INPUT, (operation_uid, provenance.SURFACE_ROLE)).fetchone()
+    return None if found is None else str(found[0])
 
 
 def read_zone_table(conn: sqlite3.Connection, table: str) -> tuple[AccessZone, ...]:

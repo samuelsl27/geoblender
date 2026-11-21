@@ -69,7 +69,7 @@ class StockpileViewsRegistrationTest(unittest.TestCase):
         self.assertEqual(self.entity_views.base_name("des_epr_cuerpo"), "des_bds_cuerpo")
         with self.assertRaises(ValueError):
             self.entity_views.detected_name("des_epr_acopios")
-        self.assertEqual(self.entity_views.COLORS.keys(), {"platform", "stockpile", "removal", "buttress", "body"})
+        self.assertEqual(self.entity_views.COLORS.keys(), {"platform", "stockpile", "removal", "buttress", "body", "road"})  # inventario: el de la pista, de la 017 (T31)
 
     def test_b_the_grids_of_the_stockpiles_and_the_bodies_load_like_any_surface(self) -> None:
         """RF-016-09, RF-016-24 (plan §5.5): la base, el espesor y el terreno sin acopios de una detección y el espesor y la base de un cuerpo

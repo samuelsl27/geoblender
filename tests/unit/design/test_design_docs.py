@@ -191,6 +191,9 @@ PENDING_015_API: frozenset[str] = frozenset({
     # La 017, T28 (la vista previa de la pista, ``design.preview``: la petición, lo que enseña, los tramos de la rasante por pd y pm y los bordes de la sección; lo demás de la T28 es de
     # ``design.road_store``, un módulo pendiente):
     "RoadAsk", "RoadPoint", "RoadPreview", "GradientStatus", "GradientStretch", "road_preview_steps", "gradient_stretches", "section_edges",
+    # La 017, T31 (el eje por estaciones de una pista que dibuja la vista, ``design.entity_store.read_road_axis``; la superficie de una accesibilidad, ``design.access_store.read_access_surface``,
+    # es de un módulo pendiente):
+    "read_road_axis",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 017, T04 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):

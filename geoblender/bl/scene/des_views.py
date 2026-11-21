@@ -71,6 +71,13 @@ base (``des_stb_<detección>_<material>``), el espesor (``des_stt_…``) y el te
 una malla con un vértice en cada celda con dato y ninguno en las demás (P-4: están dispersas). Del tipo
 :data:`KIND`, con un nombre cada una; el espesor se dibuja a su cota de «espesor» (no sobre una superficie), como
 la rejilla de cotas de berma.
+
+**Lo alcanzable de una accesibilidad** (spec 017, T31; HU-017-3; RF-017-24, RF-017-25; plan 017 §5.1; decisión T31-a: un objeto por accesibilidad, sin cadena
+ni huella): ``des_acc_<nombre>`` («Lo alcanzable por las pistas», del mismo tipo :data:`KIND`) es una zona (1 alcanzable y 0 no, sin NaN), **no una cota**: su
+cargador (:func:`load_access_grid`) la dibuja con la misma malla que las demás rejillas **sobre la superficie en que se calculó** (la entrada de su operación con el
+papel de superficie, leída en su versión), como el recinto excavable (:func:`load_area_grid`): un vértice en el centro de cada celda alcanzable a la cota de esa
+superficie y ninguno en las demás. Una superficie que ya no está en la rejilla de lo alcanzable se rechaza (``des.surface_mismatch``), y una que ya no existe, con el
+error de ``design.surfaces``. Sus bermas, plataformas y zonas (``des_acb_``, ``des_acp_``, ``des_acz_``) no se cargan: la barra N las lee del proyecto.
 """
 
 from __future__ import annotations
@@ -97,8 +104,9 @@ from .gis_views import _blocks, _scaled, _surface
 from .mesh import set_attribute
 
 __all__ = ["CLASS_ATTRIBUTE", "CLASS_LEGEND", "CLASS_MATERIAL", "COLOR_ATTRIBUTE", "KIND",
-           "LOADERS", "class_colors", "ensure_class_material", "face_classes", "load_area_grid",
-           "load_class_grid", "load_design_grid", "loader_of", "register", "unregister"]
+           "LOADERS", "class_colors", "ensure_class_material", "face_classes", "load_access_grid",
+           "load_area_grid", "load_class_grid", "load_design_grid", "loader_of", "register",
+           "unregister"]
 
 KIND = "DESIGN"
 """El tipo (``Object.geoblender.kind``) de los objetos de las rejillas de un diseño."""
@@ -119,6 +127,7 @@ LOADERS: tuple[tuple[str, str], ...] = (
     (design_provenance.STOCKPILE_GROUND_GRID, "Ground without stockpiles"),
     (design_provenance.BODY_THICKNESS_GRID, "Body thickness"),
     (design_provenance.BODY_BASE_GRID, "Body base"),
+    (design_provenance.ACCESS_GRID, "Reachable by the roads"),
 )
 """Las familias de datos que se cargan (``design.provenance``) con el ``msgid`` de su nombre en el
 nombre generado de sus objetos: las tres rejillas de un diseño de la 013, el recinto excavable de
@@ -127,8 +136,9 @@ transición con el terreno no afectado (T28), la superficie ajustada a un límit
 (T33; plan 016 §5.5: «como cualquier superficie»), las rejillas **dispersas** de los acopios y de los cuerpos
 apoyados: la base, el espesor y el terreno sin acopios de una detección (por material, el terreno una por
 detección) y el espesor y la base de un cuerpo; solo tienen dato donde hay acopio o cuerpo (sin vértice en las
-demás celdas). La superficie con que se detectó (``des_stp_``) y la de una entidad (``des_psf_``) no tienen
-cargador propio: las dibuja el objeto de la entidad (``bl.scene.entity_views``)."""
+demás celdas) y, de la 017 (T31), lo alcanzable de una accesibilidad (``des_acc_``: una zona, dibujada sobre su
+superficie, :func:`load_access_grid`). La superficie con que se detectó (``des_stp_``) y la de una entidad
+(``des_psf_``) no tienen cargador propio: las dibuja el objeto de la entidad (``bl.scene.entity_views``)."""
 CLASS_ATTRIBUTE = "gb_class"
 """El atributo de cara con el código de su clase (``CellClass.code``: 0, 1 o 2)."""
 COLOR_ATTRIBUTE = "gb_color"
@@ -191,6 +201,30 @@ def load_area_grid(request: views.ViewRequest) -> Generator[float, None, views.V
     with np.errstate(invalid="ignore"):
         heights = np.where(np.isfinite(area.values), ground.values, np.nan)
     shown = Raster(area.grid, heights, area.crs, area.vertical)
+    return (yield from gis_views.raster_view_steps(request, shown))
+
+
+def load_access_grid(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
+    """Lo alcanzable de una accesibilidad ``request.record`` (``des_acc_``) como malla de superficie **sobre la superficie en que se calculó**, en pasos (véase el
+    módulo; RF-017-24, RF-017-25): un vértice en el centro de cada celda alcanzable (1; las de 0, sin dato) a la cota de esa superficie, la entrada de su operación
+    con el papel de superficie (``design.access_store.read_access_surface``), leída en su versión y comparada con la rejilla de lo alcanzable antes de leer una celda;
+    con ``lod`` 1 o 2, su versión de 2 o 5 m (RF-006-22). Cerrados antes de terminar, borra lo que creó. Solo lee."""
+    from ...design import access_store, surfaces  # al cargar: no al habilitar
+
+    project, record = request.project, request.record
+    with project.read() as conn:
+        owner = versions_read.dataset_versions(conn, [record.uid]).get(record.uid, "")
+        start = access_store.read_access_surface(conn, record.operation_uid)
+    reach = surfaces.read_surface(project, record.name, version_uid=owner)
+    _check_references(project, reach, record.name)
+    yield 0.02
+    if start is None:  # la operación no consumió ninguna superficie: un proyecto dañado (como unos ajustes sin su nombre), no una cota que inventar
+        raise ValueError(f"la operación de lo alcanzable «{record.name}» no consumió ninguna superficie: no se sabe a qué cota dibujarlo")
+    ground = surfaces.read_surface(project, start, version_uid=owner, expect=reach, role="superficie de la accesibilidad")
+    yield 0.05
+    with np.errstate(invalid="ignore"):
+        heights = np.where(reach.values > 0.5, ground.values, np.nan)
+    shown = Raster(reach.grid, heights, reach.crs, reach.vertical)
     return (yield from gis_views.raster_view_steps(request, shown))
 
 
@@ -310,12 +344,15 @@ def _check_references(project: object, raster: Raster, name: str) -> None:
 
 def loader_of(family: str) -> views.ViewLoader:
     """El cargador de los datos de la familia ``family`` de :data:`LOADERS`: el del recinto
-    (:func:`load_area_grid`), el de la clasificación de una cantera (:func:`load_class_grid`) o
-    el de las rejillas de cotas de un diseño (:func:`load_design_grid`)."""
+    (:func:`load_area_grid`), el de la clasificación de una cantera (:func:`load_class_grid`), el de lo
+    alcanzable de una accesibilidad (:func:`load_access_grid`) o el de las rejillas de cotas de un diseño
+    (:func:`load_design_grid`)."""
     if family == design_provenance.EXCAVATION_AREA_GRID:
         return load_area_grid
     if family == design_provenance.CLASSIFICATION_GRID:
         return load_class_grid
+    if family == design_provenance.ACCESS_GRID:
+        return load_access_grid
     return load_design_grid
 
 

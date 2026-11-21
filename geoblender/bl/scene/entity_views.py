@@ -11,7 +11,9 @@ con sus cifras registradas, su nombre generado, el recorte) es de ``views``, com
 
 **Qué se dibuja.** Un objeto por entidad, **en alambre** y delante de lo demás, con su **huella** (el contorno de sus celdas sin resguardo, sus huecos
 incluidos: ``design.entities.declared_zone_of_runs``) y su **eje** (los vértices que guarda la tabla), con las aristas del eje marcadas con el
-atributo :data:`AXIS_ATTRIBUTE` (la huella, sin marcar). **De un contrafuerte** (T33; RF-016-17, P-8), además, el contorno de **su zona de coronación**
+atributo :data:`AXIS_ATTRIBUTE` (la huella, sin marcar). **De una pista** (spec 017, T31; RF-017-23, decisión T31-a: la pista es una entidad, como la plataforma, con su
+huella y su eje) el eje es **3D**: sus estaciones (``des_rdx_``, ``design.entity_store.read_road_axis``) con la **cota de la rasante** en la Z, no la de la
+superficie; si el proyecto ya no tiene su eje por estaciones, el de la huella a la cota de su superficie y lo dice. **De un contrafuerte** (T33; RF-016-17, P-8), además, el contorno de **su zona de coronación**
 —la que declara «sin corte»— con sus aristas marcadas con :data:`ZONE_ATTRIBUTE`; el objeto de los demás tipos no lo lleva. Los datos son los de
 la tabla de la entidad —sus tramos de fila, su eje y su zona, absolutos y en float64— y la cota de cada vértice es la de la **superficie que dejó**
 la entidad (``des_psf_<nombre>``, la media de las celdas de su huella que tocan el vértice; el eje, la del vértice de rejilla más próximo): el
@@ -78,9 +80,11 @@ COLORS: dict[str, tuple[float, float, float, float]] = {
     "removal": (0.8, 0.3, 0.25, 1.0),
     "buttress": (0.5, 0.4, 0.8, 1.0),
     "body": (0.3, 0.55, 0.85, 1.0),
+    "road": (0.9, 0.82, 0.15, 1.0),
 }
 """El color (RGBA, 0 a 1) del objeto de cada tipo de entidad (``design.entities.EntityKind``): una ayuda para
-distinguirlo en la vista, no un dato; los cuatro de la 016 (T33) son los de la detección, la retirada, el contrafuerte y el cuerpo."""
+distinguirlo en la vista, no un dato; los cuatro de la 016 (T33) son los de la detección, la retirada, el contrafuerte y el cuerpo y el de la 017 (T31),
+el de la pista. La accesibilidad no tiene: no es un objeto de entidad (lo alcanzable se carga como una rejilla de un diseño, ``bl.scene.des_views``)."""
 OTHER_COLOR = (0.6, 0.6, 0.6, 1.0)
 """El de un tipo de entidad que aún no tiene color."""
 _CORNER_ROWS = np.array([-1, -1, 0, 0], dtype=np.int64)
@@ -174,7 +178,12 @@ def load_entity(request: views.ViewRequest) -> Generator[float, None, views.View
         owner = versions_read.dataset_versions(conn, [record.uid]).get(record.uid, "")
         shape = entity_store.read_entity_footprint(conn, record.locator)
         height = _height_dataset(conn, record.name, owner)
+        is_road = shape.kind == entities.EntityKind.ROAD.value
+        stations = entity_store.read_road_axis(conn, record.operation_uid) if is_road else None
     yield 0.05
+    notes: list[str] = []
+    if is_road and stations is None:  # una pista sin su eje por estaciones: el de la huella, a la cota de su superficie, y lo dice
+        notes.append(tr("The road «{name}» has no usable axis by stations: its axis is drawn at the height of its surface", name=shape.name))
     surface = surfaces.read_surface(project, height, version_uid=owner)
     des_views._check_references(project, surface, record.name)  # noqa: SLF001 - la misma comprobación
     yield 0.4
@@ -189,7 +198,8 @@ def load_entity(request: views.ViewRequest) -> Generator[float, None, views.View
         crown_rings = [ring for part in crown.parts for ring in part]
         shown = footprint | entity_store.runs_mask(shape.zone, grid.shape)
     axis = np.asarray(shape.axis, dtype=np.float64).reshape(-1, 2)
-    paths = [*rings, *crown_rings, *([axis] if len(axis) > 1 else [])]
+    # El eje de una pista es 3D —sus estaciones, con la cota de la rasante en la Z, no la de la superficie—; el de los demás tipos, el de su tabla a la cota de su superficie.
+    paths = [*rings, *crown_rings, *([axis] if stations is None and len(axis) > 1 else [])]
     points = np.vstack(paths)
     heights = corner_heights(np.rint((grid.north - points[:, 1]) / grid.dy), np.rint((points[:, 0] - grid.west) / grid.dx),
                              surface.values, shown)
@@ -201,6 +211,8 @@ def load_entity(request: views.ViewRequest) -> Generator[float, None, views.View
     for path in paths:
         drawn.append(np.column_stack([path, heights[start:start + len(path)]]))
         start += len(path)
+    if stations is not None:
+        drawn.append(stations)
     yield 0.6
     vertices, edges, owners = _polylines(drawn)
     flags = owners >= len(rings) + len(crown_rings)  # el eje es el último camino
@@ -209,7 +221,7 @@ def load_entity(request: views.ViewRequest) -> Generator[float, None, views.View
         set_edge_flags(mesh, AXIS_ATTRIBUTE, flags)
         if shape.zone is not None:
             set_edge_flags(mesh, ZONE_ATTRIBUTE, (owners >= len(rings)) & ~flags)
-        parts = _object(request.name, mesh, (), mesh_vertices_local(mesh))
+        parts = _object(request.name, mesh, notes, mesh_vertices_local(mesh))
     except BaseException:
         bpy.data.meshes.remove(mesh)
         raise

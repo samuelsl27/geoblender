@@ -401,6 +401,7 @@ __all__ = [
     "read_geometry",
     "operation_table",
     "read_entity_report",
+    "read_road_axis",
     "read_stockpile_footprints",
     "recompute_declaration",
     "recompute_entity_layer",
@@ -2798,6 +2799,20 @@ def read_entity_report(conn: sqlite3.Connection, operation_uid: str) -> tuple[tu
     rows = conn.execute(f'SELECT quantity, value, unit_code, note FROM "{table}" ORDER BY fid').fetchall()
     return tuple((str(quantity), None if value is None else float(value), None if unit is None else str(unit),
                   None if note is None else str(note)) for quantity, value, unit, note in rows)
+
+
+def read_road_axis(conn: sqlite3.Connection, operation_uid: str) -> np.ndarray | None:
+    """El eje por estaciones (``des_rdx_``) que escribió la operación ``operation_uid`` de una pista (spec 017, T31; RF-015-25, RF-017-23; lo que dibuja la
+    vista, ``bl.scene.entity_views``): ``(n, 3)`` en float64 con la ``x`` y la ``y`` absolutas y **la cota de la rasante** (``level_m``, no la del terreno),
+    por orden de abscisa. La tabla es la de **su operación vigente** (:func:`operation_table`), no la de un dato anterior que una vista tenga cargado. ``None`` si
+    la operación no escribió ninguno o su tabla no tiene un eje utilizable (menos de dos estaciones, o una que no es un número finito): quien dibuja usa
+    entonces el de la huella y lo dice. Solo lee."""
+    table = operation_table(conn, operation_uid, provenance.ROAD_AXIS_ROLE)
+    if table is None:
+        return None
+    rows = conn.execute(f'SELECT x, y, level_m FROM "{table}" ORDER BY station_m').fetchall()
+    found = np.asarray(rows, dtype=np.float64).reshape(-1, 3)
+    return found if len(found) > 1 and bool(np.isfinite(found).all()) else None
 
 
 def read_stockpile_footprints(conn: sqlite3.Connection, table: str
