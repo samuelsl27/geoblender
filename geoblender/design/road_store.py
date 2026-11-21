@@ -177,6 +177,7 @@ __all__ = [
     "create_road_steps",
     "default_start",
     "ensure_name_row",
+    "entity_road_request",
     "frozen_geometry",
     "frozen_profile",
     "line_3d",
@@ -1437,6 +1438,44 @@ def prepare_road(project: StoreProject, request: RoadRequest, *, version: str | 
         except StopIteration as stop:
             result: PreparedRoad = stop.value
             return result
+
+
+_CALCULATED_FROM = (RoadParam.LAYER, RoadParam.MODE, RoadParam.PROFILE, RoadParam.START)
+"""Los parámetros sin los que una pista sin calcular no tiene de dónde salir (su capa, su modo, su perfil y su partida): :func:`entity_road_request` pide que los tenga. La geometría (el origen y el
+destino, o la línea) y los de la ruta los rechaza el cálculo, como en la plataforma, con el campo que falta (``des.entity_param_missing``)."""
+
+
+def entity_road_request(project: StoreProject, version: Version | str, code: str) -> RoadRequest:
+    """**La petición de una pista sin calcular** de la versión editable ``version`` (``Version``, uid o código; spec 017, T33c; RF-015-18, RF-017-01, RF-017-03, RF-015-04; la duda T22b (d)): la
+    que dejan «Traer las entidades de…» y la versión que parte de otra, con sus parámetros y **ningún resultado**. Es lo que ``entity_store.entity_request`` hace con la plataforma: sale de lo que
+    **ya tiene la versión** —sus parámetros vigentes (:func:`~.entity_store.entity_parameters`: la capa, el modo, el perfil, la partida, el apoyo, el origen y el destino, la geometría, las cotas de
+    inicio y de fin y los parámetros de la ruta)— y del nombre de la entidad, con :func:`~.provenance.road_request`, la misma que repite el recálculo de lo obsoleto. **El campo de los nombres de la
+    capa** (``fields.name_field``) **no es un parámetro de la entidad** —solo marca de dónde salen los nombres de los puntos o de las líneas— y una pista traída no lo trae: queda sin él (el campo
+    ``nombre`` o ``name`` de la capa o, sin ellos, el número). Es lo que se da a :func:`~.steps.road_run` con ``code=`` para calcularla: con su **código**, sin crear otra entidad ni escribir ningún
+    parámetro (las cotas de inicio y de fin cuyo origen es el algoritmo se vuelven a tomar de su origen al calcular: T24b), de modo que su historial es el de siempre y **las dependencias se
+    detectan de nuevo al crearla** (el gancho de ``DesignWriter.commit``: el eje de la pista del origen, la entidad del destino y lo que se apoya en ella).
+
+    Solo lee. Rechazos, sin escribir nada: los de :func:`~.store.require_version` (``VersionError``, RF-009-21), ``des.entity_already_discarded`` (una descartada es un registro, no se calcula),
+    ``des.entity_calculate_done`` (la pista ya tiene resultado: se rehace con «Recalcular lo obsoleto») y ``des.entity_calculate_missing`` (sin capa, modo, perfil o partida: la partida de una pista
+    traída que no existía en la versión o de la que ya parte otra entidad queda sin valor); :class:`ValueError` si la versión no tiene ninguna entidad con ese código o nombre o no es una pista."""
+    found = require_version(project, version.uid if isinstance(version, Version) else version, provenance.ROAD)
+    entry = entities.registry(project, found.uid).get(code)
+    if entry is None:
+        raise ValueError(f"la versión {found.code} no tiene ninguna entidad con el código o el nombre {code!r}")
+    record = entry.record
+    if record.kind is not EntityKind.ROAD:
+        raise ValueError(f"{record.code} no es el código de una pista, sino de una entidad de tipo {record.kind}")
+    obj = _entity_object(record.code, record.name)
+    if record.state is EntityState.DISCARDED:
+        raise DesignError("des.entity_already_discarded", obj=obj, field="estado", value=str(record.state), entity=record.name, version=found.code)
+    if record.state is not EntityState.UNCALCULATED:
+        raise DesignError("des.entity_calculate_done", obj=obj, field="estado", value=str(record.state), entity=record.name, code=record.code, version=found.code)
+    values = entity_store.entity_parameters(project, record.code, version=found)
+    for param in _CALCULATED_FROM:
+        text = values.get(param.value)
+        if not isinstance(text, str) or not text.strip():
+            raise DesignError("des.entity_calculate_missing", obj=obj, field=entity_key(record.code, param), value=None, entity=record.name, code=record.code, version=found.code)
+    return provenance.road_request({"name": record.name, "code": record.code, "fields": {"name_field": None}}, values)
 
 
 # --- Calcular por pasos (spec 017, T20 (a); RF-017-23, 17, 12, 05 (b), 06, 14, 16; RF-015-03, 09, 13, 29; RNF-017-04, 06, 07; plan 017 §5.3.2, §5.4 A0, §5.7 P-4, P-14, §5.8 H-10) -----------------

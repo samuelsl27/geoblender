@@ -65,7 +65,7 @@ EDGE_ROAD = "Pista al borde"
 ROUTE = {"mesh": "4", "level_step": "0,28", "max_cut_fill": "14", "lambda_weight": "2", "turn": "4", "margin": "60", "simplify": "4", "arrival_tol": "0,28"}
 """Los parámetros de la ruta de la referencia de IMGA tecleados como los teclea una persona (``tests.support.road_data.ROUTE``: solo pruebas)."""
 ESCAPE = SimpleNamespace(type="ESC", value="PRESS")
-HIDDEN = ("confirm", "in_steps", "preview", "confirm_mean", "confirm_carriageway")
+HIDDEN = ("confirm", "in_steps", "preview", "confirm_mean", "confirm_carriageway", "code")
 PROPERTIES = {  # la propiedad → su nombre y su descripción (msgid en inglés; en español al registrarse)
     "name": ("Name", "Name of the road, unique in the active version"),
     "mode": ("Mode", "Trace it from an origin to a destination, give it an axis in plan to fit the curves to, or give it a line with its Z whose Z is the level profile"),
@@ -113,7 +113,7 @@ DEFAULTS: dict[str, Any] = {  # lo que dibuja el diálogo con un valor de cada p
     "origin_station": "", "destination_to": "POINT", "destination_point": "Destino", "destination_entity": "none", "dest_level": "", "dest_tol": "", "dest_zone": "none",
     "dest_zone_feature": "", "profile": "pista_principal", "start": "", "support": "none", "start_level": "", "end_level": "", "mesh": "", "level_step": "",
     "max_cut_fill": "", "lambda_weight": "", "turn": "", "margin": "", "simplify": "", "arrival_tol": "", "search_budget": "", "mean_reason": "", "confirm": False,
-    "in_steps": False, "preview": False, "confirm_mean": False, "confirm_carriageway": False}
+    "in_steps": False, "preview": False, "confirm_mean": False, "confirm_carriageway": False, "code": ""}
 
 
 def smooth() -> np.ndarray:

@@ -418,7 +418,13 @@ de la versión activa (por su nombre: sin resultado no tiene objeto en la vista)
 propiedad oculta): sin diálogo, calcula con los parámetros que la entidad ya tiene en la versión
 (``design.entity_store.entity_request``) y con su código, enseña el resumen y pide confirmar; «Crear» la registra **sin
 escribir ningún parámetro** (conserva su código y su historial) y la dependencia «se apoya en» se detecta de nuevo. Se calculan
-por el orden de la cadena (la partida de una es la superficie de la anterior).
+por el orden de la cadena (la partida de una es la superficie de la anterior). **Con la pista** (spec 017, T33c; RF-015-18, RF-015-04,
+RF-017-01, RF-017-03; la duda T22b (d)): la ventana ofrece también **las pistas sin calcular** y «Calcular…» lanza **«Pista…»
+(:class:`GEOBLENDER_OT_des_create_road`) con su** ``code`` (su propiedad oculta): sin diálogo, calcula por pasos con los parámetros
+que la pista ya tiene en la versión (``design.road_store.entity_road_request``: la misma petición que repite el recálculo), y
+«Crear» —por pasos y en una sola transacción, como «Pista…»— la registra con su código y sin tocar ningún parámetro; las
+dependencias (el eje de la pista del origen, la plataforma del destino) se detectan de nuevo, así que **un ramal se calcula tras su
+pista**. **La accesibilidad no es una entidad: no se trae ni se calcula desde aquí** (se vuelve a calcular con su orden).
 
 **Retirar un acopio…** (spec 016, T20 (b); HU-016-2; RF-016-11 a RF-016-15, RF-015-03, RF-015-28, RF-015-29; RNF-016-05; plan 016 §5.3.3 y
 §5.5; comprobación manual M1): :class:`GEOBLENDER_OT_des_remove_stockpile` (``geoblender.des_remove_stockpile``, interna, de la entrada
@@ -6199,6 +6205,14 @@ class GEOBLENDER_OT_des_entity_insert(DesignCommandAware, ProvenanceAwareOperato
 CALCULATE_ENTITY = "geoblender.des_entity_calculate"
 
 
+def _calculable() -> tuple[Any, ...]:
+    """Los tipos de entidad que «Calcular…» calcula con sus parámetros guardados (spec 017, T33c): **la plataforma** y **la pista**, las dos órdenes de entidad que
+    aceptan ``code``; ni la accesibilidad (no es una entidad: no se trae) ni los cuatro de la 016 (ninguna de sus órdenes lo tiene)."""
+    from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+    return (entities.EntityKind.PLATFORM, entities.EntityKind.ROAD)
+
+
 class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
     """Calculate a design entity that has no result yet, brought from another version or inherited: with the parameters it has in the version, and what rests on it is detected again"""
 
@@ -6215,9 +6229,9 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
     candidates: CollectionProperty(type=GEOBLENDER_PG_des_bring_row, options=_FIELD)  # type: ignore[valid-type]
 
     def invoke(self, context: Any, event: Any) -> set[str]:
-        """Abre la ventana con las entidades **sin calcular** de la versión activa (por su nombre: una sin calcular no tiene
-        objeto en la vista, así que no se elige seleccionándolo) y propone la dada o la primera; no escribe nada. Sin
-        versión editable o sin ninguna entidad sin calcular, lo dice."""
+        """Abre la ventana con las plataformas y las pistas **sin calcular** de la versión activa (por su nombre: una sin
+        calcular no tiene objeto en la vista, así que no se elige seleccionándolo) y propone la dada o la primera; no
+        escribe nada. Sin versión editable o sin ninguna entidad sin calcular de esos dos tipos, lo dice."""
         from ...design import entities  # al usarlo: habilitar no carga las entidades
 
         self.provenance_dialog = True
@@ -6231,10 +6245,11 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
-        # Solo las plataformas: ninguna orden de la 016 tiene `code`, así que lo traído de sus cuatro tipos (acopio, retirada,
-        # contrafuerte y cuerpo) queda sin calcular y ninguna orden lo calcula (S-5; «Para Samuel», 11 de `tasks.md` de la 016).
+        # Las plataformas y las pistas (T33c): «Plataforma…» y «Pista…» tienen `code`. Ninguna orden de la 016 lo tiene, así que lo traído de
+        # sus cuatro tipos (acopio, retirada, contrafuerte y cuerpo) queda sin calcular y ninguna orden lo calcula (S-5; «Para Samuel», 11 de
+        # `tasks.md` de la 016); la accesibilidad no es una entidad y no se trae: se vuelve a calcular con su orden.
         waiting = [entry.record for entry in listed if entry.record.state is entities.EntityState.UNCALCULATED
-                   and entry.record.kind == entities.EntityKind.PLATFORM]
+                   and entry.record.kind in _calculable()]
         if not waiting:
             self.report({"ERROR"}, tr("The active version has no entity without a result: the ones brought from another "
                                       "version or inherited from the version it starts from are left without one"))
@@ -6261,11 +6276,13 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
                              "rests on it is detected again."), translate=False)
 
     def execute(self, context: Any) -> set[str]:
-        """Abre el cálculo de la entidad elegida (**«Plataforma…»**, :data:`CREATE_PLATFORM`, con su ``code``): sin
-        diálogo, calcula con los parámetros que la entidad ya tiene en la versión, enseña el resumen y pide confirmar; no
-        escribe nada (al crear, la entidad conserva su código y sus parámetros y la dependencia «se apoya en» se detecta de
-        nuevo). Sin entidad, con una que no es de la versión, que ya tiene resultado o está descartada, o sin su
-        partida, lo dice (``design.entity_store.entity_request``) y no abre nada."""
+        """Abre el cálculo de la entidad elegida (**«Plataforma…»**, :data:`CREATE_PLATFORM`, o **«Pista…»**,
+        :data:`CREATE_ROAD`, con su ``code``): sin diálogo, calcula con los parámetros que la entidad ya tiene en la
+        versión, enseña el resumen y pide confirmar; no escribe nada (al crear, la entidad conserva su código y sus
+        parámetros y la dependencia «se apoya en» se detecta de nuevo). Sin entidad, con una que no es de la versión, que
+        ya tiene resultado o está descartada, o sin su partida (``design.entity_store.entity_request`` y
+        ``design.road_store.entity_road_request``), lo dice y no abre nada; con otro tipo (la accesibilidad, un acopio…),
+        dice que solo una plataforma o una pista se calculan así."""
         from ...design import entities  # al usarlo: habilitar no carga las entidades
 
         blocked = write_unavailable()
@@ -6284,15 +6301,19 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
             found = entities.registry(project, active.uid).get(wanted)
             if found is None:
                 raise ValueError(tr("«{entity}» is not an entity of {version}", entity=wanted, version=active.code))
-            if found.record.kind != entities.EntityKind.PLATFORM:
-                raise ValueError(tr("«{name}» ({kind}) is not calculated from here: it is made again with its own command; only a platform is "
-                                    "calculated with its saved parameters", name=found.record.name,
+            if found.record.kind not in _calculable():
+                raise ValueError(tr("«{name}» ({kind}) is not calculated from here: it is made again with its own command; only a platform or a road "
+                                    "are calculated with their saved parameters", name=found.record.name,
                                     kind=entities.entity_type(found.record.kind).params.label))
-            _entity_request(project, active.uid, found.record.code)  # lo que rechazaría el cálculo, antes de abrir nada
+            if found.record.kind == entities.EntityKind.ROAD:  # lo que rechazaría el cálculo, antes de abrir nada
+                _road_entity_request(project, active.uid, found.record.code)
+            else:
+                _entity_request(project, active.uid, found.record.code)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
-        _invoke_later(CREATE_PLATFORM, getattr(context, "window", None) or _first_window(), code=found.record.code)
+        opens = CREATE_ROAD if found.record.kind == entities.EntityKind.ROAD else CREATE_PLATFORM
+        _invoke_later(opens, getattr(context, "window", None) or _first_window(), code=found.record.code)
         return {"FINISHED"}
 
 
@@ -8213,7 +8234,7 @@ ROAD_DESTINATION_ITEMS = [
     ("ENTITY", "A platform", "The destination is the point of the layer that falls on the footprint of a platform of the active version"),
     ("LEVEL", "An elevation with its zone", "The ramp: the road ends where it reaches an elevation inside a zone, with its arrival tolerance")]
 """A dónde llega «trazar»: un punto de la capa, una plataforma o una cota con su zona y su tolerancia (RF-017-02, RF-017-03, D-4)."""
-_ROAD_HIDDEN = frozenset({"confirm", "in_steps", "preview", "confirm_mean", "confirm_carriageway"})
+_ROAD_HIDDEN = frozenset({"confirm", "in_steps", "preview", "confirm_mean", "confirm_carriageway", "code"})
 """Las propiedades ocultas de «Pista…»: las pone quien la lanza (o su ventana de confirmar)."""
 
 
@@ -8243,6 +8264,14 @@ def _entity_param_text(entity: str, param: str) -> str:
         return tr("{kind}: no default value, you choose it", kind=kind)
     value = float(template.default)  # type: ignore[arg-type]
     return tr("By default: {value}{unit} · {kind}", value=i18n.format_number(value, 0 if value.is_integer() else 2), unit="", kind=kind)
+
+
+def _road_entity_request(project: Any, version: str, code: str) -> Any:
+    """La petición de la pista **sin calcular** ``code`` de la versión ``version`` (T33c; RF-015-18; la duda T22b (d); ``design.road_store.entity_road_request``: de los parámetros que ya tiene la
+    versión y de su nombre, como la repite el recálculo; solo lee)."""
+    from ...design import road_store  # al usarlo: habilitar no carga el cálculo
+
+    return road_store.entity_road_request(project, version, code)
 
 
 def _road_dialog_fields() -> tuple[str, ...]:
@@ -8527,14 +8556,18 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
     preview: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     confirm_mean: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     confirm_carriageway: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    # Calcular una pista traída o heredada «sin calcular» (T33c; RF-015-18, RF-015-04; la duda T22b (d)): el código de la pista que ya está en la versión; lo pone «Calcular…» del menú
+    # «Entidad ▾» (``des_entity_calculate``). Con él no hay diálogo: se calcula con los parámetros que la pista ya tiene en la versión (``design.road_store.entity_road_request``), con su
+    # código, sin escribir ninguno; «Crear» (por pasos y en una sola transacción) la registra con su código y las dependencias se detectan de nuevo.
+    code: StringProperty(default="", options=_HIDDEN)  # type: ignore[valid-type]
 
     # --- El diálogo ---------------------------------------------------------------------------
 
     def invoke(self, context: Any, event: Any) -> set[str]:
-        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué. Con ``confirm``, el diálogo de crear el cálculo abierto. Si no,
-        las listas leídas de nuevo (las superficies, las capas, los perfiles de pista, las pistas y las plataformas de la versión), la propuesta (un nombre, la
-        primera capa del modo, el primer perfil y la partida: la superficie de explotación de la cantera o la última de la cadena) y el diálogo del cálculo:
-        Intro calcula."""
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué. Con ``confirm``, el diálogo de crear el cálculo abierto. Con ``code`` (una pista
+        sin calcular, T33c) y la versión editable, sin diálogo: calcula (:meth:`execute`). Si no, las listas leídas de nuevo (las superficies, las capas, los perfiles de pista, las pistas y las plataformas
+        de la versión), la propuesta (un nombre, la primera capa del modo, el primer perfil y la partida: la superficie de explotación de la cantera o la última de la cadena) y el
+        diálogo del cálculo: Intro calcula."""
         self.provenance_dialog = True
         self.in_steps = getattr(context, "window", None) is not None
         if self.confirm:
@@ -8544,6 +8577,8 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
             if scene_versions.active_version() is not None:
                 self.report({"ERROR"}, refusal)
             return {"CANCELLED"}
+        if self.code.strip():  # una pista sin calcular: todo lo que hace falta ya lo tiene la versión (T33c)
+            return self.execute(context)
         project = SESSION.project
         try:
             des_panels.refresh_choices(project)
@@ -8647,7 +8682,8 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
         antes si no están al día—, sin registrar nada (RF-015-03): desde la interfaz, en el modal con el avance y Esc (RF-015-29, RF-017-30); desde un guion, de una
         vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos (la capa, el origen y el destino, las cotas, el perfil y su valor, la
         partida, los parámetros de la ruta que faltan, un sector con la búsqueda pendiente, el nombre repetido, una ruta que no existe y por qué) y todas las
-        cuentas son de ``design``."""
+        cuentas son de ``design``. Con ``code`` (T33c), la pista **sin calcular** de la versión con ese código (:func:`_road_entity_request`: la que dejó «Traer las entidades de…» o
+        heredó una versión que parte de otra): se calcula con los parámetros que ya tiene y con su código, sin escribir ninguno."""
         if self.confirm:
             return self._create(context)
         if self.preview:
@@ -8662,8 +8698,9 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
             return {"CANCELLED"}
         project = SESSION.project
         version = scene_versions.active_version() or ""
+        code = self.code.strip()
         try:
-            request = self._request()
+            request = _road_entity_request(project, version, code) if code else self._request()
         except ProfileFormError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -8676,7 +8713,7 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
         from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
 
         discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
-        steps = design_steps.road_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
+        steps = design_steps.road_run(project, request, version=version, code=code or None, budget_s=self.STEP_BUDGET_S)
         return self._run_steps(context, project, request.name, steps)
 
     def _show_preview(self) -> set[str]:

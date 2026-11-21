@@ -10567,8 +10567,8 @@ es = "La detección «{name}» no tiene candidatos: se detectó sin pedirlos o n
 ["Candidates of «{name}»"]
 es = "Candidatos de «{name}»"
 
-["«{name}» ({kind}) is not calculated from here: it is made again with its own command; only a platform is calculated with its saved parameters"]
-es = "«{name}» ({kind}) no se calcula desde aquí: se hace de nuevo con su propia orden; solo una plataforma se calcula con sus parámetros guardados"
+["«{name}» ({kind}) is not calculated from here: it is made again with its own command; only a platform or a road are calculated with their saved parameters"]
+es = "«{name}» ({kind}) no se calcula desde aquí: se hace de nuevo con su propia orden; solo una plataforma o una pista se calculan con sus parámetros guardados"
 
 ["There is no surface in the project: import the ground or a survey first"]
 es = "No hay ninguna superficie en el proyecto: importe antes el terreno o un levantamiento"

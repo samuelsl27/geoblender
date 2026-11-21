@@ -2037,13 +2037,14 @@ CATALOG: tuple[Message, ...] = (
         "des.entity_calculate_missing",
         "Entity «{entity}» ({code}) cannot be calculated in {version}: «{field}» has no value (for "
         "example, when it was brought and the surface it started from was not in {version}, or another "
-        "entity already started from it); discard it with «Discard…» and create the platform again "
-        "with «Platform…», under another name (the name of a discarded entity stays taken); nothing is "
-        "calculated.",
+        "entity already started from it); discard it with «Discard…» and create it again under another "
+        "name (the name of a discarded entity stays taken): a platform with «Platform…» and a road "
+        "with «Road…»; nothing is calculated.",
         "La entidad «{entity}» ({code}) no se puede calcular en {version}: «{field}» no tiene valor "
         "(por ejemplo, si al traerla la superficie de la que partía no estaba en {version} o ya partía "
-        "de ella otra entidad); descártela con «Descartar…» y cree de nuevo la plataforma con "
-        "«Plataforma…», con otro nombre (el de una descartada sigue ocupado); no se calcula nada.",
+        "de ella otra entidad); descártela con «Descartar…» y créela de nuevo con otro nombre (el de "
+        "una descartada sigue ocupado): una plataforma con «Plataforma…» y una pista con «Pista…»; no "
+        "se calcula nada.",
     ),
     # La vista previa de una entidad de diseño (T29; RF-015-26): lo que dice antes de calcular ---
     Message(
