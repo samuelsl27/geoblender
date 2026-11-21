@@ -25,6 +25,12 @@ CHAIN_LIMIT = 200
 class RoadStepsMilestone(steps.RoadStepsCase):
     """El proyecto de la prueba de la pista y las ayudas de ``milestone_road_steps_cuts.py``, con los recorridos de todos los eventos."""
 
+    def setUp(self) -> None:
+        super().setUp()
+        # Recorren **todos** los eventos (sin cortar en el de otra corrida: se paran cuando el cálculo acaba, y lo que sigue a crear va en el mismo modal) y miden cada llamada con los pasos de verdad
+        # (los grupos de 0,05 s de la orden): el paso de una unidad por evento y el reloj de mentira de las pruebas de los puntos de corte serían demasiados eventos (T39, E-2).
+        self.real_pacing()
+
     def test_a_esc_in_every_event_of_calculating_leaves_nothing(self) -> None:
         """RF-017-30, RF-015-29, RNF-017-06 (M9): Esc tras **cada** evento de «Calcular» una pista (los tres modos) y la accesibilidad responde en ≤ 2 s y no deja nada; ninguna llamada pasa de 0,2 s."""
         start = self.fresh_surface()

@@ -25,6 +25,7 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 import time
 import unittest
 from collections.abc import Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -132,9 +133,20 @@ class RoadStepsCase(road_ops.RoadOpsTest):
         self.calls: list[tuple[float, str]] = []  # lo que dura cada llamada del hilo, en CPU del proceso y sin la transacción final, y cuál es
         self.commits: list[float] = []  # la CPU de cada transacción final que hubo (aparte: no se trocea, el R4 de la 012)
         self.budget: float | None = step_modals.ONE_STEP_S  # un paso por evento (``None``: el presupuesto de la orden)
+        # T39 (E-2 de la verificación única): un paso de una unidad por evento, **antes de lanzar** la orden (sus generadores leen el presupuesto al crearse) y con el reloj de mentira de los dos
+        # módulos que lo miden: los eventos de una corrida y de otra son los mismos vaya como vaya el ordenador, y los puntos de corte que salen de una corrida de referencia siempre caen dentro.
+        self.pacing = self.enterContext(ExitStack())
+        self.pacing.enter_context(step_modals.one_unit_per_event(
+            tuple(self.commands.registered_class(f"geoblender.{command}") for command in (ROAD, ACCESS)),
+            (self.core_ops, platform_ops._module("gis.masks.compile"))))
         for module, name in (("design.store", "DesignWriter"), ("gis.masks.store", "MaskWriter")):
             writer = getattr(platform_ops._module(module), name)
             self.enterContext(mock.patch.object(writer, "commit", self.timed_commit(writer.commit)))
+
+    def real_pacing(self) -> None:
+        """Los pasos de las órdenes con **su** presupuesto (0,05 s) y el reloj de verdad —lo que ve una persona—, para lo que mide cuánto dura cada llamada. Con él, los eventos de una orden **dependen
+        del reloj**: lo que lo usa no corta en un evento que salga de contar los de otra corrida sin tolerar que el número cambie."""
+        self.pacing.close()
 
     def timed_commit(self, real: Any) -> Any:
         """``commit`` de un escritor, con su CPU anotada: la transacción final es lo único que no se trocea (R4 de la 012) y se mide aparte de la llamada que la contiene."""
@@ -483,6 +495,7 @@ class RoadStepsTest(RoadStepsCase):
         transacción final, que no se trocea (R4 de la 012)— al lanzar «Calcular», en cada evento de su modal (la pista en sus tres modos y la accesibilidad), al lanzar «Crear» y en cada evento de crear
         y de lo que sigue (la declaración, las máscaras y las capas); y el modal dice el avance (un ``Progress`` por paso, hasta completarse)."""
         self.budget = None
+        self.real_pacing()  # la de la orden y el reloj de verdad: es lo que se mide
         for which in (*KINDS, "ACCESS"):
             command, start = self.command_of(which), self.fresh_surface()
             self.calls.clear()

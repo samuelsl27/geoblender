@@ -15,7 +15,9 @@ llama (las pruebas de ``tests/blender``)."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -26,6 +28,56 @@ TIMER = SimpleNamespace(type="TIMER", value="NOTHING")
 ONE_STEP_S = 1e-9
 """El presupuesto de cada evento con el que el modal da un solo paso."""
 MAX_EVENTS = 20_000
+TICK_S = 1e-3
+"""Lo que avanza el reloj de mentira (:func:`one_unit_per_event`) en cada lectura: más que :data:`ONE_STEP_S`, así que cada unidad de trabajo cierra su paso."""
+
+
+class TickingClock:
+    """Un ``perf_counter`` de mentira: cada lectura avanza ``tick_s`` s, vaya el ordenador como vaya (spec 017, T39; hallazgo E-2). Con él, el número de eventos de una orden por pasos **solo depende
+    del código**, no de la carga de la máquina."""
+
+    def __init__(self, tick_s: float = TICK_S) -> None:
+        self.tick_s = tick_s
+        self.now = 0.0
+        self.reads = 0
+
+    def __call__(self) -> float:
+        self.reads += 1
+        self.now += self.tick_s
+        return self.now
+
+
+class _ClockedTime:
+    """El módulo ``time`` con otro ``perf_counter``: lo demás, el de verdad."""
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self.perf_counter = clock
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+@contextmanager
+def ticking_clock(tick_s: float, *modules: ModuleType) -> Iterator[TickingClock]:
+    """Dentro del bloque, el ``time.perf_counter`` de los ``modules`` (los que miden el presupuesto de cada paso: ``bl.ops.core`` y ``gis.masks.compile``) es un :class:`TickingClock` de ``tick_s`` s.
+    Solo cambia el reloj de esos módulos: el resto (las esperas de la base, el plazo de la puerta de procedencia, el cronómetro de la prueba) sigue con el de verdad."""
+    clock = TickingClock(tick_s)
+    fake = _ClockedTime(clock)
+    with ExitStack() as stack:
+        for module in modules:
+            stack.enter_context(mock.patch.object(module, "time", fake))
+        yield clock
+
+
+@contextmanager
+def one_unit_per_event(commands: tuple[type, ...], clocked: tuple[ModuleType, ...], *, tick_s: float = TICK_S) -> Iterator[TickingClock]:
+    """Cada evento del temporizador da **un solo paso de una sola unidad**, sin depender del reloj (spec 017, T39; E-2): el presupuesto de las ``commands`` (clases de órdenes por pasos) es
+    :data:`ONE_STEP_S` **antes de lanzarlas** —los generadores de ``design`` leen ``STEP_BUDGET_S`` al crearse, y fijarlo en el modal ya en marcha llega tarde: sus pasos agrupaban las
+    unidades casi instantáneas **según el reloj** y los eventos de una corrida y de otra no coincidían— y el reloj de los módulos ``clocked`` es un :class:`TickingClock` de ``tick_s`` s."""
+    with ExitStack() as stack:
+        for command in commands:
+            stack.enter_context(mock.patch.object(command, "STEP_BUDGET_S", ONE_STEP_S))
+        yield stack.enter_context(ticking_clock(tick_s, *clocked))
 
 
 def drive(modal: Any, context: Any, *, stop_after: int | None = None) -> tuple[set[str], int]:

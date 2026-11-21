@@ -17,7 +17,8 @@ rejilla, las rejillas de cotas de berma de V01 (una banda al sur y otra al norte
 - RF-017-24, RF-017-25, RF-015-03, RF-015-02 (c): Calcular sobre ``Suave`` (todo se alcanza) deja el cálculo abierto, con su resumen y las tres listas, y nada en el proyecto; Crear registra ``des.road_access``,
   sus cifras, la entidad y los parámetros de la persona y encadena la capa de entidades.
 - RF-017-25, RF-017-24 (d): sobre ``Muro`` desde el norte, la lista dice cada tramo de berma, la plataforma y cada zona **comunicados o no**, con su lugar y su «Ir a», las que no, primero y en alerta.
-- RF-015-29, RF-017-30, RF-017-04, RF-015-08 (e): Esc a mitad, Cancelar la confirmación y lo que se rechaza no dejan nada (0 transacciones).
+- RF-015-29, RF-017-30, RF-017-04, RF-015-08 (e): Esc a mitad, Cancelar la confirmación y lo que se rechaza no dejan nada (0 transacciones). **Esc no depende del reloj** (T39, E-2 de la verificación
+  única): con un paso de una unidad por evento y un reloj de mentira en los dos módulos que miden el presupuesto, los eventos del cálculo son los mismos con cualquier ritmo (e, segunda prueba).
 - RF-017-29, RF-015-28, RF-009-05, RF-009-21 (f): la orden sale desactivada con su motivo con el proyecto en solo lectura, con la versión activa no editable y sin versión activa.
 - Principio 8 (z): desactivar Geoblender quita la orden y no deja nada.
 
@@ -63,6 +64,8 @@ SOUTH_BAND, NORTH_BAND = (10.0, 10.0, 50.0, 20.0), (10.0, 40.0, 50.0, 50.0)
 SOUTH_ZONE, NORTH_ZONE = ("Zona del camino", (40.0, 10.0, 50.0, 20.0)), ("Zona de la balsa", (40.0, 40.0, 50.0, 50.0))
 """Las zonas «requiere acceso» (local): 5 × 5 celdas = 100 m² cada una."""
 ESCAPE = SimpleNamespace(type="ESC", value="PRESS")
+FAST_TICK_S, SLOW_TICK_S = 1e-7, 1.0
+"""Los dos relojes de mentira de la prueba del reloj: lo que avanza cada lectura (muy rápido: 0,1 µs; muy lento: 1 s)."""
 HIDDEN = ("confirm", "in_steps")
 PROPERTIES = {  # la propiedad → su nombre y su descripción (msgid en inglés; en español al registrarse)
     "name": ("Name", "Name of the accessibility, unique in the active version"),
@@ -495,37 +498,56 @@ class RoadAccessOpsTest(platform_ops.CreatePlatformTest):
 
     # --- e: Esc, cancelar y lo que se rechaza ---------------------------------------------------
 
+    def paced(self, tick_s: float) -> Any:
+        """Cada evento del modal, **un paso de una unidad, vaya como vaya el reloj** (E-2 de la verificación única; :func:`~tests.support.step_modals.one_unit_per_event`): el presupuesto de la orden se
+        fija **antes de lanzarla** —sus generadores lo leen al crearse— y el reloj de los dos módulos que lo miden (el del modal y el que agrupa las unidades en pasos) avanza ``tick_s`` s por lectura."""
+        return step_modals.one_unit_per_event((self.access,), (self.core_ops, platform_ops._module("gis.masks.compile")), tick_s=tick_s)
+
+    def start_esc_calculation(self) -> Any:
+        """«Calcular» la accesibilidad «Esc» sobre ``Muro`` desde la interfaz (por pasos, sin abrir la ventana de «Crear») y el modal en marcha."""
+        with mock.patch.object(self.des_ops, "_ask_confirmation"):
+            self.assertEqual(bpy.ops.geoblender.des_road_access("EXEC_DEFAULT", **self.form(name="Esc", surface=self.wall_surface, in_steps=True)), {"RUNNING_MODAL"})
+        return self.running_access()
+
+    def count_esc_events(self, before: tuple[Any, ...], tick_s: float) -> int:
+        """Los eventos del cálculo de «Esc» **entero** con un reloj de ``tick_s`` s por lectura (lo que deja, descartado: el proyecto, como estaba)."""
+        with self.paced(tick_s):
+            whole = self.start_esc_calculation()
+            with mock.patch.object(self.des_ops, "_ask_confirmation"):
+                state, events = step_modals.drive(whole, bpy.context)
+        self.assertEqual(state, {"FINISHED"})
+        for text in ("Plataforma «Carga» (PLT-001): no comunicada", "Zona «zona_del_camino» que requiere acceso: no comunicada; lo alcanzable más próximo está a "):
+            self.assertTrue(any(line.startswith(text) for line in whole.report_log), f"el informe de la orden dice lo que no se comunica: {text}")
+        self.des_ops.discard_calculation()
+        self.assertEqual(self.state(), before)
+        return events
+
+    def esc_in_the_middle(self, before: tuple[Any, ...], *, counting_tick_s: float, cutting_tick_s: float) -> int:
+        """Esc **a mitad** del cálculo de «Esc»: cuenta sus eventos con un reloj de ``counting_tick_s`` s por lectura y corta con otro de ``cutting_tick_s`` s, **tras uno, a la mitad y antes de los
+        dos últimos** (``events // 2`` y ``events - 2``: ninguno se pasa del total; con un paso por evento, los eventos no dependen del reloj, así que siempre caen dentro). Cada Esc responde
+        ``CANCELLED``, dice que no queda nada a medias y deja el proyecto como estaba, sin cálculo ni listas. Devuelve los eventos del cálculo entero."""
+        events = self.count_esc_events(before, counting_tick_s)
+        self.assertGreaterEqual(events, 3, "el cálculo tiene varios pasos: Esc cae a mitad")
+        for cut in sorted({1, max(1, events // 2), events - 2}):
+            with self.subTest(eventos_antes_de_Esc=cut, reloj_al_contar=counting_tick_s, reloj_al_cortar=cutting_tick_s):
+                with self.paced(cutting_tick_s):
+                    modal = self.start_esc_calculation()
+                    self.assertEqual(step_modals.drive(modal, bpy.context, stop_after=cut)[0], {"RUNNING_MODAL"}, f"el cálculo tiene {events} eventos")
+                    self.assertEqual(modal.modal(bpy.context, ESCAPE), {"CANCELLED"})
+                self.assertIn("Cálculo cancelado: no queda nada a medias", modal.report_log)
+                self.assertIsNone(modal._steps)
+                self.assertIsNone(self.des_ops.calculation())
+                self.assertEqual(self.panels.access_sections(), [])
+                self.assertEqual(self.state(), before)
+        return events
+
     def test_e_esc_cancel_and_what_is_refused_leave_nothing(self) -> None:
         """RF-015-29, RF-017-30, RF-017-04, RF-015-08 (M3, M9): Esc **a mitad** del cálculo, Cancelar la confirmación y lo que se rechaza —el nombre vacío o repetido, un umbral sin valor, fuera de rango o que
         no es un número, un punto de entrada fuera de la rejilla— no dejan nada: ni operación, ni dato, ni parámetro, ni cifra, ni temporal (0 transacciones); cada rechazo dice **la capa, la
         accesibilidad, el campo y el valor**; Esc dice que no queda nada a medias."""
         self.refresh()
         before = self.state()
-
-        def start() -> Any:
-            with mock.patch.object(self.des_ops, "_ask_confirmation"):
-                self.assertEqual(bpy.ops.geoblender.des_road_access("EXEC_DEFAULT", **self.form(name="Esc", surface=self.wall_surface, in_steps=True)), {"RUNNING_MODAL"})
-            modal = self.running_access()
-            modal.STEP_BUDGET_S = step_modals.ONE_STEP_S  # un paso por evento
-            return modal
-
-        whole = start()
-        with mock.patch.object(self.des_ops, "_ask_confirmation"):
-            state, events = step_modals.drive(whole, bpy.context)  # el cálculo entero, para contar sus eventos
-        self.assertEqual(state, {"FINISHED"})
-        self.assertGreaterEqual(events, 3, "el cálculo tiene varios pasos: Esc cae a mitad")
-        for text in ("Plataforma «Carga» (PLT-001): no comunicada", "Zona «zona_del_camino» que requiere acceso: no comunicada; lo alcanzable más próximo está a "):
-            self.assertTrue(any(line.startswith(text) for line in whole.report_log), f"el informe de la orden dice lo que no se comunica: {text}")
-        self.des_ops.discard_calculation()
-        self.assertEqual(self.state(), before)
-        modal = start()
-        self.assertEqual(step_modals.drive(modal, bpy.context, stop_after=events - 2)[0], {"RUNNING_MODAL"})
-        self.assertEqual(modal.modal(bpy.context, ESCAPE), {"CANCELLED"})
-        self.assertIn("Cálculo cancelado: no queda nada a medias", modal.report_log)
-        self.assertIsNone(modal._steps)
-        self.assertIsNone(self.des_ops.calculation())
-        self.assertEqual(self.panels.access_sections(), [])
-        self.assertEqual(self.state(), before)
+        self.esc_in_the_middle(before, counting_tick_s=step_modals.TICK_S, cutting_tick_s=step_modals.TICK_S)
 
         self.calculate_access(self.form(name="Cancelada"))
         self.access.cancel(operator_self(self.access, confirm=True, in_steps=False), bpy.context)
@@ -549,6 +571,19 @@ class RoadAccessOpsTest(platform_ops.CreatePlatformTest):
                     self.assertIn(text, str(caught.exception))
                 self.assertIsNone(self.des_ops.calculation())
                 self.assertEqual(self.state(), before)
+
+    def test_e_b_the_events_of_the_calculation_and_the_cut_of_esc_do_not_depend_on_the_clock(self) -> None:
+        """RF-015-29, RF-017-30, RNF-017-06 (E-2 de la verificación única de la 017): el número de eventos de «Calcular» **no depende del reloj** y Esc a mitad cae siempre dentro. Con un reloj de
+        mentira que va **muy rápido** (0,1 µs por lectura: el paso agrupa casi todas las unidades) y otro **muy lento** (1 s por lectura: una unidad por paso), el cálculo entero da **los mismos
+        eventos**, y contarlos con uno y cortar con el otro —en los dos sentidos, también el que antes fallaba: contar lento y cortar rápido— deja el proyecto como estaba. La versión de antes
+        (el presupuesto del modal fijado cuando la orden ya había creado sus generadores, con el de verdad, 0,05 s) daba muchos más eventos con el reloj lento: ``FINISHED`` donde se esperaba
+        ``RUNNING_MODAL``."""
+        self.refresh()
+        before = self.state()
+        counted = {tick: self.count_esc_events(before, tick) for tick in (FAST_TICK_S, SLOW_TICK_S, step_modals.TICK_S)}
+        self.assertEqual(len(set(counted.values())), 1, f"los eventos del cálculo no dependen del reloj: {counted}")
+        for counting, cutting in ((SLOW_TICK_S, FAST_TICK_S), (FAST_TICK_S, SLOW_TICK_S)):
+            self.assertEqual(self.esc_in_the_middle(before, counting_tick_s=counting, cutting_tick_s=cutting), counted[counting])
 
     # --- f: desactivada con su motivo ---------------------------------------------------------------
 
