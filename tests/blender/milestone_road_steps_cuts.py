@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """«Pista…» y «Accesibilidad de las pistas…» por pasos, con su avance y Esc (spec 017, T32; HU-017-1, HU-017-3; RF-017-30, RF-015-29, RNF-017-06; plan 017 §5.3.2 y §7.3; comprobación manual M9).
 
-Lo que hace Geoblender en cada llamada del hilo de Blender mientras una pista o una accesibilidad calcula y se crea, y lo que deja Esc. El proyecto es el de ``test_road_ops.py`` (60 × 60 m con celdas
+Lo que hace Geoblender en cada llamada del hilo de Blender mientras una pista o una accesibilidad calcula y se crea, y lo que deja Esc. El proyecto es el de ``milestone_road_ops.py`` (60 × 60 m con celdas
 de 2 m, V01 y V02, el límite legal, el perímetro, un sector con la búsqueda cerrada, los terrenos ``Suave`` y ``A15``, las capas de la pista y los perfiles de referencia de IMGA, **solo de pruebas**) con
 una capa de puntos de entrada y una línea de rotura con Z (el eje del modo «eje 3D»): se paga una vez por clase (≈ 6 s). **«Crear» ya no es de una vez desde la interfaz** (``_CreatesInSteps``:
 ``Calculation.create_steps``, la transacción final como último paso; la 016 hizo lo mismo con la detección de acopios, T44): cada evento del modal, una llamada de ≤ 0,2 s, y lo que sigue a crear
 (la declaración, las máscaras, la capa de entidades y la de ejes de pistas) va en el **mismo** modal. El recorrido de **todos** los eventos es del hito ``milestone_road_steps.py``, que usa las ayudas de
-esta clase (:class:`RoadStepsCase`); aquí, en el «verde», los puntos de corte de cada fase. Las pruebas, en el orden de sus letras sobre el mismo estado.
+esta clase (:class:`RoadStepsCase`); aquí, los puntos de corte de cada fase (spec 017, T34b: este módulo pasó del «verde» al hito, P-12 y RNF-017-09; las pruebas de Esc rápidas del «verde» son las de dominio de `test_road_operation.py`). Las pruebas, en el orden de sus letras sobre el mismo estado.
 
 - RF-017-30, RF-015-29, RNF-017-06 (a): Esc a mitad de «Calcular» una pista —en los tres modos: «trazar» (la red 2D y la ruta 3D), «sobre un eje» y «eje 3D»— y la accesibilidad, en cada fase de su
   cálculo, responde en ≤ 2 s y **no deja nada**: ni operación, ni dato, ni parámetro, ni cifra, ni fichero temporal (ninguna ``des_rdx_``, ``des_acc_`` ni ``des_rax_``), ni cálculo abierto.
@@ -34,7 +34,7 @@ import bpy
 import numpy as np
 
 from tests.blender import test_platform_ops as platform_ops
-from tests.blender import test_road_ops as road_ops
+from tests.blender import milestone_road_ops as road_ops
 from tests.support import blender_ext, step_modals
 
 ROAD = "des_create_road"
@@ -88,7 +88,7 @@ class Run:
 
 class RoadStepsCase(road_ops.RoadOpsTest):
     """El proyecto de la prueba de la pista (que hereda el de la plataforma) con una capa de puntos de entrada y la línea 3D, y las ayudas de los pasos con Esc. Sin pruebas propias: las de la pista
-    son de ``test_road_ops.py``."""
+    son de ``milestone_road_ops.py``."""
 
     probes: dict[str, Run]
     surfaces: int
@@ -374,14 +374,14 @@ class RoadStepsCase(road_ops.RoadOpsTest):
             pass
 
 
-for _name in dir(road_ops.RoadOpsTest):  # las pruebas de la pista son de ``test_road_ops.py``: aquí solo el proyecto y las ayudas
+for _name in dir(road_ops.RoadOpsTest):  # las pruebas de la pista son de ``milestone_road_ops.py``: aquí solo el proyecto y las ayudas
     if _name.startswith("test_"):
         setattr(RoadStepsCase, _name, None)
 del _name
 
 
 def cut_points(run: Run) -> Iterator[int]:
-    """Los puntos de corte de Esc de «Calcular» en el «verde»: **antes del primer paso**, justo **antes y después del primer paso de cada fase** y **antes del último**: cuántos eventos corren antes de
+    """Los puntos de corte de Esc de «Calcular»: **antes del primer paso**, justo **antes y después del primer paso de cada fase** y **antes del último**: cuántos eventos corren antes de
     Esc."""
     firsts = {index for index, phase in enumerate(run.phases) if index == 0 or run.phases[index - 1] != phase}
     points = {0, run.events - 1, *firsts, *(index + 1 for index in firsts)}
@@ -389,7 +389,7 @@ def cut_points(run: Run) -> Iterator[int]:
 
 
 class RoadStepsTest(RoadStepsCase):
-    """Las pruebas de los pasos con Esc, en el «verde» (el recorrido de todos los eventos es del hito)."""
+    """Las pruebas de los pasos con Esc en sus puntos de corte (el recorrido de todos los eventos es de ``milestone_road_steps.py``)."""
 
     def test_a_esc_in_each_phase_of_calculating_leaves_nothing(self) -> None:
         """RF-017-30, RF-015-29, RNF-017-06 (M9): Esc a mitad de «Calcular» **una pista en sus tres modos** («trazar»: la red 2D y la ruta 3D; «sobre un eje»; «eje 3D») y **la accesibilidad**, antes

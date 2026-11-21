@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """HITO: Esc en **cada** evento de «Pista…» y «Accesibilidad de las pistas…» (spec 017, T32; HU-017-1, HU-017-3; RF-017-30, RF-015-29, RNF-017-06; plan 017 §5.3.2 y §7.3; comprobación manual M9).
 
-El recorrido que ``test_road_steps.py`` (el «verde») hace por los puntos de corte de cada fase, aquí de **todos** los eventos del modal, con un paso por evento: mandar Esc tras 0, 1, 2… eventos de
+El recorrido que ``milestone_road_steps_cuts.py`` hace por los puntos de corte de cada fase, aquí de **todos** los eventos del modal, con un paso por evento: mandar Esc tras 0, 1, 2… eventos de
 «Calcular» una pista en sus tres modos («trazar»: la red 2D y la ruta 3D; «sobre un eje»; «eje 3D») y la accesibilidad; de «Crear» (cada tabla y cada rejilla en su temporal, y justo antes de la transacción
 final) y de **lo que sigue a «Crear»** (la declaración, las máscaras, la capa de entidades y la de ejes de pistas, en el mismo modal). Cada Esc responde en ≤ 2 s; los de «Calcular» y de «Crear» **no dejan
 nada** (ni operación, ni dato, ni parámetro, ni cifra, ni temporal: ninguna ``des_rdx_``, ``des_acc_`` ni ``des_rax_``) y los de lo que sigue dejan la entidad creada, ninguna operación en curso, ningún
@@ -16,14 +16,14 @@ Se para cada recorrido cuando el cálculo acaba antes de que llegue Esc: así cu
 import itertools
 import unittest
 
-from tests.blender import test_road_steps as steps
+from tests.blender import milestone_road_steps_cuts as steps
 
 CHAIN_LIMIT = 200
 """Cuántos eventos se recorren como mucho (la cadena de lo que sigue acaba mucho antes)."""
 
 
 class RoadStepsMilestone(steps.RoadStepsCase):
-    """El proyecto de la prueba de la pista y las ayudas de ``test_road_steps.py``, con los recorridos de todos los eventos."""
+    """El proyecto de la prueba de la pista y las ayudas de ``milestone_road_steps_cuts.py``, con los recorridos de todos los eventos."""
 
     def test_a_esc_in_every_event_of_calculating_leaves_nothing(self) -> None:
         """RF-017-30, RF-015-29, RNF-017-06 (M9): Esc tras **cada** evento de «Calcular» una pista (los tres modos) y la accesibilidad responde en ≤ 2 s y no deja nada; ninguna llamada pasa de 0,2 s."""

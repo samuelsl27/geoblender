@@ -2,8 +2,8 @@
 """La barra N de la pista y de la accesibilidad, con proyecto y con las órdenes reales (spec 017, T31b; HU-017-1 a HU-017-3; RF-015-25, RF-017-23, RF-017-24, RF-017-25, RF-017-17, H2-2; RF-010-06;
 plan 017 §5.5; decisión T31-a y T31-b; comprobación manual M4), en ``blender -b`` y sin pantalla.
 
-El proyecto de la accesibilidad (``test_road_access_ops``: ventana de 60 × 60 m con celdas de 2 m, V01 y V02, el terreno ``Suave`` y el ``Muro`` que sube 30 m desde y = 36 m, las bermas y las dos
-superficies de una cantera, la plataforma «Carga» —PLT-001, al sur— y dos zonas «requiere acceso», una al sur y otra al norte) con las capas y los perfiles de la pista (``test_road_ops``, **solo de las
+El proyecto de la accesibilidad (``milestone_road_access_ops``: ventana de 60 × 60 m con celdas de 2 m, V01 y V02, el terreno ``Suave`` y el ``Muro`` que sube 30 m desde y = 36 m, las bermas y las dos
+superficies de una cantera, la plataforma «Carga» —PLT-001, al sur— y dos zonas «requiere acceso», una al sur y otra al norte) con las capas y los perfiles de la pista (``milestone_road_ops``, **solo de las
 pruebas**). Con las órdenes reales, en V01: ``RDW-001`` «Pista de la carga» (de (10, 30) a (50, 30) sobre ``Suave``: **cruza la huella de «Carga»**, cuya superficie es otro diseño de la versión que la
 pista lee, RF-017-05 (b)), ``RDW-002`` «Ramal al norte» (parte de su eje, a 20 m: se le apoya) y ``ACC-001`` «Alcanzable» (sobre ``Muro``, desde el norte: **no se comunican** la berma del sur, la
 plataforma y la zona del camino; sí la berma y la zona del norte). Las pruebas, **en el orden de sus letras** sobre el mismo estado; las cuentas, a mano (las tablas leídas con SQL):
@@ -34,8 +34,8 @@ from typing import Any
 import bpy
 
 from tests.blender import test_platform_ops as platform_ops
-from tests.blender import test_road_access_ops as access_ops
-from tests.blender import test_road_ops as road_ops
+from tests.blender import milestone_road_access_ops as access_ops
+from tests.blender import milestone_road_ops as road_ops
 from tests.support import blender_ext
 from tests.support.fake_layout import draw
 

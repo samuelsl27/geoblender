@@ -2,8 +2,8 @@
 """El objeto de la pista y el de la accesibilidad en la vista (spec 017, T31; HU-017-1, HU-017-3; RF-015-25, RF-017-23, RF-017-25, RF-017-24; RF-010-01; plan 017 §5.1 y §5.5;
 decisión T31-a; ADR-0005), con las órdenes reales, en ``blender -b`` y sin pantalla.
 
-El proyecto de ``test_road_ops`` (ventana de 60 × 60 m con celdas de 2 m, V01 y V02, el terreno ``Suave`` de ``100 + 0,02·(x + y)``, las capas de la pista y los perfiles de
-referencia, **solo de las pruebas**) con el terreno ``Muro`` de ``test_road_access_ops`` (una pared de 30 m a partir de y = 36 m que ninguna pendiente transitable pasa) y una capa
+El proyecto de ``milestone_road_ops`` (ventana de 60 × 60 m con celdas de 2 m, V01 y V02, el terreno ``Suave`` de ``100 + 0,02·(x + y)``, las capas de la pista y los perfiles de
+referencia, **solo de las pruebas**) con el terreno ``Muro`` de ``milestone_road_access_ops`` (una pared de 30 m a partir de y = 36 m que ninguna pendiente transitable pasa) y una capa
 con **un punto de entrada en el norte**. Con las órdenes reales, en V01: ``RDW-001`` «Pista de la carga» (trazada de (10, 30) a (50, 30) sobre ``Suave``, con la cota de inicio
 que da la persona) y ``ACC-001`` «Alcanzable» (sobre ``Muro``, desde el norte: lo alcanzable es **solo el norte**). Las pruebas, **en el orden de sus letras** sobre el mismo
 estado; las cuentas, a mano (las tablas y los ficheros leídos con SQL y bucles de numpy, no el código que se prueba):
@@ -34,8 +34,8 @@ import bpy
 import numpy as np
 
 from tests.blender import test_platform_ops as platform_ops
-from tests.blender import test_road_access_ops as access_ops
-from tests.blender import test_road_ops as road_ops
+from tests.blender import milestone_road_access_ops as access_ops
+from tests.blender import milestone_road_ops as road_ops
 from tests.support import blender_ext
 
 KIND = "DESIGN_ENTITY"

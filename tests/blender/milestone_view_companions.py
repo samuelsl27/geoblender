@@ -9,7 +9,7 @@ pista, además, su eje por estaciones ``des_rdx_``) cambia de hash y ``des_epr_`
 de una entidad declara sus **datos compañeros** (su superficie, su base y su eje), el objeto anota su hash al cargarse y ``core.views.state`` los cuenta para «no al día».
 
 Dos proyectos pequeños (ventana de 60 × 60 m con celdas de 2 m: **es un hito**, ``check.py --completo``), uno con **plataformas** (el de ``test_platform_ops``: «Carga» a 105 m y «Taller»,
-cada una de su terreno) y otro con una **pista** (el de ``test_road_ops``: «Pista de la carga» sobre ``Suave``). En cada uno, **en el orden de sus letras sobre el mismo estado** (las
+cada una de su terreno) y otro con una **pista** (el de ``milestone_road_ops``: «Pista de la carga» sobre ``Suave``). En cada uno, **en el orden de sus letras sobre el mismo estado** (las
 cuentas, a mano, con SQL y las mallas de Blender):
 
 - (a) el mundo, con las órdenes reales; «Cargar en la vista» da el objeto de cada entidad a la cota de su superficie (la rasante de la pista en la Z de su eje).
@@ -32,7 +32,7 @@ import bpy
 import numpy as np
 
 from tests.blender import test_platform_ops as platform_ops
-from tests.blender import test_road_ops as road_ops
+from tests.blender import milestone_road_ops as road_ops
 from tests.support import blender_ext
 
 KIND = "DESIGN_ENTITY"

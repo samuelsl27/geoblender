@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La vista previa de la pista: lo que se dibuja, sin ``gpu`` (spec 017, T28; HU-017-1; RF-017-26, RF-015-26, RF-017-09, RF-017-15, RF-017-17, RNF-017-06; plan 017 §5.5 y §7.3; comprobación manual M5).
 
+**Spec 017, T34b: pasó del «verde» al paso «hito»** (RNF-017-09: el A/B de ``check.py`` con y sin las pruebas de la 017 daba +3,7 s y esta clase suma 1,4 s con un proyecto por prueba; lo que el «verde»
+conserva de la vista previa es ``tests/blender/test_road_preview.py`` y los de dominio de ``test_road_operation``).
+
 ``design.preview.road_preview_steps`` prepara, por pasos y **solo leyendo**, los datos de lo que dibuja ``bl.draw.entity`` (los lotes se arman allí y se prueban en
 ``tests/blender/test_road_preview.py``):
 

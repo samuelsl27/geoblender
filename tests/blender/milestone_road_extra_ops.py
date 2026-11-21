@@ -5,7 +5,7 @@
 «trazar» hasta la ruta y la rasante** (sin la sección) y deja **una capa de líneas con Z, editable en QGIS** (``des_rpl_<nombre>``), **sin tocar ninguna superficie** y sin ser una entidad. Su diálogo es el de «Pista…»
 en «trazar»; «Calcular» y «Crear» son **por pasos** con el avance y Esc (``_CreatesInSteps`` sin lo que sigue a crear una entidad); la pendiente media por encima de pm solo avisa.
 :class:`GEOBLENDER_OT_des_export_road` (``geoblender.des_export_road``) escribe la superficie de una pista o lo que alcanza una accesibilidad como GeoTIFF y la rasante de una pista a CSV **sin escribir nada
-en el proyecto** (exportar no es una operación: H-9). El proyecto es el de ``test_road_ops.py`` (60 × 60 m con celdas de 2 m, V01 y V02, el límite legal, el perímetro, un sector con la búsqueda cerrada, los terrenos
+en el proyecto** (exportar no es una operación: H-9). El proyecto es el de ``milestone_road_ops.py`` (60 × 60 m con celdas de 2 m, V01 y V02, el límite legal, el perímetro, un sector con la búsqueda cerrada, los terrenos
 ``Suave`` y ``A15``, las capas de la pista y los perfiles de referencia de IMGA, **solo de pruebas**): se paga **una vez** por clase (≈ 6 s). Las pruebas, en el orden de sus letras sobre el mismo estado.
 
 - RF-017-29, RF-015-28 (a): las dos órdenes son reales, del catálogo (entrada 017, entregada); sus propiedades tienen nombre y descripción en español; el diálogo propone el nombre, la capa y la partida y dibuja los
@@ -40,7 +40,7 @@ import bpy
 import numpy as np
 
 from tests.blender import test_platform_ops as platform_ops
-from tests.blender import test_road_ops as road_ops
+from tests.blender import milestone_road_ops as road_ops
 from tests.support import blender_ext, step_modals
 from tests.support.fake_layout import draw, operator_self
 from tests.support.trees import remove_tree
@@ -81,7 +81,7 @@ EXPORT_PROPERTIES = {"what": ("What to export", "The surface of a road (GeoTIFF)
 
 
 class RoadExtraOpsTest(road_ops.RoadOpsTest):
-    """El proyecto de la prueba de la pista con una capa de puntos de entrada y las ayudas de las dos órdenes. Las pruebas de la pista son de ``test_road_ops.py``: aquí solo se aprovecha su proyecto."""
+    """El proyecto de la prueba de la pista con una capa de puntos de entrada y las ayudas de las dos órdenes. Las pruebas de la pista son de ``milestone_road_ops.py``: aquí solo se aprovecha su proyecto."""
 
     exported: dict[str, str]
     proposals: int
@@ -869,7 +869,7 @@ class RoadExtraOpsTest(road_ops.RoadOpsTest):
         self.assertFalse(any(".tmp" in name for name in self.names()))
 
 
-# Las pruebas de la plataforma y las de la pista son de ``test_platform_ops.py`` y ``test_road_ops.py``: aquí solo se aprovecha su proyecto.
+# Las pruebas de la plataforma y las de la pista son de ``test_platform_ops.py`` y ``milestone_road_ops.py``: aquí solo se aprovecha su proyecto.
 for _name in dir(road_ops.RoadOpsTest):
     if _name.startswith("test_") and _name not in RoadExtraOpsTest.__dict__:
         setattr(RoadExtraOpsTest, _name, None)

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La vista previa de una pista con un proyecto de verdad, en Blender (spec 017, T28; HU-017-1; RF-017-26, RF-015-26, RF-017-09, RF-017-15, RF-017-17; RNF-017-06 y RNF-017-08; plan 017 §5.5 y §7.3;
 comprobación manual M5), como prueba de **hito**: ``check.py --completo`` la ejecuta; el «verde» tiene las suyas, sin proyecto, en ``test_road_preview.py`` (los lotes y el ciclo de vida) y
-``tests/unit/design/test_road_preview_data.py`` (lo que prepara ``design``).
+``tests/unit/design/milestone_road_preview_data.py`` (lo que prepara ``design``).
 
 El proyecto es **el de las pistas de las pruebas sin Blender** (``tests.support.road_data``: la cantera de la 015 con los terrenos como rejillas y las capas, en la de 2 m), el del hito H2
 (``milestone_road_ce.RoadCETest``: lo abre la extensión, con el perfil de referencia y el de la «opción A15»), con la cadena **P1 → «Pista a P1» → «Ramal» → relleno** hecha con la orden real de la

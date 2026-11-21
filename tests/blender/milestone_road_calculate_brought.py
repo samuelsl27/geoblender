@@ -8,7 +8,7 @@ sin diálogo, calcula con los parámetros que la pista ya tiene en la versión (
 pasos con el avance y Esc, enseña el resumen y pide confirmar; «Crear» la registra **con su código y sin tocar ningún parámetro**, **por pasos y en una sola transacción** (``_CreatesInSteps``), y las
 dependencias («se apoya en»: el eje de la pista del origen, la plataforma del destino, otros diseños) se detectan de nuevo (RF-015-04).
 
-El mundo es el de ``test_road_steps.py`` (ventana de 60 × 60 m con celdas de 2 m, V01 y V02, los terrenos ``Suave`` y ``A15``, las capas de la pista y los perfiles de referencia de IMGA, **solo de
+El mundo es el de ``milestone_road_steps_cuts.py`` (ventana de 60 × 60 m con celdas de 2 m, V01 y V02, los terrenos ``Suave`` y ``A15``, las capas de la pista y los perfiles de referencia de IMGA, **solo de
 pruebas**) con, en V01 y con las órdenes reales: la plataforma ``PLT-001`` «Carga», la pista ``RDW-001`` «Pista de la carga», su ramal ``RDW-002`` «Ramal al norte» (parte de su eje a 20 m) y la
 accesibilidad ``ACC-001`` «Alcanzable». Se trae V01 a V02 (que no tiene el perfil de la pista: **los valores del perfil no viajan con ella**) y se calcula allí. Las pruebas, **en el orden de sus
 letras** sobre el mismo estado.
@@ -38,8 +38,8 @@ from unittest import mock
 import bpy
 
 from tests.blender import test_platform_ops as platform_ops
-from tests.blender import test_road_ops as road_ops
-from tests.blender import test_road_steps as steps
+from tests.blender import milestone_road_ops as road_ops
+from tests.blender import milestone_road_steps_cuts as steps
 from tests.support import blender_ext, step_modals
 from tests.support.fake_layout import draw, operator_self
 
@@ -76,7 +76,7 @@ class Rows:
 
 
 class BroughtRoadCalculateTest(steps.RoadStepsCase):
-    """El mundo de ``test_road_steps.py`` con la plataforma, las dos pistas y la accesibilidad de V01, traídas a V02. Las pruebas de la pista y de los pasos son de sus módulos."""
+    """El mundo de ``milestone_road_steps_cuts.py`` con la plataforma, las dos pistas y la accesibilidad de V01, traídas a V02. Las pruebas de la pista y de los pasos son de sus módulos."""
 
     v01_ops: dict[str, str]
 

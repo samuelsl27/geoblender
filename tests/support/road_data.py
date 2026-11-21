@@ -7,7 +7,7 @@ esquina :data:`BASE` de ``tests.support.constraints_fixtures``, sobre la cantera
 ampliación de la 015 (``entity_fixtures``) y las ayudas de la 016 (``stockpile_data``), que no se tocan. Las
 coordenadas «locales» son metros desde la esquina suroeste de la rejilla (``x`` al este, ``y`` al norte); en las
 rejillas, la fila 0 es el norte. Cada función que da un array da uno **nuevo**. Las cuentas de la docstring de cada
-constante están hechas a mano; las comprueba ``tests/unit/design/test_road_fixtures.py``. **Todos los terrenos son
+constante están hechas a mano; las comprueba ``tests/unit/design/milestone_road_fixtures.py``. **Todos los terrenos son
 de la rejilla de la cantera** (400 × 400 m: de 1 m con las cifras a mano y de 2 m con proyecto, ≤ 200 × 200), así que
 caben todos en el mismo proyecto como rejillas distintas y comparten las capas.
 

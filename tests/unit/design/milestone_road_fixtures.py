@@ -2,6 +2,9 @@
 """La cantera de pruebas de las pistas y rampas (spec 017, T01; plan 017 §7.1, §7.3 y §7.4; RF-017-02, 04, 08
 a 18, 20, 24 y 25; CE-017-01 a 09; E1 a E5).
 
+**Spec 017, T34b: pasó del «verde» al paso «hito»** (RNF-017-09: 73 pruebas y 0,7 s que solo comprueban las ayudas de ``tests/support/road_data.py``, que no cambian entre tareas; cada
+requisito que cita lo conserva en otras pruebas del «verde»).
+
 Recorre ``tests.support.road_data`` antes de que la usen las pruebas de la 017 (que aún no existen), con
 cuentas a mano: el perfil de referencia y sus derivados (calzada 10,5 m, sección 11,5 m, semianchura 5,75 m); los
 16 rumbos (y que ofrecen la ruta a ≤ 2,8 % de la recta y las pendientes de CE-017-04); el plano del 4 % con y sin

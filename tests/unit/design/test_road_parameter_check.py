@@ -202,7 +202,7 @@ class RoadNameRowTest(RoadParameterCase):
     sin versión: «El parámetro … no está registrado en el proyecto») y la pista no la tenía: su operación **no lee su nombre** (renombrarla no la deja obsoleta), así que nadie la creaba; la plataforma
     sí la tiene porque la declaración de sus restricciones lee su nombre. **La pista crea la fila de su nombre** como ella (:func:`~design.road_store.ensure_name_row`: «sin confirmar», sin valor y con
     el decisor por defecto: el nombre es el de la versión). Aquí, sin operaciones: la fila y lo que la orden hace con ella; crear, recalcular, traer y la capa de ejes con el proyecto son de los hitos
-    y de ``test_road_ops``. **En orden** (``test_a`` a ``test_c``)."""
+    y de ``milestone_road_ops``. **En orden** (``test_a`` a ``test_c``)."""
 
     CODES = ("RDW-001", "RDW-002", "RDW-003")
 

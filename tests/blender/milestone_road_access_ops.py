@@ -5,7 +5,7 @@
 la versión** y de los puntos de entrada de una capa, qué celdas se alcanzan a pie (la pendiente y el ancho transitables), las cotas mínima y máxima alcanzables —también sobre la final de una cantera—
 y qué tramos de berma, plataformas y zonas «requiere acceso» quedan comunicados. Su diálogo pide el nombre, la superficie (la última de la cadena, por defecto), la capa de los puntos de entrada y los
 tres umbrales, **cada uno con su tipo** (HIPÓTESIS sin valor por defecto: D-17); tras Calcular, la ventana de Crear enseña el resumen y **las listas** de bermas, plataformas y zonas, comunicadas o no, cada
-una con su lugar y su «Ir a». Calcular, Crear, Cancelar y Esc son los de las demás órdenes (``_CalculateAndCreate``): nada se registra hasta Crear. Es el modelo de ``test_road_ops.py`` (T29b): aprovecha el
+una con su lugar y su «Ir a». Calcular, Crear, Cancelar y Esc son los de las demás órdenes (``_CalculateAndCreate``): nada se registra hasta Crear. Es el modelo de ``milestone_road_ops.py`` (T29b): aprovecha el
 proyecto de ``test_platform_ops.py`` (60 × 60 m con celdas de 2 m, V01 y V02, el límite legal, el perímetro y un sector con la búsqueda cerrada) y le añade lo que mira la accesibilidad: dos terrenos
 (``Suave``, de ``100 + 0,02·(x + y)``, y ``Muro``, que sube 30 m desde y = 36 m: una pared que separa el sur del norte), una capa con el punto de entrada **en el norte**, otra con un punto fuera de la
 rejilla, las rejillas de cotas de berma de V01 (una banda al sur y otra al norte, escritas por una operación de prueba), la plataforma «Carga» (al sur, creada con la orden real) y dos zonas «requiere acceso»

@@ -197,7 +197,7 @@ class LevelFollowTest(unittest.TestCase):
 class HandEditedLevelTest(unittest.TestCase):
     """RF-017-03, D-13, RF-015-01, RF-015-08 (T29c): quien **cambia a mano** la cota de inicio o de fin de una pista con «Cambiar parámetro…» la deja **suya** (``source_kind = person``, con su origen
     anotado), de modo que recalcular no la vuelve a derivar (T24b: solo se vuelve a derivar lo que anotó el algoritmo). **Sin proyecto**: lo que cambia es una función pura de la clave, de la fila y de
-    lo que cambió la persona (:func:`~design.road_store.person_level_changes`); con el proyecto, la orden y recalcular son de ``milestone_road_chain.HandEditedLevelTest`` y de ``test_road_ops``."""
+    lo que cambió la persona (:func:`~design.road_store.person_level_changes`); con el proyecto, la orden y recalcular son de ``milestone_road_chain.HandEditedLevelTest`` y de ``milestone_road_ops``."""
 
     END = "des.road.rdw_001.end_level_m"
     START = "des.road.rdw_001.start_level_m"

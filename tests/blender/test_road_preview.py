@@ -2,7 +2,7 @@
 """La vista previa de una pista en la Vista 3D (spec 017, T28; HU-017-1; RF-017-26, RF-015-26; RNF-017-06; plan 017 §5.5; comprobación manual M5; principio 8).
 
 La vista previa (``bl.draw.entity``, con ``EntityPlan(road=…)``) es un manejador de dibujo **sin objetos ni escritura**: lo que dibuja se prueba en sus lotes (sin ``gpu``: ``docs/trampas.md`` §3), sus
-nombres y su leyenda, no en píxeles de pantalla. Aquí, **sin proyecto** (la preparación de ``design`` la prueba ``tests/unit/design/test_road_preview_data.py`` y ``milestone_road_preview`` la hace con un
+nombres y su leyenda, no en píxeles de pantalla. Aquí, **sin proyecto** (la preparación de ``design`` la prueba ``tests/unit/design/milestone_road_preview_data.py`` y ``milestone_road_preview`` la hace con un
 proyecto de verdad): una ``design.preview.RoadPreview`` sintética, con las mismas funciones de ``design`` (``gradient_stretches`` y ``section_edges``), entra por ``road_preview_steps`` y sale en lotes.
 Las pruebas, en el orden de sus letras:
 
