@@ -258,6 +258,7 @@ __all__ = [
     "ACCESS_BERM_COLUMNS",
     "ACCESS_PLATFORM_COLUMNS",
     "ACCESS_ZONE_COLUMNS",
+    "ROAD_AXIS_COLUMNS",
     "BERM_COLUMNS",
     "BUTTRESS_ENTITY_COLUMNS",
     "CANDIDATE_COLUMNS",
@@ -449,13 +450,21 @@ ACCESS_ZONE_COLUMNS: tuple[ColumnDef, ...] = (
 de cota»): **una fila por zona «requiere acceso» de la 012** (una por restricción de ese tipo), con su código (el de la restricción), si queda
 comunicada (``connected``: 1 o 0) y, de la que no, su lugar (``x`` e ``y`` absolutos), la distancia (m) y la diferencia de cota (m, con signo) a
 lo alcanzable más próximo; vacíos los que no se dan. **Lo que lee la verificación de la 012 por su papel** (``access_zones``)."""
+ROAD_AXIS_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("station_m", "DOUBLE", True), ColumnDef("x", "DOUBLE", True), ColumnDef("y", "DOUBLE", True), ColumnDef("terrain_m", "DOUBLE", True),
+    ColumnDef("level_m", "DOUBLE", True), ColumnDef("gradient_pct", "DOUBLE", True), ColumnDef("radius_m", "DOUBLE", False), ColumnDef("curve", "INTEGER", True))
+"""Las columnas de ``des_rdx_`` (spec 017, T19; plan 017 §5.2.3: «el eje por estaciones: abscisa, x, y, cota del terreno, cota de la rasante, pendiente en %, radio y curva»):
+**una fila por estación** del eje de una pista, en el orden de su abscisa (``station_m``, m, desde el origen), con su lugar absoluto (``x`` e ``y``, m), la cota de la superficie
+de partida (``terrain_m``) y la de la rasante (``level_m``), la pendiente del tramo que empieza en ella (``gradient_pct``, %, con signo: positiva si sube en el sentido de la
+marcha), el radio de la curva en que está (``radius_m``; vacío en una recta) y el número de esa curva (``curve``; 0 en una recta). Es lo que lee **una pista que parte del eje de
+otra** (``RDW-001@s``: su lugar y su cota a la abscisa ``s``, RF-017-03); la escribe la T21."""
 _COLUMNS: Mapping[str, tuple[ColumnDef, ...]] = MappingProxyType({
     provenance.BERM_TABLE: BERM_COLUMNS, provenance.REPORT_TABLE: REPORT_COLUMNS,
     provenance.QUARRY_REPORT_TABLE: REPORT_COLUMNS, provenance.EDGE_REPORT_TABLE: REPORT_COLUMNS,
     provenance.ENTITY_TABLE: ENTITY_COLUMNS, provenance.ENTITY_REPORT_TABLE: REPORT_COLUMNS,
     provenance.STOCKPILES_TABLE: STOCKPILE_COLUMNS, provenance.STOCKPILE_CANDIDATES_TABLE: CANDIDATE_COLUMNS,
     provenance.ACCESS_BERMS_TABLE: ACCESS_BERM_COLUMNS, provenance.ACCESS_PLATFORMS_TABLE: ACCESS_PLATFORM_COLUMNS,
-    provenance.ACCESS_ZONES_TABLE: ACCESS_ZONE_COLUMNS})
+    provenance.ACCESS_ZONES_TABLE: ACCESS_ZONE_COLUMNS, provenance.ROAD_AXIS_TABLE: ROAD_AXIS_COLUMNS})
 
 
 BUTTRESS_ENTITY_COLUMNS: tuple[ColumnDef, ...] = (*ENTITY_COLUMNS, ColumnDef("zone", "TEXT", True))

@@ -2939,6 +2939,59 @@ CATALOG: tuple[Message, ...] = (
         "zona «{zone}» ({low} a {high} m), así que no se puede llegar al destino allí; elija una cota dentro de ese "
         "rango u otra zona; no se crea nada.",
     ),
+    # T19 (preparar la pista; RF-017-02, RF-017-03, RF-017-04): lo que la preparación rechaza de la malla de la ruta, de la zona del destino por cota, del destino en una
+    # entidad y del origen en el eje de otra pista.
+    Message(
+        "des.road_layer_kind",
+        "Layer «{layer}», haul road «{entity}»: «{field}»: this layer holds {value} and the mode of the haul road needs {expected}; "
+        "choose another layer or another mode; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}»: esta capa es de {value} y el modo de la pista necesita {expected}; elija "
+        "otra capa u otro modo; no se crea nada.",
+    ),
+    Message(
+        "des.road_layer_field",
+        "Layer «{layer}», haul road «{entity}»: «{field}»: the layer has no text field «{value}» for the name of its features; the "
+        "text fields are: {fields}; choose one of them; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}»: la capa no tiene ningún campo de texto «{value}» para el nombre de sus "
+        "geometrías; los campos de texto son: {fields}; elija uno de ellos; no se crea nada.",
+    ),
+    Message(
+        "des.road_mesh_not_multiple",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = {value} m is not a whole multiple of the project step ({step} m); the "
+        "route is searched in whole blocks of cells; choose a multiple of {step} m; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = {value} m no es un múltiplo entero del paso del proyecto ({step} m); la "
+        "ruta se busca en bloques enteros de celdas; elija un múltiplo de {step} m; no se crea nada.",
+    ),
+    Message(
+        "des.road_dest_zone_empty",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}»: the zone of the destination level contains no node of the "
+        "route mesh that can be stepped on (outside the grid, without data or in a forbidden zone); choose another zone; nothing "
+        "is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}»: la zona de la cota de destino no contiene ningún nodo de la "
+        "malla de la ruta que se pueda pisar (fuera de la rejilla, sin dato o en una zona prohibida); elija otra zona; no se "
+        "crea nada.",
+    ),
+    Message(
+        "des.road_destination_not_in_entity",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = {value}: no point of the layer falls inside the footprint of {target}; "
+        "put one point of the layer on it; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = {value}: ningún punto de la capa cae en la huella de {target}; ponga un "
+        "punto de la capa sobre ella; no se crea nada.",
+    ),
+    Message(
+        "des.road_destination_ambiguous",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = {value}: {points} points of the layer fall inside the footprint of "
+        "{target}; leave only the one that is the destination; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = {value}: {points} puntos de la capa caen en la huella de {target}; deje "
+        "solo el que es el destino; no se crea nada.",
+    ),
+    Message(
+        "des.road_origin_abscissa",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = {value}: the axis of {target} is {length} m long and has no station "
+        "at that abscissa; choose one between the start of that axis and its end ({length} m); nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = {value}: el eje de {target} mide {length} m y no tiene estación en esa "
+        "abscisa; elija una entre el principio de ese eje y su final ({length} m); no se crea nada.",
+    ),
     # RF-017-04 (con RF-017-24): la accesibilidad sin punto de entrada o con uno sin dato.
     Message(
         "des.access_no_entry",

@@ -50,6 +50,14 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # RF-017-04: las cotas.
     "des.road_level_range": ("error", "RF-017-04", {*GEOMETRY, "low", "high", "limit"}),
     "des.road_dest_level_out_of_zone": ("error", "RF-017-04", {*GEOMETRY, "zone", "low", "high"}),
+    # T19 (preparar la pista): la malla de la ruta, la zona del destino por cota, el destino en una entidad y el origen en el eje de otra pista.
+    "des.road_layer_kind": ("error", "RF-017-04", {*GEOMETRY, "expected"}),
+    "des.road_layer_field": ("error", "RF-017-04", {*GEOMETRY, "fields"}),
+    "des.road_mesh_not_multiple": ("error", "RF-017-04", {*GEOMETRY, "step"}),
+    "des.road_dest_zone_empty": ("error", "RF-017-04", GEOMETRY),
+    "des.road_destination_not_in_entity": ("error", "RF-017-03", {*GEOMETRY, "target"}),
+    "des.road_destination_ambiguous": ("error", "RF-017-04", {*GEOMETRY, "target", "points"}),
+    "des.road_origin_abscissa": ("error", "RF-017-03", {*GEOMETRY, "target", "length"}),
     # RF-017-04 (y RF-017-24): la accesibilidad sin punto de entrada o con uno sin dato.
     "des.access_no_entry": ("error", "RF-017-04", {"layer", "entity"}),
     "des.access_entry_no_data": ("error", "RF-017-04", {"layer", "entity", "value", "surface", *POSITION}),
@@ -186,7 +194,7 @@ class RoadMessagesTest(unittest.TestCase):
                   "z_origin": 120.0, "z_destination": 128.5, "gradient": 12.5, "margin": 60.0, "budget": 5000000,
                   "expanded": 5000001, "length_before": 14.0, "length_after": 18.0, "fitted": 9.0, "minimum": 12.0,
                   "length": 200.0, "needed": 300.0, "drop": 30.0, "name": "Pista 1",
-                  "fields": "nombre, cota", "version": "V01"}
+                  "fields": "nombre, cota", "version": "V01", "step": 2.0, "target": "PLT-001", "points": 2, "expected": "puntos"}
         for code, (severity, _rf, _marks) in CODES.items():
             with self.subTest(code=code):
                 if severity == "error":

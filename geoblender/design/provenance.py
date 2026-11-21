@@ -265,7 +265,7 @@ from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 
 if TYPE_CHECKING:  # solo para los tipos: importar el informe arrastraría los cálculos
     from .report import DesignReport
-    from .road_model import AccessRequest  # lo crea quien calcula la accesibilidad, no habilitar (RNF-001-03)
+    from .road_model import AccessRequest, RoadRequest  # lo crea quien calcula la pista o la accesibilidad, no habilitar (RNF-001-03)
     from .supported_requests import (  # las crea la primera llamada que las usa, no habilitar (T51)
         BodyRequest,
         ButtressFields,
@@ -561,6 +561,7 @@ __all__ = [
     "road_inputs",
     "road_operation_defs",
     "road_params",
+    "road_settings",
     "propose_figures",
     "sector_inputs",
     "settings_decisions",
@@ -3821,7 +3822,7 @@ def road_inputs(layer: str, start: str, masks: Iterable[Use] = (), supports: Ite
     return _unique(found)
 
 
-def road_params(code: str, *, mode: str, profile: str, valued: Iterable[str] = (), supports: bool = False) -> tuple[str, ...]:
+def road_params(code: str, *, mode: str, profile: str, valued: Iterable[str] = (), supports: bool = False, level_destination: bool = False) -> tuple[str, ...]:
     """Los parámetros que lee ``des.road`` de la pista de código ``code`` (``begin_operation(params=…)``; spec 017, T03; RF-017-01, 02,
     07, 10; plan 017 §5.2.2; P-14), por orden de :class:`~.params.RoadParam`: el modo, la capa, el perfil y la partida siempre; en
     «trazar» (``trace``), además, el origen, el destino y los de la ruta (:data:`_ROAD_ROUTE`, con el presupuesto de estados); en «sobre
@@ -3832,7 +3833,8 @@ def road_params(code: str, *, mode: str, profile: str, valued: Iterable[str] = (
     (:data:`PLATFORM_COMMON_PARAMS`). No lee su nombre ni su motivo (renombrarla no la deja obsoleta) ni lo que decide (descartarla); no
     declara nada. Cambiar uno deja la pista (y, en cascada, lo que parte de ella) obsoleta con su causa. ``ValueError`` si ``code`` no es
     el de una pista, el modo no es uno de :data:`ROAD_MODES`, ``profile`` no es un código de perfil o ``valued`` nombra algo que no es
-    opcional."""
+    opcional. Con ``level_destination`` (T19: el destino por cota, la rampa, no tiene un ``destination`` con valor: su cota, su tolerancia y su zona son los opcionales de ``valued``), el
+    modo «trazar» **no** lee el parámetro ``destination``."""
     _typed_code(code, "road", "una pista")
     if mode not in ROAD_MODES:
         raise ValueError(f"el modo de una pista es uno de {', '.join(ROAD_MODES)}, no {mode!r}")
@@ -3843,7 +3845,9 @@ def road_params(code: str, *, mode: str, profile: str, valued: Iterable[str] = (
                          f"{', '.join(item.value for item in _ROAD_OPTIONAL)}")
     read = {RoadParam.MODE, RoadParam.LAYER, RoadParam.PROFILE, RoadParam.START}
     if mode == "trace":
-        read |= {RoadParam.ORIGIN, RoadParam.DESTINATION, *_ROAD_ROUTE}
+        read |= {RoadParam.ORIGIN, *_ROAD_ROUTE}
+        if not level_destination:
+            read.add(RoadParam.DESTINATION)
     else:
         read.add(RoadParam.FEATURE)
     read |= {item for item in _ROAD_OPTIONAL if item.value in given}
@@ -3851,6 +3855,18 @@ def road_params(code: str, *, mode: str, profile: str, valued: Iterable[str] = (
         read.add(RoadParam.SUPPORTS)
     return _unique([*(entity_key(code, item) for item in RoadParam if item in read),
                     *(road_profile_key(profile, item) for item in _ROAD_PROFILE_READ), *PLATFORM_COMMON_PARAMS])
+
+
+def road_settings(request: RoadRequest, code: str) -> dict[str, Any]:
+    """Los ajustes de ``des.road`` (spec 017, T19; RF-017-01, RF-015-02; JSON sin rutas): el nombre de la pista, su ``code`` (``RDW-001``) y el campo de su capa del que sale el
+    nombre de cada punto o de cada línea (``fields``: ``name_field``; ``None`` si no lo lleva). **Ninguna otra cosa**: la capa, la geometría, el modo, el perfil, la partida, el
+    origen, el destino, las cotas y los parámetros de la ruta son **parámetros de la entidad** (``des.road.{e}.*``, :func:`road_params`), como en la plataforma. Es un diccionario
+    nuevo; ``ValueError`` si ``code`` no es el de una pista y ``TypeError`` si ``request`` no es una ``RoadRequest``."""
+    from .road_model import RoadRequest  # al usarlo: habilitar no la crea (RNF-001-03)
+    if not isinstance(request, RoadRequest):
+        raise TypeError(f"los ajustes de una pista salen de una RoadRequest, no {request!r}")
+    _typed_code(code, "road", "una pista")
+    return {"name": request.name, "code": code, "fields": {"name_field": request.fields.name_field}}
 
 
 def access_inputs(surface: str, entries_layer: str, masks: Iterable[Use] = (), *, final: str | None = None,
