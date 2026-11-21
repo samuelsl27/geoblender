@@ -3432,6 +3432,20 @@ CATALOG: tuple[Message, ...] = (
         "«{entity}» toma su lugar y su cota de «{target}», que se descartó ({field} = {value}): sin ella no se puede repetir la pista, así que no se puede dar por buena; rehágala con otro "
         "origen o destino (cambie ese valor) o descártela; no se hace nada.",
     ),
+    # T24b (RF-017-03, D-13): al recalcular, la cota de inicio o de fin que salió de la superficie de partida, del eje de otra pista o de la entidad de destino se vuelve a tomar de su origen: si cambió, el
+    # resumen dice de cuánto a cuánto y de dónde. Una cota que dio la persona nunca se cambia. ``{source}`` es solo el nombre de lo que cambió (vale en los dos idiomas).
+    Message(
+        "des.road_start_level_followed",
+        "Haul road «{entity}»: its start level changes from {old} m to {new} m because it is taken again from {source}, which has changed (a level that you gave yourself is never changed).",
+        "Pista «{entity}»: su cota de inicio pasa de {old} m a {new} m porque se vuelve a tomar de {source}, que ha cambiado (una cota que usted dio nunca se cambia).",
+        "note",
+    ),
+    Message(
+        "des.road_end_level_followed",
+        "Haul road «{entity}»: its end level changes from {old} m to {new} m because it is taken again from {source}, which has changed (a level that you gave yourself is never changed).",
+        "Pista «{entity}»: su cota de fin pasa de {old} m a {new} m porque se vuelve a tomar de {source}, que ha cambiado (una cota que usted dio nunca se cambia).",
+        "note",
+    ),
     # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase): la pista y la accesibilidad no declaran restricción
     # alguna (D-15), así que no se usa; existe, como el de la detección de acopios.
     Message(

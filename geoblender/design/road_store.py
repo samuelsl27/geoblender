@@ -8,7 +8,8 @@ propia, RF-013-04, y solo si no se dan cargadas). **Calcular por pasos** (:func:
 y sin escribir nada); **el resumen, las dos confirmaciones y con qué se compara** (T20b: :func:`road_summary` y :func:`summary_of`, :func:`carriageway_notices`, :func:`road_held_notices`,
 :func:`check_road_confirmed` y :class:`RoadConfirmed`, :func:`road_previous` y :func:`road_obsolete`; la ``Calculation`` es ``design.steps.road_run``); **crear** (T21: :func:`create_road_steps` y :func:`create_road`, con lo que guarda —:func:`road_entity_rows`, :func:`road_axis_rows`,
 :func:`road_report_rows` y :func:`road_geometry_sha256`, funciones puras del resultado— y lo que anota la operación, :func:`road_operation_start`); **recalcular** (T22: :func:`run_road` y
-:func:`recompute_road`, con lo confirmado que arrastra y los otros diseños que anota al completarla) y **reproducir** (T22: lo que lee de lo congelado, :func:`frozen_profile` y
+:func:`recompute_road`, con lo confirmado que arrastra y los otros diseños que anota al completarla y, desde la T24b, **las cotas de inicio y de fin derivadas, que se vuelven a derivar de su origen**:
+:func:`resolve_level`, :class:`LevelFollow` y :func:`write_followed`) y **reproducir** (T22: lo que lee de lo congelado, :func:`frozen_profile` y
 :func:`frozen_geometry`; la función de reproducir es ``design.reproduce.reproduce_road``); traer a otra versión y «Cambiar parámetro…», de la T22b; los modos «sobre un eje» y «eje 3D», de la T23: la línea con su Z de una línea de rotura o de la capa propuesta
 (:class:`Lines3D`, :func:`read_layer_3d`, :func:`read_lines_3d` y :func:`line_3d`), la Z de cada estación en la abscisa de la línea y el radio de su planta medido en las estaciones
 (``road_axis.plan_of_line``, ``road_gradient.check_axis_3d``).
@@ -44,14 +45,14 @@ import sqlite3
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
 from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import DatasetStatus
 from ..core.gpkg.wkb import decode_geometry
-from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
+from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, SourceKind, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
 from ..core.provenance import stale
@@ -129,11 +130,14 @@ __all__ = [
     "CONFIRMED",
     "AxisReference",
     "DefaultStart",
+    "DerivedLevel",
     "EntityReference",
+    "LevelFollow",
     "Lines3D",
     "OtherReader",
     "PointReference",
     "PreparedRoad",
+    "ResolvedLevel",
     "RoadConfirmed",
     "avoid_weight",
     "axis_point_at",
@@ -155,6 +159,7 @@ __all__ = [
     "read_layer_3d",
     "read_lines_3d",
     "recompute_road",
+    "resolve_level",
     "road_axis_rows",
     "road_compute_steps",
     "road_confirmation",
@@ -171,6 +176,7 @@ __all__ = [
     "start_is_final_notice",
     "summary_of",
     "untouchable_cells",
+    "write_followed",
 ]
 
 _KINDS_ES = MappingProxyType({"point": "puntos", "line": "líneas", "polygon": "polígonos"})
@@ -213,8 +219,10 @@ class PreparedRoad:
     mínimo y el salto creado), los códigos de las entidades en que **se apoya** (``supports``: el eje de otra pista del origen y la entidad de destino; RF-017-03), los nombres de los
     datos de **otros diseños** de la versión que no parten de la partida (``others``, T19-b: con los que compara el aviso de RF-017-05 (b) la T20, cuando tiene la huella) y los
     ``notices`` de la partida (RF-017-05 (a), que no impiden crearla). ``existing``: la entidad ya estaba en su versión (se preparó con su ``code``: recalcularla), así que «Crear» no
-    escribe otra vez sus parámetros. ``fid``: el de la geometría de la capa de la que sale la pista (la línea de «sobre un eje» y «eje 3D»; en «trazar», el primer punto de la capa que usa, el origen
-    o, si este es el eje de otra pista, el destino; 0 si ninguno es de la capa): lo que lleva ``des_epr_`` (``source_fid``)."""
+    escribe otra vez sus parámetros salvo ``followed``. ``fid``: el de la geometría de la capa de la que sale la pista (la línea de «sobre un eje» y «eje 3D»; en «trazar», el primer punto de la capa que usa, el origen
+    o, si este es el eje de otra pista, el destino; 0 si ninguno es de la capa): lo que lleva ``des_epr_`` (``source_fid``). ``followed`` (T24b; RF-017-03, D-13): las cotas de inicio y de fin que la pista
+    **vuelve a tomar de su origen** al recalcularla porque la fila las anotó como «algoritmo» y la cota de ahora es otra (:class:`LevelFollow`); ya van en ``values``, y quien crea o recalcula las
+    escribe (:func:`write_followed`) antes de abrir la operación, para que anote la revisión nueva."""
 
     job: RoadJob
     start: OperationStart
@@ -233,6 +241,7 @@ class PreparedRoad:
     notices: tuple[Notice, ...] = ()
     existing: bool = False
     fid: int = 0
+    followed: tuple[LevelFollow, ...] = ()
 
     @property
     def op_type(self) -> str:
@@ -243,6 +252,109 @@ class PreparedRoad:
     def version_uid(self) -> str:
         """El uid de la versión de la pista: lo que reciben ``design_writer`` y ``set_entity_params``."""
         return self.version.uid
+
+
+# --- Las cotas que siguen a su origen (spec 017, T24b; RF-017-03, D-13, RF-015-01) -----------------------------------------------------------------------------------------------------------
+
+
+_LEVEL_EPS_M = 1e-9
+"""Lo que puede pasar una cota nueva de la guardada y seguir siendo la misma (m): el ruido de la última cifra, no un cambio."""
+_LEVEL_WORD = MappingProxyType({RoadParam.START_LEVEL.value: "inicio", RoadParam.END_LEVEL.value: "fin"})
+
+
+class DerivedLevel(NamedTuple):
+    """Una cota que da hoy el origen (D-13): la superficie de partida en el punto, la rasante del eje de otra pista a esa abscisa o la superficie de la entidad de destino en ese punto. ``value``, la cota (m);
+    ``text``, su origen como se anota en la fila del parámetro; ``target``, lo que se nombra al decir de dónde se vuelve a tomar (``«P1» (PLT-001)``: solo nombres, vale en los dos idiomas)."""
+
+    value: float
+    text: str
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class LevelFollow:
+    """Una cota que la pista **vuelve a tomar de su origen** al recalcularla (T24b; RF-017-03, D-13): ``param`` (``START_LEVEL`` o ``END_LEVEL``), la de antes (``old_m``), la de ahora (``new_m``), su origen
+    como se anota en la fila (``source``) y de dónde se vuelve a tomar (``target``)."""
+
+    param: RoadParam
+    old_m: float
+    new_m: float
+    source: str
+    target: str
+
+    def notice(self, entity: str) -> Notice:
+        """El aviso del resumen (``des.road_start_level_followed`` o ``des.road_end_level_followed``): la pista ``entity``, la cota de antes y la de ahora y de dónde se vuelve a tomar."""
+        code = "des.road_start_level_followed" if self.param is RoadParam.START_LEVEL else "des.road_end_level_followed"
+        return Notice(code, {"entity": entity, "old": self.old_m, "new": self.new_m, "source": self.target})
+
+    def reason(self, entity: str) -> str:
+        """El motivo con que se anota el cambio en la fila del parámetro (RF-008-02): la cota, de cuánto a cuánto y de dónde, en español, a la centésima."""
+        old, new = (f"{value:.2f}".replace(".", ",") for value in (self.old_m, self.new_m))
+        return f"La cota de {_LEVEL_WORD[self.param.value]} de la pista «{entity}» pasa de {old} a {new} m: se vuelve a tomar de {self.target}, que cambió"
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedLevel:
+    """La cota de inicio o de fin que usa la pista (:func:`resolve_level`): su valor (``value_m``; ``None`` si no hay), el origen que se anota en su fila (``origin``: su texto y su clase, ``algorithm``; ``None``
+    si la cota la dio la persona o no sale de ningún origen) y, si la pista la volvió a tomar de su origen y cambió, ``follow``."""
+
+    value_m: float | None
+    origin: tuple[str, str] | None
+    follow: LevelFollow | None
+
+
+def resolve_level(param: RoadParam, asked_m: float | None, kind: str | None, derived: DerivedLevel | None) -> ResolvedLevel:
+    """La cota de inicio o de fin ``param`` de una pista (D-13, RF-017-03; **pura**: lo que dice la fila, lo pedido y lo que da hoy el origen). ``asked_m``: la cota de la petición (la de la fila del parámetro al
+    recalcular, la que da la persona al crear; ``None`` si no hay); ``kind``: el origen **anotado** en su fila (``source_kind``; ``None`` al crear, que aún no tiene fila); ``derived``: la que da hoy su origen
+    (``None`` si no hay origen que la dé: el destino por cota, «eje 3D»).
+
+    Sin cota pedida, la del origen con su procedencia (como al crear). Con ella, **solo la que anotó el algoritmo** (``algorithm``: lo que derivó el código) se vuelve a tomar de su origen —de modo que si
+    cambia la plataforma de destino, el eje de la otra pista o la superficie de partida, la pista la sigue—; si cambió, ``follow`` lo dice. **Las demás se conservan**: la que dio la persona (``person``) y la
+    que anotó un documento, una norma o una cifra adoptada (``document``, ``standard``, ``operation``), que no las derivó el código."""
+    if derived is None:
+        return ResolvedLevel(asked_m, None, None)
+    origin = (derived.text, SourceKind.ALGORITHM.value)
+    if asked_m is None:
+        return ResolvedLevel(derived.value, origin, None)
+    if kind != SourceKind.ALGORITHM.value:
+        return ResolvedLevel(asked_m, None, None)
+    if abs(asked_m - derived.value) <= _LEVEL_EPS_M:
+        return ResolvedLevel(asked_m, origin, None)
+    return ResolvedLevel(derived.value, origin, LevelFollow(param, asked_m, derived.value, derived.text, derived.target))
+
+
+def _level_kinds(project: StoreProject, version: Version, code: str) -> dict[str, str]:
+    """El origen anotado (``source_kind``) de las filas de las cotas de inicio y de fin de la pista ``code`` en su versión (T24b; D-13): lo único que decide cuáles se vuelven a derivar al recalcular. Una
+    cota sin fila o sin valor no sale. Solo lee."""
+    store = ParameterStore(project)
+    found: dict[str, str] = {}
+    with project.read() as conn:
+        for param in (RoadParam.START_LEVEL, RoadParam.END_LEVEL):
+            record = store.get(entity_key(code, param), version=version.uid, conn=conn)
+            if record is not None and record.value is not None:
+                found[param.value] = str(record.source_kind)
+    return found
+
+
+def write_followed(project: StoreProject, prepared: PreparedRoad, *, decided_by: str | None = None, conn: sqlite3.Connection | None = None) -> tuple[ParameterRecord, ...]:
+    """Escribe las cotas que la pista ``prepared`` vuelve a tomar de su origen (``prepared.followed``; T24b; RF-017-03, D-13): el valor nuevo de cada una en la fila de la versión, con **su origen** (la clase
+    ``algorithm`` y el texto del origen de ahora), el decisor ``decided_by`` (por defecto, quien tiene abierto el proyecto) y su motivo (:meth:`LevelFollow.reason`), con su historial. Lo llama quien
+    recalcula **antes de abrir la operación** (:func:`run_road`) o en la transacción que la abre (:func:`create_road_steps`, ``before_begin``): la operación anota la revisión nueva y lo congelado se
+    reproduce con ella. Con ``conn``, en la transacción de quien llama; si no, en una propia. Sin nada que seguir, no escribe nada. Devuelve las filas escritas."""
+    if not prepared.followed:
+        return ()
+    store = ParameterStore(project)
+    who = entity_store._decider(decided_by, project)
+    name = prepared.job.request.name
+
+    def write(target: sqlite3.Connection) -> tuple[ParameterRecord, ...]:
+        return tuple(store.change(target, entity_key(prepared.code, item.param), value=item.new_m, source=item.source, source_kind=SourceKind.ALGORITHM.value, decided_by=who,
+                                  reason=item.reason(name), version=prepared.version_uid) for item in prepared.followed)
+
+    if conn is not None:
+        return write(conn)
+    with project.write_transaction() as writing:
+        return write(writing)
 
 
 # --- Las referencias del origen y del destino ---------------------------------------------------
@@ -753,8 +865,8 @@ class _Resolved:
 
     origin: tuple[float, float]
     destination: tuple[float, float] | None
-    origin_level: tuple[float, str] | None
-    destination_level: tuple[float, str] | None
+    origin_level: DerivedLevel | None
+    destination_level: DerivedLevel | None
     supports: tuple[str, ...]
     surfaces: Mapping[str, entity_store.EntitySurface] = MappingProxyType({})
     fid: int = 0
@@ -808,7 +920,7 @@ def _resolve_points(project: StoreProject, version: Version, registry: EntityReg
     if request.origin is None:
         raise _reject("des.entity_param_missing", request, code, RoadParam.ORIGIN, None)
     origin_ref = parse_reference(request.origin)
-    origin_level: tuple[float, str] | None = None
+    origin_level: DerivedLevel | None = None
     if isinstance(origin_ref, AxisReference):
         entry, listed = _supportable(project, version, registry, name, code, origin_ref.code, entity_key(code, RoadParam.ORIGIN), EntityKind.ROAD)
         surfaces[origin_ref.code] = listed
@@ -818,18 +930,20 @@ def _resolve_points(project: StoreProject, version: Version, registry: EntityReg
             raise _reject("des.road_origin_abscissa", request, code, RoadParam.ORIGIN, str(request.origin), target=origin_ref.code, length=round(float(stations[-1, 0]), 3))
         origin = (at[0], at[1])
         _check_point(grid, surface, origin, request, code, RoadParam.ORIGIN, str(request.origin), surface_name)
-        origin_level = (at[2], f"cota de la rasante de la pista «{entry.record.name}» ({origin_ref.code}) a la abscisa {origin_ref.station_m:g} m")
+        origin_level = DerivedLevel(at[2], f"cota de la rasante de la pista «{entry.record.name}» ({origin_ref.code}) a la abscisa {origin_ref.station_m:g} m",
+                                    f"«{entry.record.name}» ({origin_ref.code})")
         supports.append(origin_ref.code)
         axis = provenance.dataset_name(provenance.ROAD_AXIS_TABLE, entry.record.name)
     else:
         origin = point(PointReference(str(request.origin).strip()), RoadParam.ORIGIN)
-        origin_level = (_terrain_level(grid, surface, origin), f"cota de la superficie de partida «{surface_name}» en el origen (x = {origin[0]:.2f} m, y = {origin[1]:.2f} m)")
+        origin_level = DerivedLevel(_terrain_level(grid, surface, origin), f"cota de la superficie de partida «{surface_name}» en el origen (x = {origin[0]:.2f} m, y = {origin[1]:.2f} m)",
+                                    f"«{surface_name}»")
     taken.append(origin)
     if request.destination is None:
         yield
         return _Resolved(origin, None, origin_level, None, tuple(supports), MappingProxyType(surfaces), fids[0] if fids else 0, axis)
     destination_ref = parse_reference(request.destination)
-    destination_level: tuple[float, str] | None
+    destination_level: DerivedLevel | None
     if isinstance(destination_ref, EntityReference):
         entry, found = _supportable(project, version, registry, name, code, destination_ref.code, entity_key(code, RoadParam.DESTINATION))
         surfaces[destination_ref.code] = found
@@ -852,11 +966,13 @@ def _resolve_points(project: StoreProject, version: Version, registry: EntityReg
         level = float(read_surface_window(project, found.surface, window, version_uid=version.uid, expect=frame, role=_ENTITY_ROLE).values[0, 0])
         if not math.isfinite(level):
             raise _reject("des.road_point_no_data", request, code, RoadParam.DESTINATION, request.destination, surface=found.surface, x=round(destination[0], 2), y=round(destination[1], 2))
-        destination_level = (level, f"cota de la superficie de la entidad «{entry.record.name}» ({destination_ref.code}) en el destino (x = {destination[0]:.2f} m, y = {destination[1]:.2f} m)")
+        destination_level = DerivedLevel(level, f"cota de la superficie de la entidad «{entry.record.name}» ({destination_ref.code}) en el destino (x = {destination[0]:.2f} m, y = {destination[1]:.2f} m)",
+                                         f"«{entry.record.name}» ({destination_ref.code})")
         supports.append(destination_ref.code)
     else:
         destination = point(PointReference(request.destination.strip()), RoadParam.DESTINATION)
-        destination_level = (_terrain_level(grid, surface, destination), f"cota de la superficie de partida «{surface_name}» en el destino (x = {destination[0]:.2f} m, y = {destination[1]:.2f} m)")
+        destination_level = DerivedLevel(_terrain_level(grid, surface, destination), f"cota de la superficie de partida «{surface_name}» en el destino (x = {destination[0]:.2f} m, y = {destination[1]:.2f} m)",
+                                         f"«{surface_name}»")
     if any(abs(destination[0] - other[0]) <= 1e-9 and abs(destination[1] - other[1]) <= 1e-9 for other in taken):
         raise _reject("des.road_origin_is_destination", request, code, RoadParam.DESTINATION, request.destination)
     yield
@@ -1046,6 +1162,11 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     «Sobre un eje» lee la línea de su capa de entidades (RF-017-04) y «eje 3D», la línea con su Z de una línea de rotura (``gis_brk_``) o de la capa propuesta (``des_rpl_``; T23-a: una capa de
     entidades, que guarda solo X e Y, se rechaza con ``des.road_line_no_z``): :func:`read_layer_3d` y :func:`line_3d`. En «eje 3D» la Z es la rasante: **no hay cota de inicio ni de fin**.
 
+    **Recalcular sigue a lo que pisa** (T24b; RF-017-03, D-13, RF-015-01): con ``code`` (la entidad ya está en su versión) las cotas de inicio y de fin cuyo origen anotado en su fila es el del algoritmo **se
+    vuelven a tomar de su origen** (la superficie de partida en el punto, el eje de otra pista a esa abscisa o la superficie de la entidad de destino en ese punto: :func:`resolve_level`) en vez de dar por
+    buena la que guardó la creación; las que dio la persona se conservan. Las que cambian van en ``PreparedRoad.followed`` (y en ``values``); **preparar no escribe nada**: quien recalcula las escribe
+    (:func:`write_followed`).
+
     ``released`` (T24; RF-015-17, A7, P-6): las entidades descartadas que la pista **da por buenas sin su apoyo** (:func:`~.entity_store.release_support`): lo que **declaró** la persona
     (``supports``) en ellas no se pide ni se rechaza —se descartaron—, se suman a las que ya soltaba la operación que sustituye (``supersedes``) y no entran en las entradas ni en lo que la
     operación lee. Lo que la pista toma de la entidad (su origen en el eje de otra pista, su destino en una entidad) **no se suelta**: sin ella no hay geometría (``entity_store.release_support``
@@ -1091,8 +1212,8 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     supports: tuple[str, ...] = ()
     listed: dict[str, entity_store.EntitySurface] = {}
     axis_data: str | None = None
-    start_level: tuple[float, str] | None
-    end_level: tuple[float, str] | None
+    start_level: DerivedLevel | None
+    end_level: DerivedLevel | None
     if mode is RoadMode.TRACE:
         resolved = yield from _resolve_points(project, version, registry, request, chosen, name, layer, grid, values_start, start_name, frame)
         geometry_points: tuple[tuple[float, float], tuple[float, float] | None] = (resolved.origin, resolved.destination)
@@ -1108,22 +1229,25 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
         assert line is not None and request.feature is not None
         _check_line_cells(grid, values_start, line[:, :2], request.feature, request, chosen, start_name)
         geometry_points = ((float(line[0, 0]), float(line[0, 1])), (float(line[-1, 0]), float(line[-1, 1])))
-        start_level = (_terrain_level(grid, values_start, geometry_points[0]), f"cota de la superficie de partida «{start_name}» en el primer vértice de la línea")
-        end_level = (_terrain_level(grid, values_start, geometry_points[1]), f"cota de la superficie de partida «{start_name}» en el último vértice de la línea")
+        start_level = DerivedLevel(_terrain_level(grid, values_start, geometry_points[0]), f"cota de la superficie de partida «{start_name}» en el primer vértice de la línea", f"«{start_name}»")
+        end_level = DerivedLevel(_terrain_level(grid, values_start, geometry_points[1]), f"cota de la superficie de partida «{start_name}» en el último vértice de la línea", f"«{start_name}»")
         if mode is RoadMode.AXIS_3D:  # la Z de la línea es la rasante (RF-017-18): no hay cota de inicio ni de fin que dar ni que tomar del terreno
             start_level = end_level = None
-    if mode is not RoadMode.AXIS_3D:
-        _check_level(request, chosen, RoadParam.START_LEVEL, request.start_level_m, values_start)
-        _check_level(request, chosen, RoadParam.END_LEVEL, request.end_level_m, values_start)
     levels: dict[str, tuple[str, str]] = {}
-    resolved_start = None if mode is RoadMode.AXIS_3D else request.start_level_m
-    resolved_end = None if mode is RoadMode.AXIS_3D else request.end_level_m
-    if resolved_start is None and start_level is not None:
-        resolved_start = start_level[0]
-        levels[RoadParam.START_LEVEL.value] = (start_level[1], "algorithm")
-    if resolved_end is None and end_level is not None:
-        resolved_end = end_level[0]
-        levels[RoadParam.END_LEVEL.value] = (end_level[1], "algorithm")
+    chosen_levels: dict[RoadParam, float | None] = {RoadParam.START_LEVEL: None, RoadParam.END_LEVEL: None}
+    followed: list[LevelFollow] = []
+    if mode is not RoadMode.AXIS_3D:
+        kinds = {} if code is None else _level_kinds(project, version, chosen)  # al recalcular, el origen anotado en la fila (T24b)
+        for param, asked_level, derived in ((RoadParam.START_LEVEL, request.start_level_m, start_level), (RoadParam.END_LEVEL, request.end_level_m, end_level)):
+            level = resolve_level(param, asked_level, kinds.get(param.value), derived)
+            if level.origin is None:  # la da la persona (o no hay origen que la dé): se comprueba contra el terreno
+                _check_level(request, chosen, param, level.value_m, values_start)
+            else:
+                levels[param.value] = level.origin
+            chosen_levels[param] = level.value_m
+            if level.follow is not None:
+                followed.append(level.follow)
+    resolved_start, resolved_end = chosen_levels[RoadParam.START_LEVEL], chosen_levels[RoadParam.END_LEVEL]
     values = road_values(request, chosen, start_ref=start_ref, start_level_m=resolved_start, end_level_m=resolved_end)
     yield
     route: RouteParams | None = None
@@ -1199,7 +1323,7 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
         begun = replace(begun, seen=MappingProxyType({**begun.seen, **seen}))
     yield
     return PreparedRoad(job, begun, chosen, version, start_name, start_ref, support_name, request.layer, profile, _rows(asked, chosen, values, levels, supported),
-                        MappingProxyType(values), MappingProxyType(common), supported, others, tuple(notices), code is not None, fid)
+                        MappingProxyType(values), MappingProxyType(common), supported, others, tuple(notices), code is not None, fid, tuple(followed))
 
 
 def prepare_road(project: StoreProject, request: RoadRequest, *, version: str | None, masks: access.MaskSet | None = None, code: str | None = None,
@@ -1569,13 +1693,13 @@ def road_held_notices(outcome: RoadOutcome, masks: Any, *, names: Mapping[str, s
     return held_notices(outcome.name, masks, outcome.window, cut=engraved.cut_denied, fill=engraved.fill_denied, edge=engraved.held, names=names, declared=declared)
 
 
-def summary_of(outcome: RoadOutcome, *, version: str, profile: road_profiles.RoadProfile, start_notices: Sequence[Notice] = (), carriageway: Sequence[Notice] = (), held: Sequence[Notice] = (),
-               obsolete: Sequence[Obsolete] = ()) -> RoadSummary:
+def summary_of(outcome: RoadOutcome, *, version: str, profile: road_profiles.RoadProfile, start_notices: Sequence[Notice] = (), followed: Sequence[Notice] = (), carriageway: Sequence[Notice] = (),
+               held: Sequence[Notice] = (), obsolete: Sequence[Obsolete] = ()) -> RoadSummary:
     """El resumen de «Calcular» la pista de ``outcome`` (RF-015-03, RF-017-23, RF-017-12, RF-017-17, RF-017-22; H-10; **puro**: sin proyecto) como :class:`~.preview.RoadSummary`: las cifras que se registrarán,
     la longitud, las cotas de inicio y de fin, la pendiente media y la máxima (con su abscisa y su lugar), el radio mínimo y las curvas, el corte y el relleno de la sección y del borde juntos y el neto,
     **la holgura del pasillo** (``margin_m``: la ruta cambia con ella, H-10) y si pide confirmar la media (``needs_mean_confirmation``, con el límite ``mean_limit_pct`` del perfil ``profile``) o la
     calzada (``needs_carriageway_confirmation``, con su área), y los avisos **en el orden en que se enseñan**: los de la partida (``start_notices``: RF-017-05 (a), «no llega al fondo», que ``prepare_road``
-    calcula al preparar), la nota de la ruta (solo «trazar»), los del cálculo (los tramos del salto creado, de diez en diez como en la plataforma: ``edges.summary_notices``), los de la calzada que no queda
+    calcula al preparar), **las cotas que la pista vuelve a tomar de su origen al recalcularla** (``followed``: T24b, RF-017-03; :meth:`LevelFollow.notice`), la nota de la ruta (solo «trazar»), los del cálculo (los tramos del salto creado, de diez en diez como en la plataforma: ``edges.summary_notices``), los de la calzada que no queda
     en su rasante (``carriageway``), lo que no se mueve por una restricción (``held``) y, al final, lo que quedará obsoleto (``obsolete``) con su causa. ``version`` es el código de la versión. ``ValueError`` si ``outcome`` no lleva el eje, la rasante y el grabado (el de :func:`road_compute_steps` siempre los lleva)."""
     engraved, axis, levels = outcome.engraved, outcome.axis, outcome.levels
     if engraved is None or axis is None or levels is None:
@@ -1589,7 +1713,7 @@ def summary_of(outcome: RoadOutcome, *, version: str, profile: road_profiles.Roa
     notes: list[Notice] = []
     if route is not None:
         notes.append(Notice("des.road_route_margin", {"entity": outcome.name, "mesh": route.mesh_m, "margin": route.margin_m, "expanded": route.expanded, "budget": route.budget}))
-    notices = (*start_notices, *notes, *edges.summary_notices(outcome.notices), *carriageway, *held, *obsolete_notices(outcome.name, version, kept))
+    notices = (*start_notices, *followed, *notes, *edges.summary_notices(outcome.notices), *carriageway, *held, *obsolete_notices(outcome.name, version, kept))
     return RoadSummary(
         outcome.name, outcome.code, version, outcome.mode.value, profile.code, outcome.figures, axis.length_m, float(levels[0]), float(levels[-1]), found["des.road_gradient_mean_pct"],
         found["des.road_gradient_max_pct"], found["des.road_gradient_max_station_m"], float(axis.points[top, 0]), float(axis.points[top, 1]), axis.min_radius_m, axis.curve_count, cut, fill,
@@ -1608,8 +1732,8 @@ def road_summary(project: StoreProject, version: Version, prepared: PreparedRoad
         names, declared = entity_store._restrictions(project, version)
         carriageway = carriageway_notices(outcome, masks, names=names, declared=declared)
         held = road_held_notices(outcome, masks, names=names, declared=declared)
-    return summary_of(outcome, version=version.code, profile=prepared.profile, start_notices=prepared.notices, carriageway=carriageway, held=held,
-                      obsolete=road_obsolete(project, prepared, supersedes=supersedes))
+    return summary_of(outcome, version=version.code, profile=prepared.profile, start_notices=prepared.notices, followed=tuple(item.notice(outcome.name) for item in prepared.followed),
+                      carriageway=carriageway, held=held, obsolete=road_obsolete(project, prepared, supersedes=supersedes))
 
 
 _CONFIRMED_EPS = 1e-9
@@ -1962,6 +2086,8 @@ def create_road_steps(project: StoreProject, writer: DesignWriter, prepared: Pre
         if prepared.existing:
             if ParameterStore(project).get(entity_key(prepared.code, RoadParam.NAME), version=prepared.version_uid, conn=conn) is None:
                 raise ValueError(f"la entidad {prepared.code} no tiene sus parámetros en su versión: no está en ella (se prepara sin su código)")
+            if handle is None:  # la que se calculó antes de crear: las cotas que vuelve a tomar de su origen se escriben en la transacción que abre la operación (T24b); un recálculo ya las escribió
+                write_followed(project, prepared, decided_by=decided_by, conn=conn)
         else:
             entity_store.set_entity_params(project, prepared.rows, version=prepared.version_uid, decided_by=decided_by, conn=conn)
         if handle is not None:  # los otros diseños que difieren en la huella se anotan al completarla, con el hash que tenían al preparar (``des.input_changed`` si cambiaron)
@@ -2035,6 +2161,11 @@ def run_road(project: StoreProject, request: RoadRequest, *, version: str | None
     ``des.road_carriageway_unconfirmed`` al avanzar, antes de escribir nada, y la que sustituye sigue vigente. No calcula la magnitud contra la revisión congelada ni el orden con la otra superficie de
     la cantera (solo los avisos del resumen, que no van al informe: ``entity_store._OUTSIDE_NOTICES``).
 
+    **Un recálculo sigue a lo que la pista pisa** (T24b; RF-017-03, D-13): las cotas de inicio y de fin cuyo origen anotado es el del algoritmo se vuelven a tomar de su origen
+    (:func:`prepare_road_units`; si cambió la plataforma de destino o el eje de la otra pista, la pista acaba o sale a la cota nueva) y se **escriben en su fila antes de abrir la operación**
+    (:func:`write_followed`, con su origen y su motivo y con su historial): la operación anota la revisión nueva y lo congelado se reproduce con ella. Las que dio la persona no cambian. El último paso
+    lo dice en su mensaje (``Progress.message``: «su cota de fin pasa de X a Y m…»); sin cambios, no se escribe ningún parámetro.
+
     **Dar por buena la pista sin una entidad en que se apoyaba** (``released``, T24; RF-015-17, A7, P-6; :func:`~.entity_store.release_support`): la operación nueva **no lleva** las entradas de esa
     entidad (ni su superficie ni la tabla de su huella), anota el motivo y el decisor en sus ajustes (``supports_released``, acumulados con los de la que sustituye) y el gancho de las dependencias
     no vuelve a registrarla; su superficie, su huella y su eje no cambian. Se suma a lo que ya daba por bueno la operación que sustituye.
@@ -2044,6 +2175,7 @@ def run_road(project: StoreProject, request: RoadRequest, *, version: str | None
     start = prepared.start
     if confirmed is not None:  # se arrastra a la operación nueva (la misma decisión, no una nueva)
         start = replace(start, settings={**start.settings, CONFIRMED: confirmed.settings()})
+    write_followed(project, prepared)  # las cotas que vuelve a tomar de su origen (T24b), antes de abrir la operación: la anota con la revisión nueva
     handle = start.with_released(released).begin(project)
     return handle, _road_run(project, handle, prepared, budget_s, confirmed)
 
@@ -2057,7 +2189,8 @@ def _road_run(project: StoreProject, handle: OperationHandle, prepared: Prepared
             operation=prepared.job.request.name, budget_s=budget_s)
         mean, carriageway, reason = _confirmed_covers(outcome, confirmed)
         stored: Stored = yield from create_road_steps(project, writer, prepared, outcome, mean=mean, carriageway=carriageway, reason=reason, budget_s=budget_s)
-        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+        said = "; ".join(item.notice(outcome.name).text("es") for item in prepared.followed)  # las cotas que volvió a tomar de su origen (T24b): el resumen de un recálculo es este mensaje
+        yield Progress(_STORE_PHASE, 1, 1, f"{outcome.message}; {said}" if said else outcome.message, result=stored)
 
 
 def recompute_road(request: RecomputeRequest, *, budget_s: float = road_net.STEP_BUDGET_S, released: Sequence[provenance.ReleasedSupport] = ()

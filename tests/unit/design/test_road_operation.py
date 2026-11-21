@@ -991,6 +991,19 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual([notice.code for notice in summary.notices[:2]], ["des.road_start_is_final", "des.road_route_margin"])
         self.assertIn("136,5", summary.lines("es")[0])
 
+    def test_f_the_levels_taken_again_from_their_origin_are_said_right_after_the_notices_of_the_start(self) -> None:
+        """RF-017-03, D-13, RF-015-03 (T24b): lo que la pista vuelve a tomar de su origen al recalcular (``LevelFollow``: «su cota de fin pasa de X a Y m») sale en el resumen **después de los avisos de la
+        partida y antes de la holgura del pasillo**, cada uno con su aviso en el orden dado, en los dos idiomas; sin nada que decir, el resumen es el de siempre."""
+        start = (preview.Notice("des.road_start_is_final", {"entity": ENTITY, "surface": "des_fin_cantera", "z_final": 136.5, "z_pit": 125.0}),)
+        follows = (road_store.LevelFollow(params.RoadParam.START_LEVEL, 104.0, 104.5, "texto", "«RDW-001»"), road_store.LevelFollow(params.RoadParam.END_LEVEL, 112.0, 112.4, "texto", "«P1» (PLT-001)"))
+        summary = road_store.summary_of(self.outcome, version="V01", profile=self.job.profile, start_notices=start, followed=tuple(item.notice(ENTITY) for item in follows))
+        self.assertEqual([notice.code for notice in summary.notices[:4]],
+                         ["des.road_start_is_final", "des.road_start_level_followed", "des.road_end_level_followed", "des.road_route_margin"])
+        self.assertIn("pasa de 112,00 m a 112,40 m", summary.lines("es")[2])
+        self.assertIn("changes from 112.00 m to 112.40 m", summary.lines("en")[2])
+        plain = road_store.summary_of(self.outcome, version="V01", profile=self.job.profile)
+        self.assertEqual(plain, road_store.summary_of(self.outcome, version="V01", profile=self.job.profile, followed=()))
+
     def test_d_a_result_without_engraving_is_a_program_error(self) -> None:
         """Un resultado sin el grabado (el de ``road_compute_steps`` siempre lo lleva) no tiene resumen: ``ValueError``."""
         with self.assertRaises(ValueError):

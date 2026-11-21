@@ -129,6 +129,71 @@ class ConfirmedTest(unittest.TestCase):
         self.assertEqual(found.settings(), both.settings())
 
 
+class LevelFollowTest(unittest.TestCase):
+    """RF-017-03, D-13, RF-015-01 (T24b): al **recalcular**, las cotas de inicio y de fin cuyo origen anotado en su fila es el del algoritmo se vuelven a tomar de lo que dijo su origen (la superficie de
+    partida en el punto, el eje de otra pista en esa abscisa o la superficie de la entidad de destino en ese punto), y las que no, no se tocan: **sin proyecto**, la decisión es una función pura de lo
+    que dice la fila, de lo pedido y de lo que da hoy el origen. Con el proyecto (la plataforma de destino cambiada, el eje de otra pista, el resumen y reproducir lo congelado) es de ``milestone_road_chain``."""
+
+    END = design_params.RoadParam.END_LEVEL
+    START = design_params.RoadParam.START_LEVEL
+    TARGET = "«P1» (PLT-001)"
+    TEXT = "cota de la superficie de la entidad «P1» (PLT-001) en el destino (x = 320.00 m, y = 200.00 m)"
+    DERIVED = road_store.DerivedLevel(112.4, TEXT, TARGET)
+
+    def test_a_a_level_derived_from_its_origin_is_taken_again_when_the_origin_changes(self) -> None:
+        """RF-017-03, D-13: con el origen anotado «algoritmo» (la cota salió de la superficie de la entidad de destino) y una cota nueva en ese origen, la pista **toma la nueva** con su origen y su lugar, y
+        lo dice (:class:`~design.road_store.LevelFollow`: la cota, la de antes, la de ahora y de dónde)."""
+        found = road_store.resolve_level(self.END, 112.0, "algorithm", self.DERIVED)
+        self.assertEqual(found.value_m, 112.4)
+        self.assertEqual(found.origin, (self.TEXT, "algorithm"))
+        self.assertEqual(found.follow, road_store.LevelFollow(self.END, 112.0, 112.4, self.TEXT, self.TARGET))
+        start = road_store.resolve_level(self.START, 104.0, "algorithm", road_store.DerivedLevel(104.5, "texto", "«RDW-001»"))
+        self.assertEqual((start.value_m, start.follow.param, start.follow.old_m, start.follow.new_m), (104.5, self.START, 104.0, 104.5))
+
+    def test_b_the_same_level_changes_nothing_and_says_nothing(self) -> None:
+        """RF-015-01 (un recálculo sin cambios no escribe ningún parámetro): si el origen da la misma cota (hasta el ruido de la última cifra), el valor sigue siendo el de la fila, con su origen,
+        y no hay nada que decir ni que escribir."""
+        for same in (112.0, 112.0 + 1e-12):
+            with self.subTest(same=same):
+                found = road_store.resolve_level(self.END, 112.0, "algorithm", road_store.DerivedLevel(same, self.TEXT, self.TARGET))
+                self.assertIsNone(found.follow)
+                self.assertEqual((found.value_m, found.origin), (112.0, (self.TEXT, "algorithm")))
+
+    def test_c_a_level_that_is_not_of_the_algorithm_is_kept(self) -> None:
+        """RF-017-03, D-13: la cota **que dio la persona** (origen «person») no se cambia por mucho que cambie el origen; tampoco la que anotó un documento, una norma o una cifra adoptada (no son del
+        algoritmo: solo se vuelve a derivar lo que el código derivó)."""
+        for kind in ("person", "document", "standard", "operation"):
+            with self.subTest(kind=kind):
+                found = road_store.resolve_level(self.END, 111.0, kind, self.DERIVED)
+                self.assertEqual((found.value_m, found.origin, found.follow), (111.0, None, None))
+
+    def test_d_without_an_origin_to_take_it_from_the_stored_level_stays(self) -> None:
+        """RF-017-02, D-4, RF-017-18: sin origen que dé la cota hoy (el destino por cota de la rampa, la cota de «eje 3D») la de la fila se conserva aunque sea «algoritmo»; y sin cota en la fila, **al
+        crear**, sale del origen con su procedencia (como siempre) sin nada que decir."""
+        kept = road_store.resolve_level(self.END, 112.0, "algorithm", None)
+        self.assertEqual((kept.value_m, kept.origin, kept.follow), (112.0, None, None))
+        first = road_store.resolve_level(self.END, None, None, self.DERIVED)
+        self.assertEqual((first.value_m, first.origin, first.follow), (112.4, (self.TEXT, "algorithm"), None))
+        none = road_store.resolve_level(self.END, None, None, None)
+        self.assertEqual((none.value_m, none.origin, none.follow), (None, None, None))
+
+    def test_e_the_notice_says_the_change_in_both_languages_to_the_centimetre(self) -> None:
+        """RF-017-03, D-13: el aviso del resumen dice qué cota (inicio o fin), de cuánto a cuánto (a la centésima: un cambio de 0,04 m no se lee «112,0 m a 112,0 m») y de dónde se vuelve a tomar, en español
+        y en inglés, sin marcadores sin sustituir."""
+        notice = road_store.resolve_level(self.END, 112.0, "algorithm", self.DERIVED).follow.notice("Pista a P1")
+        self.assertEqual((notice.code, notice.severity), ("des.road_end_level_followed", "note"))
+        self.assertEqual(dict(notice.values), {"entity": "Pista a P1", "old": 112.0, "new": 112.4, "source": self.TARGET})
+        self.assertIn("su cota de fin pasa de 112,00 m a 112,40 m", notice.text("es"))
+        self.assertIn(self.TARGET, notice.text("es"))
+        self.assertIn("its end level changes from 112.00 m to 112.40 m", notice.text("en"))
+        close = road_store.LevelFollow(self.START, 104.0, 104.04, "texto", "«RDW-001»").notice("Ramal")
+        self.assertEqual(close.code, "des.road_start_level_followed")
+        self.assertIn("su cota de inicio pasa de 104,00 m a 104,04 m", close.text("es"))
+        self.assertIn("its start level changes from 104.00 m to 104.04 m", close.text("en"))
+        for language in ("es", "en"):
+            self.assertNotIn("{", notice.text(language))
+
+
 class CheckRecordedTest(unittest.TestCase):
     """RF-013-17, RF-015-02, D-14: lo que anotó la operación al empezar es lo que leyó el cálculo al prepararse."""
 

@@ -10,6 +10,8 @@ de la 015 con la pista, sin una regla nueva del grafo** (P-5): lo que hacen esta
   es **una sola lista** con el ramal y el relleno posterior sobre la calzada, con el volumen de la cuenta a mano (≤ 10⁻⁹ relativo).
 - **Cambiar la plataforma de destino** (:class:`TargetPlatformTest`, RF-015-16, CE-017-08): la pista, el ramal y el relleno quedan obsoletos **en cascada con su causa** y «Recalcular lo obsoleto» los repite
   en orden.
+- **Recalcular sigue a lo que la pista pisa** (:class:`FollowLevelsTest`, T24b; RF-017-03, D-13): las cotas de inicio y de fin cuyo origen anotado es el del algoritmo se vuelven a derivar al recalcular
+  (la superficie de la plataforma de destino, la rasante del eje de otra pista), las que dio la persona no, el resumen de «Calcular» lo dice, se escriben con la operación y lo congelado se reproduce igual.
 - **Descartar la pista principal** (:class:`DiscardMainRoadTest`, RF-015-17, D-24, E5): una sola lista antes, «apoyo retirado» en el ramal y en el relleno, «Recalcular lo obsoleto» sin recalcularlos y qué
   dice su resumen, lo independiente que sí se rehace, y dar por bueno **lo que se apoya sin partir de ella** (el relleno) con su motivo y no lo que parte de su superficie (el ramal).
 - **Rehacerlo** (:class:`RemakeBranchTest`) **o descartarlo** (:class:`DiscardBranchTest`): las otras dos salidas de RF-015-17.
@@ -28,6 +30,7 @@ import numpy as np
 
 from tests.support import road_data as rd
 from tests.support.package import import_geoblender
+from tests.support.versions_fixtures import change_counter, files
 from tests.unit.design.milestone_road_create import FAMILIES, FILL, FIRST, PLATFORM, SECOND
 from tests.unit.design.milestone_road_recompute import PROFILE_STEP, RecomputeCase, finish_steps
 from tests.unit.design.test_entity_discard import DiscardCase
@@ -39,10 +42,12 @@ design_params = import_geoblender("design.params")
 entities = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
 events = import_geoblender("core.project.events")
+freeze = import_geoblender("core.versions.freeze")
 messages = import_geoblender("design.messages")
 model = import_geoblender("design.model")
 provenance = import_geoblender("design.provenance")
 recompute_mod = import_geoblender("core.provenance.recompute")
+reproduce_mod = import_geoblender("core.versions.reproduce")
 road_store = import_geoblender("design.road_store")
 steps = import_geoblender("design.steps")
 store = import_geoblender("design.store")
@@ -213,6 +218,197 @@ class TargetPlatformTest(ChainCase):
         axis = {row["station_m"]: row for row in self.table(FIRST, provenance.ROAD_AXIS_TABLE)}
         branch = self.table(SECOND, provenance.ROAD_AXIS_TABLE)[0]
         self.assertEqual((branch["x"], branch["y"]), (axis[100.0]["x"], axis[100.0]["y"]))
+
+
+class FollowLevelsTest(ChainCase):
+    """RF-017-03, D-13, RF-015-01, RF-015-16, CE-017-08, E5 (T24b): **recalcular sigue a la plataforma de destino**: las cotas de inicio y de fin cuyo origen anotado en su fila es el del algoritmo
+    (la superficie de la entidad de destino en el punto, el eje de otra pista en esa abscisa) se vuelven a derivar al recalcular; las que dio la persona, no. **En orden** (``test_a`` a ``test_g``):
+    cada una parte de lo que dejó la anterior."""
+
+    LEVEL = design_params.entity_key("PLT-001", "start_level_m")
+    """La cota de ``P1`` (plana, 112 m): cambiarla cambia su superficie y con ella la cota a la que llega la pista."""
+    ROAD_END = design_params.entity_key("RDW-001", "end_level_m")
+    ROAD_START = design_params.entity_key("RDW-001", "start_level_m")
+    BRANCH_START = design_params.entity_key("RDW-002", "start_level_m")
+    NEW_M = 111.6
+    """La cota nueva de ``P1`` (0,4 m más baja: más alta, la plataforma plana sube en contra de su rasante y no se crea sin confirmar)."""
+
+    before: ClassVar[dict[str, Any]]
+    said: str = ""
+
+    def record(self, key: str) -> Any:
+        """El parámetro ``key`` de V01 tal como está (valor, origen, revisión, motivo)."""
+        return core_params.ParameterStore(self.project).get(key, version=self.v1.uid)
+
+    def repeat_road(self, code: str) -> str:
+        """Repite la operación vigente de ``code`` como lo hace «Recalcular» (aunque no esté obsoleta): el uid de la operación nueva; el mensaje del último paso queda en ``self.said``."""
+        self.clock.advance(minutes=1)
+        handle, work = store.recompute_run(self.request_for(self.current(code)))
+        found = list(work)
+        self.said = found[-1].message
+        return str(handle.uid)
+
+    def levels_of(self, name: str) -> tuple[np.ndarray, np.ndarray]:
+        """Las abscisas y las cotas de la rasante de la pista ``name`` (su ``des_rdx_``), a mano de la tabla."""
+        rows = self.table(name, provenance.ROAD_AXIS_TABLE)
+        return np.array([row["station_m"] for row in rows]), np.array([row["level_m"] for row in rows])
+
+    def person_gives(self, key: str, value: float) -> None:
+        """La persona da la cota ``key`` de V01 (origen «person»), un minuto después de lo anterior."""
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            core_params.ParameterStore(self.project).change(conn, key, value=value, source="Proyecto de la pista (prueba de la T24b)", source_kind="person", decided_by=BY, reason="La da la persona",
+                                                           version=self.v1.uid)
+
+    def test_a_changing_the_level_of_the_target_platform_moves_the_end_of_the_road(self) -> None:
+        """RF-017-03, D-13, CE-017-08, E5: cambiar la cota de ``P1`` (112 → 111,6 m) y «Recalcular lo obsoleto» (la plataforma, la pista, el ramal y el relleno, en ese orden) hace que la pista **acabe a la cota
+        nueva** de ``P1``: su ``end_level_m`` (con su origen «algoritmo», su revisión 2 y su motivo) y el último punto de su eje; lo que no depende de lo que cambió (la cota de inicio de la pista) **no se
+        reescribe** (revisión 1) y todo queda al día. La rasante de la pista a 100 m, que el ramal toma, no cambia: lo que sigue es lo que cambió."""
+        keys = (self.ROAD_START, self.ROAD_END, self.BRANCH_START)
+        type(self).before = {key: self.record(key) for key in keys}
+        for key in keys:
+            self.assertEqual(str(self.before[key].source_kind), "algorithm", key)
+            self.assertEqual(self.before[key].rev, 1, key)
+        self.assertAlmostEqual(self.before[self.ROAD_END].value, 112.0, places=9)
+        stations, levels = self.levels_of(FIRST)
+        self.assertAlmostEqual(self.before[self.BRANCH_START].value, float(np.interp(100.0, stations, levels)), places=9)
+        self.change(self.LEVEL, self.NEW_M)
+        self.assertEqual(self.recompute_plan(), [(provenance.PLATFORM,), (provenance.ROAD,), (provenance.ROAD,), (provenance.PLATFORM,)])
+        self.clock.advance(minutes=1)
+        made = self.recompute_all()
+        self.assertEqual([self.type_of(uid) for uid in made], [provenance.PLATFORM, provenance.ROAD, provenance.ROAD, provenance.PLATFORM])
+        end = self.record(self.ROAD_END)
+        self.assertAlmostEqual(end.value, self.NEW_M, places=9)
+        self.assertEqual((str(end.source_kind), end.rev), ("algorithm", 2))
+        self.assertIn("P1", end.source)
+        self.assertIn("pasa de 112,00 a 111,60 m", end.reason)
+        stations, levels = self.levels_of(FIRST)
+        self.assertAlmostEqual(float(levels[-1]), self.NEW_M, places=9)
+        self.assertAlmostEqual(float(levels[0]), self.before[self.ROAD_START].value, places=9)
+        for key in (self.ROAD_START, self.BRANCH_START):
+            self.assertEqual((self.record(key).rev, self.record(key).value), (1, self.before[key].value), "lo que no cambió no se reescribe")
+        self.assertEqual({code: str(state) for code, state in self.states_now().items()}, dict.fromkeys(CHAIN, "current"))
+        self.assertEqual(self.recompute_plan(), [])
+
+    def test_b_the_values_the_operation_recorded_are_the_new_ones_and_recomputing_again_writes_nothing(self) -> None:
+        """RF-015-02, RF-015-01, D-14: la operación nueva de la pista anotó **los valores nuevos** (``des.road.rdw_001.end_level_m`` en sus parámetros: es lo que reproduce lo congelado) y un recálculo
+        más, sin que cambie nada, **no escribe ningún parámetro** ni cambia ningún dato (los mismos hash)."""
+        end = self.record(self.ROAD_END)
+        self.assertEqual((end.rev, str(end.source_kind)), (2, "algorithm"))
+        recorded = self.query("SELECT rev, value_sha256 FROM gb_operation_param WHERE operation_uid = ? AND key = ?", self.current("RDW-001"), self.ROAD_END)
+        self.assertEqual(recorded, [(end.rev, end.value_sha256)], "la operación nueva leyó la revisión nueva de la cota de fin")
+        parameters, hashes = self.parameters(), {name: self.hashes(name) for name in (surface_of(FIRST), surface_of(SECOND))}
+        for code in ("RDW-001", "RDW-002"):
+            self.repeat_road(code)
+        self.assertEqual(self.parameters(), parameters, "un recálculo sin cambios no escribe parámetros")
+        self.assertEqual({name: self.hashes(name) for name in hashes}, hashes)
+
+    def test_c_the_start_of_a_road_that_leaves_the_axis_of_another_follows_the_point_it_leaves_from(self) -> None:
+        """RF-017-03, D-13, CE-017-08: la cota de inicio del ramal es la rasante de la pista en el punto de su eje del que sale (origen «algoritmo»): al cambiar ese punto (``RDW-001@100`` → ``RDW-001@1``, por
+        «Cambiar parámetro…») y recalcular, **vuelve a tomar la rasante de la pista en la abscisa nueva** (``start_level_m`` es el de la tabla del eje de la pista, a mano, y su revisión, la 2); su origen
+        sigue siendo el del algoritmo y habla de la pista y de la abscisa."""
+        old = self.record(self.BRANCH_START)
+        self.change(design_params.entity_key("RDW-002", "origin"), "RDW-001@1")
+        self.clock.advance(minutes=1)
+        made = self.recompute_all()
+        self.assertEqual([self.type_of(uid) for uid in made], [provenance.ROAD, provenance.PLATFORM])
+        stations, levels = self.levels_of(FIRST)
+        branch = self.record(self.BRANCH_START)
+        self.assertAlmostEqual(branch.value, float(np.interp(1.0, stations, levels)), places=9)
+        self.assertGreater(abs(branch.value - old.value), 1.0, "la rasante a 1 m del origen no es la de 100 m")
+        self.assertEqual((str(branch.source_kind), branch.rev), ("algorithm", old.rev + 1))
+        self.assertIn("RDW-001", branch.source)
+        self.assertIn("1 m", branch.source)
+        self.assertEqual(self.recompute_plan(), [])
+
+    def test_d_the_start_of_the_branch_follows_the_axis_of_the_road_when_its_level_changes(self) -> None:
+        """RF-017-03, D-13, CE-017-08: cambia **la rasante de la pista** (la persona sube su cota de inicio 1 m: la rasante a 1 m del origen pasa de ≈ 104,0 a ≈ 104,9 m) y el ramal, que sale de ese punto de su
+        eje, **sale de la rasante nueva** al recalcular (la cota de la tabla del eje de la pista, a mano; revisión 3); la cota de inicio de la pista, que dio la persona, **no cambia**."""
+        old = self.record(self.BRANCH_START)
+        given = self.record(self.ROAD_START).value + 1.0
+        self.person_gives(self.ROAD_START, given)
+        self.repeat_road("RDW-001")
+        self.assertEqual(self.recompute_plan(), [(provenance.ROAD,), (provenance.PLATFORM,)])
+        self.repeat_road("RDW-002")
+        self.assertEqual(self.recompute_plan(), [(provenance.PLATFORM,)])
+        self.recompute_all()
+        self.assertEqual(self.recompute_plan(), [])
+        stations, levels = self.levels_of(FIRST)
+        self.assertAlmostEqual(float(levels[0]), given, places=9, msg="la pista sale de la cota que dio la persona")
+        branch = self.record(self.BRANCH_START)
+        self.assertAlmostEqual(branch.value, float(np.interp(1.0, stations, levels)), places=9)
+        self.assertGreater(branch.value - old.value, 0.5, "la rasante de la pista a 1 m de su origen subió")
+        self.assertEqual((str(branch.source_kind), branch.rev), ("algorithm", old.rev + 1))
+        start = self.record(self.ROAD_START)
+        self.assertEqual((start.value, str(start.source_kind), start.decided_by), (given, "person", BY))
+        self.assertIn(f"su cota de inicio pasa de {old.value:.2f} m a {branch.value:.2f} m".replace(".", ","), self.said, "el último paso de «Recalcular» lo dice")
+
+    def test_e_calculating_an_existing_road_says_what_follows_and_creating_it_writes_it_in_the_same_transaction(self) -> None:
+        """RF-017-03, D-13, RF-015-03 (la parte de «Calcular», no la de «Recalcular lo obsoleto»): «Calcular» el ramal ya creado, tras cambiar la rasante de la pista, dice en su **resumen** que su cota
+        de inicio pasa de X a Y m —las de la tabla del eje, a mano— y **no escribe nada** (calcular no escribe: los parámetros, iguales); «Crear» la escribe en la transacción que abre la operación (la
+        revisión siguiente, de quien la crea, con su motivo) y la operación anota esa revisión."""
+        self.person_gives(self.ROAD_START, self.record(self.ROAD_START).value + 0.3)
+        self.repeat_road("RDW-001")
+        old_uid, old = self.current("RDW-002"), self.record(self.BRANCH_START)
+        asked = provenance.road_request(self.settings_of(old_uid), entity_store.entity_parameters(self.project, "RDW-002", version=self.v1))
+        before = self.snapshot()
+        self.clock.advance(minutes=1)
+        calculation = finish(steps.road_run(self.project, asked, version=self.v1.uid, code="RDW-002", supersedes=old_uid))
+        stations, levels = self.levels_of(FIRST)
+        expected = float(np.interp(1.0, stations, levels))
+        self.assertGreater(abs(expected - old.value), 0.05)
+        (notice,) = [item for item in calculation.summary.notices if item.code == "des.road_start_level_followed"]
+        self.assertEqual((notice.values["entity"], notice.values["old"], notice.values["new"]), (SECOND, old.value, expected))
+        said = notice.text("es")
+        self.assertIn(f"su cota de inicio pasa de {old.value:.2f} m a {expected:.2f} m".replace(".", ","), said)
+        self.assertIn(said, calculation.summary.lines("es"))
+        self.assertEqual(self.snapshot(), before, "calcular no escribe nada")
+        self.clock.advance(minutes=1)
+        stored = calculation.create(decided_by=BY)
+        branch = self.record(self.BRANCH_START)
+        self.assertAlmostEqual(branch.value, expected, places=9)
+        self.assertEqual((str(branch.source_kind), branch.rev, branch.decided_by), ("algorithm", old.rev + 1, BY))
+        self.assertIn("pasa de", branch.reason)
+        recorded = self.query("SELECT rev FROM gb_operation_param WHERE operation_uid = ? AND key = ?", str(stored.handle.uid), self.BRANCH_START)
+        self.assertEqual(recorded, [(branch.rev,)])
+        self.assertEqual(self.current("RDW-002"), str(stored.handle.uid))
+
+    def test_f_the_end_level_the_person_gave_is_kept_when_the_platform_changes(self) -> None:
+        """RF-017-03, D-13: la cota de fin que **dio la persona** (origen «person») no cambia al cambiar ``P1`` y recalcular, aunque la pista y la plataforma se recalculen: la pista acaba a la cota dada y la
+        cota conserva su valor, su origen, su revisión y su decisor."""
+        given = self.record(self.ROAD_END).value
+        self.person_gives(self.ROAD_END, given)
+        recorded = self.record(self.ROAD_END)
+        self.assertEqual(str(recorded.source_kind), "person")
+        old = self.current("PLT-001")
+        self.change(self.LEVEL, self.NEW_M - 0.1)
+        self.clock.advance(minutes=1)
+        made = self.recompute_all()
+        self.assertNotEqual(self.current("PLT-001"), old, "la plataforma se recalculó")
+        self.assertIn(provenance.ROAD, [self.type_of(uid) for uid in made])
+        kept = self.record(self.ROAD_END)
+        self.assertEqual((kept.value, str(kept.source_kind), kept.rev, kept.decided_by), (given, "person", recorded.rev, BY))
+        stations, levels = self.levels_of(FIRST)
+        self.assertAlmostEqual(float(levels[-1]), given, places=9, msg="acaba a la cota que dio la persona, no a la de la plataforma")
+        self.assertNotAlmostEqual(given, self.NEW_M - 0.1, places=3)
+
+    def test_g_the_frozen_revision_reproduces_the_roads_with_the_levels_they_followed(self) -> None:
+        """RF-009-11, RF-015-02, RF-017-03: reproducir ``V01.r1`` —congelada **después** de que las cotas siguieran a su origen (y de que la persona diera las suyas)— da de cada pista el **mismo hash** de sus cuatro
+        datos y las mismas cifras: lo congelado lleva los valores que anotó la operación y **la reproducción no vuelve a derivar nada** (nada nuevo en lo congelado)."""
+        self.clock.advance(minutes=1)
+        revision = str(finish_steps(freeze.freeze_steps(self.project, self.v1.uid, reason="Entrega de la prueba de la T24b")).frozen.uid)
+        self.clock.advance(minutes=1)
+        before = (files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root))
+        report = finish_steps(reproduce_mod.reproduce_steps(self.project, revision))
+        self.assertEqual((files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root)), before, "reproducir no escribe en el proyecto")
+        for code in ("RDW-001", "RDW-002"):
+            uid = self.current(code)
+            with self.subTest(road=code):
+                mine = [check for check in report.outputs if check.operation_uid == uid]
+                self.assertEqual([check.role for check in mine], ["entity_surface", "entity", "road_axis", "entity_report"])
+                self.assertTrue(all(check.same for check in mine), [check for check in mine if not check.same])
+                found = [check for check in report.figures if check.operation_uid == uid]
+                self.assertTrue(found and all(check.same for check in found), [check for check in found if not check.same])
 
 
 class DiscardMainRoadTest(ChainCase):
