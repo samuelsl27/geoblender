@@ -39,7 +39,9 @@ prohíbe a los demás operadores y dice en qué se apoya (spec 015, hecha a falt
 detecta los acopios de un levantamiento con su plano de base, su huella y su volumen, los retira con lo que se les
 apoyaba a la vista, hace el contrafuerte con el pie libre en lo que se admite y los cuerpos apoyados por espesor, y
 la verificación de los límites distingue el corte de terreno del de acopios (spec 016, cerrada el 20/11/2026 y vista
-en pantalla con eventos simulados, sin ratón real). Lo de
+en pantalla con eventos simulados, sin ratón real). Y traza pistas y rampas con su perfil, su ruta de mínimo coste con 16 rumbos, su eje con
+curvas, su rasante acotada y su sección grabada, y dice a dónde se llega a pie y qué bermas, plataformas y zonas «requiere acceso» quedan
+comunicadas, que la verificación de los límites ya comprueba (spec 017, hecha en `main`, sin publicar, a falta de verla en pantalla). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -124,6 +126,67 @@ QGIS 4.2 con su ventana, las medidas en `Z:`, la comparación con el proyecto de
 clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
+
+- **Pistas y rampas** (spec 017, R-40; hecha en `main`, sin publicar: probada sin pantalla, a falta de verla en pantalla, del banco del proyecto
+  de referencia y de su verificación única). En el proyecto de referencia las pistas se resolvieron con cinco métodos sucesivos repartidos en varios
+  scripts, y cada uno dejó su lección: pistas trazadas sobre la superficie final restaurada que no llegaban al fondo (se quedaban en la cota
+  152,6), ninguna solución en un talud del 38 % con 8 direcciones (la menor pendiente alcanzable era el 14,5 % y se pedía el 10 %), pistas
+  esquemáticas, de vértices puntiagudos, que la propiedad rechazó, dos criterios de pista que convivían (el 10 % y la «opción A15», hasta el
+  15 %) y un informe aparte para saber a qué cota se llega y qué bermas quedan comunicadas. Con el marco de la 015 (la cadena, lo que declara cada
+  entidad, lo que se le apoya), Geoblender traza ahora la pista, la rampa y su accesibilidad. Guía de uso: `docs/usuario/pistas-y-rampas.md` de la
+  documentación. Menú **Diseño ▸ Pistas y entidades**, con los cinco primeros puestos **Pista…**, **Proponer el trazado…**, **Accesibilidad de las
+  pistas…**, **Perfil de pista…** y **Exportar pista…**: disponibles con un proyecto en escritura y una versión activa que se puede editar
+  (**Exportar pista…** también en solo lectura y con una versión superada) y en gris con su motivo en los demás casos. Como en las demás, hasta
+  **Crear** no se escribe nada, todo va por pasos y **Esc** cancela sin dejar nada a medias.
+  - **Perfil de pista…**: un perfil con nombre y **quince valores** (el vehículo de diseño, el factor de calzada, el arcén, el caballón, la
+    pendiente máxima de diseño y la media máxima, el paso de la rasante, el radio y el radio mínimo, los ángulos de desmonte y de terraplén, el
+    alcance, la clase normativa, el factor de malla y la métrica), cada uno con su fuente y quién lo decidió. Se enseñan también la calzada, la
+    sección, su semianchura y la longitud mínima para salvar un desnivel, que se derivan y no se editan. Un perfil incompleto o con un valor fuera
+    de rango se rechaza con el perfil, el campo y el valor, sin escribir nada.
+  - **Pista…**, en **tres modos**: **Trazar**, de un origen a un destino (un punto, una plataforma o una cota dentro de una zona, que es la
+    **rampa**; el origen puede ser un punto del eje de otra pista, y así sale un ramal); **Sobre un eje**, con una línea dibujada a la que se
+    ajustan las curvas y se da la rasante; y **Eje 3D**, con una línea con su Z (una línea de rotura o la propuesta de «Proponer el trazado…»),
+    cuya Z es la rasante: se comprueba y se graba, pero **la línea no se corrige**. La ruta se busca con **16 rumbos** y la pendiente acotada
+    (con 8 no había solución al 10 % en un talud del 38 %); el eje tiene **curvas circulares con un radio mínimo**, la rasante es **acotada** por
+    la pendiente de diseño, y la sección —calzada, arcén y caballón— se **graba** con un ángulo de desmonte hacia arriba y otro de terraplén
+    hacia abajo, solo donde las máscaras lo admiten y sin pisar nunca un intocable ni una exclusión. Se traza sobre la superficie de explotación
+    y **después de los rellenos**: si la partida es la superficie final restaurada, avisa de que no llega al fondo y de la cota que sí alcanza, y
+    avisa del relleno que la pista no tiene en cuenta. Tiene una vista previa antes de calcular, calcula sin escribir nada y enseña la longitud, las
+    cotas, las pendientes, el radio mínimo, el corte y el relleno y cada aviso con su lugar. **Una pendiente media por encima de la del perfil no
+    se crea sin su confirmación expresa y un motivo**, que queda registrado con quién y cuándo (la «opción A15»); tampoco una calzada que no queda
+    en su rasante por lo que las máscaras o la altura máxima no dejan mover, y se confirma sin motivo. Sin ruta, dice por qué: el origen no es
+    alcanzable, el pasillo no contiene ninguna ruta o se agotó el presupuesto de estados (que **no significa que no haya ruta**: se reduce la
+    holgura del pasillo o se sube el presupuesto); **el pasillo es una holgura y no un ancho**.
+  - **Proponer el trazado…**: la ruta y la rasante de «Trazar» sin la sección ni el grabado, como una capa de líneas con Z que se edita en QGIS
+    y sirve luego de eje a una pista. No cambia ninguna superficie ni es una entidad, y su aviso de la pendiente media no pide confirmar.
+  - **Accesibilidad de las pistas…**: a dónde llega una persona a pie desde unos puntos de entrada sobre una superficie del proyecto o de la
+    versión, con una pendiente máxima transitable, un ancho mínimo y un área mínima de berma. Da las cotas mínima y máxima alcanzables (también
+    sobre la superficie final de una cantera: el error 23, con el 136,5 m de la restaurada) y qué tramos de berma, qué plataformas y qué zonas
+    «requiere acceso» quedan comunicados, con las que no, primero, con su lugar, su distancia y su diferencia de cota y un botón **Ir a**. La
+    verificación de los límites (012) lee este resultado y da a cada zona «requiere acceso» tres respuestas: «cumple», «no cumple» o «sin comprobar».
+  - **Exportar pista…**: la superficie de una pista y lo que alcanza una accesibilidad a GeoTIFF, y la rasante de una pista a CSV (abscisa, x, y,
+    cota del terreno, cota de la rasante y pendiente), sin escribir nada en el proyecto.
+  - **La vista y QGIS**: la pista y la accesibilidad son objetos de la Vista 3D con su ficha en la barra N (los estados al día, obsoleta con su
+    causa, descartada, apoyo retirado y sin calcular); QGIS 4.2 abre una **capa de ejes de pistas** con su estilo por clase, que no se edita a
+    mano, y la propuesta del trazado, que sí.
+  - **Cifras y su tipo.** **Ninguna cifra de la propiedad se da por defecto**. **Los ocho parámetros de la ruta son HIPÓTESIS** sin valor por
+    defecto (la malla, el paso de cota, la altura máxima de desmonte y terraplén, el peso del movimiento de tierras, la penalización de giro, la
+    holgura del pasillo y las tolerancias de simplificación y de llegada): los declara quien traza la pista y lo que sale con ellos lleva la
+    marca. **Los tres umbrales de la accesibilidad son HIPÓTESIS** sin valor por defecto. El presupuesto de 5.000.000 de estados de la búsqueda es
+    ADOPTADO «sin confirmar»: la propiedad aún no lo ha confirmado. Los valores del perfil son ADOPTADO, con la fuente que dé quien los declara,
+    y ninguno tiene valor por defecto salvo el factor de malla (1,0) y la métrica (exacta).
+  - **Lo que cambia del marco de las entidades**: una pista no declara restricciones (su zona se corta y se rellena a la vez); «Calcular…» ofrece
+    también las pistas traídas de otra versión (el ramal, después de su pista); «Cambiar parámetro…» renombra una pista sin dejarla obsoleta y
+    una cota que da la persona no se vuelve a derivar al recalcular; la accesibilidad no se trae a otra versión (se vuelve a calcular). **Las tres
+    órdenes provisionales** que había en ese grupo, la herramienta «Pista», «Ruta 3D con pendiente máxima…» y «Grabar las pistas en la
+    superficie», **desaparecen** del menú: la pista graba al crearse y su ruta sale de **Pista…** y de **Proponer el trazado…**.
+  - **Lo que no hace todavía**: **no se ha visto en pantalla** (sí con las órdenes reales, sin su interfaz) ni se ha contrastado con el banco del
+    proyecto de referencia. **La rasante de «mínimo movimiento» por programación lineal no está hecha**, ni las rampas vectoriales (espiral y
+    zig-zag) ni el comprobador de pistas de la ITC. La ruta de 1,5 km tarda hasta 63 s en una ladera del 38 % con 60 m de holgura; grabar 2 km con
+    el eje en diagonal tarda 16,75 s y **no cumple los 15 s** de la spec (la cifra la decide Samuel). Al traer una pista a
+    otra versión, el perfil de la pista no viaja con ella (hay que declararlo allí), ni el campo de los nombres de su capa, y la accesibilidad no se trae. Una pista anterior a
+    un relleno no se asienta con «Recalcular lo obsoleto»: se rehace sobre la superficie del relleno o se descarta. La vista previa de «Proponer
+    el trazado…» no dibuja el eje tras calcular.
 
 - **Acopios, contrafuerte y cuerpos apoyados** (spec 016, R-36, segunda spec; cerrada el 20/11/2026: verificada sin pantalla y vista
   en pantalla con eventos simulados, sin ratón real). En el proyecto de referencia los acopios, el contrafuerte y el escombro de una ladera se hicieron con scripts sueltos, y cada
@@ -1545,6 +1608,18 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
   y se pesa con V·ρ/K, no con V·ρ. Antes toda unidad nacía «In situ» y, si no se cambiaba a mano, el acopio salía un 23 % más pesado sin
   ningún aviso (el error 67). Solo se cambia si la unidad estaba en «In situ» (se puede volver a elegir «In situ») y no cambia ninguna otra
   clase, ni las columnas y unidades que ya están guardadas, ni ningún resultado de la cubicación.
+- **Verificación por recinto** (spec 012, versión 0.6; hecho con la spec 017): a una zona «requiere acceso» ya no se le da siempre «sin
+  comprobar». Ahora da **las tres respuestas**, según la **accesibilidad al día hecha sobre cada final** que se verifica: «cumple» si alguna la
+  comunica, «no cumple» si ninguna la comunica (en alerta: hace que la final no cumpla, pero no tiene celdas que incumplan, así que no da grupos
+  ni marca la rejilla de incumplimientos) y «sin comprobar» si esa final no tiene ninguna accesibilidad al día. La orden dice qué accesibilidad
+  usa de cada final, y una accesibilidad obsoleta o hecha sobre otra superficie no se usa y la ventana lo dice con su causa. La accesibilidad es
+  una entrada de la verificación: cambiarla **deja obsoleta la verificación**. **Sin zonas «requiere acceso» o sin accesibilidades, la
+  verificación da exactamente lo de siempre.**
+- **La comprobación de cada tarea deja fuera las pruebas pesadas de la spec 017** (RNF-017-09): las clases con proyecto de 2 m de la pista, de la
+  accesibilidad y de sus órdenes, y los módulos de Blender más pesados pasan a ficheros `milestone_*.py`, sin cambiar una aserción; los ejecuta el
+  paso «hito» de `--completo` (que la publicación pide siempre) y cada requisito de la 017 sigue teniendo en el «verde» al menos una prueba (lo
+  guarda `tests/unit/design/test_milestone_coverage_017.py`). La 017 cuesta unos 2,4 s más en el «verde» (se le permitían 3 s), sobre los 48 s de
+  RNF-001-01 que ya se pasaban antes de esta spec.
 - **Verificación por recinto** (spec 012, versión 0.5; hecho con la spec 016): cuando hay una **detección de acopios hecha sobre la
   superficie de partida**, la verificación **no cuenta como cortar terreno** lo que baja de un acopio hasta su base, y da aparte el **corte de
   terreno** y el **corte de acopios** (en las zonas sin corte, de solo relleno, de solo restauración, la banda de resguardo y la banda hacia
@@ -1724,6 +1799,11 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Corregido
 
+- En la vista, el objeto de una entidad de diseño (la plataforma de la 015, la pista de la 017 y, por prudencia, la detección de acopios de la 016)
+  cuya cota cambia sin cambiar su huella ya se marca «no al día», y **Refrescar** lo regenera con la cota nueva. Antes, si solo cambiaba la cota
+  de una plataforma o de una pista y se recalculaba, la vista no lo marcaba «no al día» ni Refrescar lo regeneraba: había que volver a cargarlo con
+  **Cargar en la vista** para ver la cota nueva. Lo que ya estaba cargado antes de esta versión no se compara hasta que se vuelve a cargar. Solo
+  cambia lo que se ve: ninguna cifra ni ningún dato del proyecto cambian (spec 010; lo encontró la spec 017).
 - Un cálculo en segundo plano cuyo Blender muere justo cuando avisa de su avance termina como
   «padre perdido» (código 4, con su motivo en el registro del trabajo), igual que el que lo
   descubre al vigilar su entrada; antes, de vez en cuando, salía con una excepción no capturada

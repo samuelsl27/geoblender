@@ -34,6 +34,10 @@ describe; estas pruebas avisan de que se separan:
   (§4.5: los trece módulos nuevos con los nombres **reales** del código y lo que la 017 añade a los demás; §1.9; «Datos que posee»: las
   siete familias de datos, las tres de parámetros, las cifras y los cuatro tipos de operación y el de los perfiles),
   ``formato-proyecto.md`` (§3.3, §3.11 con el SQL de las siete tablas y §4.2), la barra superior (§8.7) y los paneles contextuales (§3.11).
+- la 017 (su T35b: la guía de uso ``docs/usuario/pistas-y-rampas.md`` —todo texto entre «» sale del catálogo o es un ejemplo que la prueba
+  lista; las cifras, los tipos y los valores por defecto de sus tablas son los del código—, el glosario, ``limites-y-restricciones.md``
+  con las tres respuestas de «requiere acceso», el ``CHANGELOG.md``, el índice de specs, el roadmap, ``jobs.md`` sin el worker de la
+  ruta 3D y la trampa nueva de ``docs/trampas.md``).
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``). Las pruebas del emparejado de las
 citas (:class:`QuoteMatcherTest`) no la necesitan: comprueban que la regla no da falsos verdes.
@@ -41,6 +45,7 @@ citas (:class:`QuoteMatcherTest`) no la necesitan: comprueban que la regla no da
 
 from __future__ import annotations
 
+import functools
 import inspect
 import pkgutil
 import re
@@ -384,6 +389,13 @@ class QuoteIndex:
         return False
 
 
+@functools.cache
+def shared_quote_index() -> QuoteIndex:
+    """El índice de los textos del catálogo, una sola vez por proceso para todas las pruebas de las guías de este módulo (cada una lo
+    armaba por su cuenta: ≈ 0,1 s cada vez). Nadie lo cambia: es de solo lectura."""
+    return QuoteIndex(catalog_texts())
+
+
 # --- Pruebas sin la documentación --------------------------------------------------------------
 
 
@@ -394,7 +406,7 @@ class QuoteMatcherTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.index = QuoteIndex(catalog_texts())
+        cls.index = shared_quote_index()
 
     def test_a_rendered_message_passes_with_other_names_and_numbers(self) -> None:
         """Principio 10 (T37): un mensaje del catálogo escrito con un nombre, unas cifras y una
@@ -664,7 +676,7 @@ class GuideDocTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.guide = docs.read(GUIDE_RELPATH)
-        cls.index = QuoteIndex(catalog_texts())
+        cls.index = shared_quote_index()
 
     def guide_section(self, heading: str) -> str:
         return one_line(section(self.guide, heading))
@@ -947,7 +959,7 @@ class EntitiesGuideDocTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.guide = docs.read(ENTITIES_GUIDE_RELPATH)
-        cls.index = QuoteIndex(catalog_texts())
+        cls.index = shared_quote_index()
 
     def guide_section(self, heading: str) -> str:
         return one_line(section(self.guide, heading))
@@ -1413,7 +1425,7 @@ class SupportedGuideDocTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.guide = docs.read(SUPPORTED_GUIDE_RELPATH)
-        cls.index = QuoteIndex(catalog_texts())
+        cls.index = shared_quote_index()
 
     def guide_section(self, heading: str) -> str:
         """La sección ``heading`` de la guía en una línea y sin las marcas «> » de sus recuadros."""
@@ -1999,15 +2011,18 @@ class RoadsCardDocTest(unittest.TestCase):
         self.assertNotIn("La comprobará R-40", self.format)  # §3.9: «requiere acceso» ya lo comprueba la accesibilidad (T18)
 
     def test_the_card_says_where_the_017_is_and_names_the_real_modules(self) -> None:
-        """Definición de hecho §3.7 (T35; plan 017 §5.1; los nombres que las tareas cambiaron): la cabecera de ``des.md`` dice que la 017
-        (R-40) está hecha en ``main``, sin publicar, con sus trece módulos nuevos en §4.5; §4.5 existe y la «API prevista» pasó a §4.6
+        """Definición de hecho §3.7 (T35 y T35b; plan 017 §5.1; los nombres que las tareas cambiaron): la cabecera de ``des.md`` dice que la 017
+        (R-40) está hecha en ``main``, sin publicar, con las tareas T01 a T35b hechas, su guía de uso y sus trece módulos nuevos en §4.5; §4.5 existe y la «API prevista» pasó a §4.6
         **sin** el ``design.roads.Road`` del plan; §1.9 nombra los módulos con sus nombres **reales** (``road_gradient``, no
         ``road_grade``, que el glosario §14 prohíbe, y ``road_card``) y §2.4 dice que las reglas de la rampa las aplica ya la pista."""
         head = one_line(self.des[:self.des.index("## Responsabilidad")])
         for fact in ("**Desde la spec 017**", "pistas y rampas, R-40", "sin ADR nuevo", "trece módulos nuevos (§4.5)", "hecha en `main`, sin publicar",
-                     "la T35b", "el H3"):
+                     "las tareas T01 a T35b hechas", "docs/usuario/pistas-y-rampas.md", "el banco de Silvestre (T36)", "el H3"):
             with self.subTest(head=fact):
                 self.assertIn(fact, head)
+        for stale in ("por hacer **la T35b**", "T01 a T35 hechas"):  # T35b: la guía, el glosario, el CHANGELOG, el roadmap y el índice ya están
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, head)
         self.assertNotIn("§1.8 en adelante", head)
         self.assertIn("### 4.5 Lo que entrega la spec 017 (R-40)", self.des)
         self.assertIn("### 4.6 API prevista (otras entradas del roadmap)", self.des)
@@ -2029,9 +2044,10 @@ class RoadsCardDocTest(unittest.TestCase):
         row = re.search(r"^\| 017-des-pistas-y-rampas .*$", self.des, re.MULTILINE)
         self.assertIsNotNone(row)
         assert row is not None
-        for fact in ("R-40", "hecha en `main`, sin publicar", "T01 a T35"):
+        for fact in ("R-40", "hecha en `main`, sin publicar", "T01 a T35b", "pistas-y-rampas.md"):
             with self.subTest(row=fact):
                 self.assertIn(fact, row.group(0))
+        self.assertNotIn("faltan la T35b", row.group(0))  # T35b: ya está hecha
         self.assertIsNone(re.search(r"^\| Pistas y rampas \(R-40\) \| 1\.9 y las reglas de rampa de 2\.4 \| R-33 \|$", self.des, re.MULTILINE))
 
     def test_the_card_tells_what_the_017_adds_to_the_other_modules(self) -> None:
@@ -2077,6 +2093,460 @@ class RoadsCardDocTest(unittest.TestCase):
                      "no se trae a otra versión", "«Pista…»"):
             with self.subTest(panels=fact):
                 self.assertIn(fact, panels)
+
+
+# --- La 017 (su T35b: la guía de uso, el glosario, el CHANGELOG, el roadmap y el índice) -----------------------------------
+
+ROAD_GUIDE_RELPATH = "docs/usuario/pistas-y-rampas.md"
+GLOSSARY_RELPATH = "docs/producto/glosario.md"
+LIMITS_GUIDE_RELPATH = "docs/usuario/limites-y-restricciones.md"
+JOBS_RELPATH = "docs/arquitectura/modulos/jobs.md"
+TRAPS_RELPATH = "docs/trampas.md"
+# Las órdenes de la 017 y las del marco que la guía nombra con el texto de su catálogo.
+ROAD_GUIDE_ORDERS = ("geoblender.des_create_road", "geoblender.des_propose_road", "geoblender.des_road_access",
+                     "geoblender.des_edit_road_profile", "geoblender.des_export_road", "geoblender.des_entity_dependents",
+                     "geoblender.des_entity_discard", "geoblender.des_entity_release_support", "geoblender.des_entity_bring",
+                     "geoblender.des_entity_insert", "geoblender.des_entity_calculate", "geoblender.des_entity_preview",
+                     "geoblender.des_create_platform", "geoblender.core_set_parameter", "geoblender.core_recompute_stale",
+                     "geoblender.res_verify_constraints", "geoblender.core_go_to_place")
+# De lo que la guía de la 017 pone entre «», lo que no está en el catálogo: nombres de ejemplo, lo que dicen las ventanas de la
+# verificación de la 012 (sus textos son de ``reserves.messages``, que el emparejado de las citas no lee), lo que eran las tres
+# órdenes provisionales que desaparecen y los términos que la guía explica. La prueba exige que siga en la guía y que no haya
+# ninguno más.
+ROAD_EXAMPLES: tuple[str, ...] = (
+    # Lo que eran las tres órdenes provisionales de R-40 (ya no están en el catálogo: D-20).
+    "Ruta 3D con pendiente máxima…", "Grabar las pistas en la superficie",
+    # Lo que dice la ventana de la verificación de la 012 de la accesibilidad que usa (``res.verify_access_used``), con un nombre de ejemplo.
+    "Accesibilidad de «Pozo 1»: ACC-001 «Accesibilidad de la cantera»",
+    # Términos que la guía explica y no son un texto de la interfaz: la «opción A15» de la propiedad, los rumbos «de caballo» y la rasante de
+    # «mínimo movimiento» (RF-017-19, sin código).
+    "opción A15", "de caballo", "mínimo movimiento",
+)
+UNIT_TEXT = {"m": "m", "%": "%", "deg": "°", "1/m": "1/m", "m2": "m²", "-": "—"}
+DEFAULT_TEXT = {"mesh_factor": "1,0", "metric": "exacta"}
+NO_DEFAULT = "Sin valor por defecto"
+
+
+def keyed_rows(text: str) -> dict[str, list[str]]:
+    """Las filas de las tablas de ``text`` por cada texto entre comillas invertidas de su primera celda (su clave)."""
+    found: dict[str, list[str]] = {}
+    for table in tables(text):
+        for cells in table:
+            for key in backticked(cells[0]):
+                found[key] = cells
+    return found
+
+
+@docs.requires_docs
+class RoadsGuideDocTest(unittest.TestCase):
+    """La guía de uso de las pistas y rampas (``docs/usuario/pistas-y-rampas.md``; spec 017, T35b) dice lo que el código hace: todo
+    texto entre «» sale del catálogo o es un ejemplo que esta prueba lista, las órdenes llevan el texto de su catálogo, las cifras, los
+    tipos y los valores por defecto de sus tablas son los del código y «Lo que no hace todavía» dice lo que hoy no hace."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.guide = docs.read(ROAD_GUIDE_RELPATH)
+        cls.index = shared_quote_index()
+
+    def guide_section(self, heading: str) -> str:
+        """La sección ``heading`` de la guía en una línea y sin las marcas «> » de sus recuadros."""
+        return one_line(re.sub(r"(?m)^> ?", "", section(self.guide, heading)))
+
+    def assert_told(self, heading: str, facts: Iterable[str]) -> None:
+        """Cada hecho de ``facts`` está en la sección ``heading`` de la guía."""
+        text = self.guide_section(heading)
+        for fact in facts:
+            with self.subTest(section=heading[:5], fact=fact):
+                self.assertIn(fact, text)
+
+    def test_every_quoted_text_is_in_the_catalog_or_is_a_listed_example(self) -> None:
+        """Principio 10, RF-017-29 (T35b): todo texto de la guía entre «» sale del catálogo (``messages.toml``, ``design.messages``, las
+        órdenes y las familias de datos), con otras cifras y otros nombres y con lo que omite con «…», o está en :data:`ROAD_EXAMPLES`; y
+        todo lo de la lista sigue en la guía."""
+        found = quotes(self.guide)
+        self.assertGreater(len(found), 20)
+        unknown = sorted({quote for quote in found if quote not in ROAD_EXAMPLES and not self.index.has(quote)})
+        self.assertEqual(unknown, [], "textos de la guía que el catálogo no dice (cámbielos en la guía, o en el código si es él el que está mal)")
+        self.assertEqual(sorted(set(ROAD_EXAMPLES) - set(found)), [], "ejemplos que la guía ya no cita: quítelos de ROAD_EXAMPLES")
+
+    def test_every_listed_example_is_not_in_the_catalog(self) -> None:
+        """Un ejemplo de :data:`ROAD_EXAMPLES` que sí está en el catálogo sobra: la lista solo tiene lo que no sale de él."""
+        for example in ROAD_EXAMPLES:
+            with self.subTest(example=example):
+                self.assertFalse(self.index.has(example))
+
+    def test_orders_are_named_with_their_catalog_text(self) -> None:
+        """RF-017-29, RF-015-28 (D-20; T35b): la guía nombra cada orden de la 017 y las del marco que usa con el texto de su catálogo, dice
+        dónde están las cinco primeras (**Diseño ▸ Pistas y entidades**, antes de «Entidades») y que las tres provisionales de R-40 ya no
+        existen."""
+        cat = catalog.load()
+        for key in ROAD_GUIDE_ORDERS:
+            with self.subTest(order=key):
+                self.assertIn(cat.commands[key].label_es, self.guide)
+        self.assertIn("Diseño ▸ Pistas y entidades", self.guide)
+        for gone in GONE_COMMANDS:
+            with self.subTest(gone=gone):
+                self.assertNotIn(f"geoblender.{gone}", cat.commands)
+        for was in ("«Pista»", "Ruta 3D con pendiente máxima…", "Grabar las pistas en la superficie"):
+            with self.subTest(was=was):
+                self.assertIn(was, one_line(self.guide))  # dichas como lo que eran
+
+    def test_the_values_their_types_and_defaults_are_the_code_s(self) -> None:
+        """RF-017-07, RF-017-10, RF-017-24, RF-008-01 (D-2, D-10, D-11, D-17; T35b): las tablas de §4 y §6 dan de cada valor del perfil de pista
+        (los 15), de la ruta (los 8 y el presupuesto de estados) y de la accesibilidad (los 3 umbrales) su unidad, su tipo (ADOPTADO o
+        HIPÓTESIS) y su valor por defecto **como los declara el código**: los ocho de la ruta y los tres umbrales son HIPÓTESIS sin valor, el
+        presupuesto, 5.000.000 ADOPTADO, y el perfil, ADOPTADO sin valor salvo el factor de malla (1,0) y la métrica (exacta)."""
+        profile_rows = keyed_rows(section(self.guide, "## 4. Perfil de pista…"))
+        value_rows = keyed_rows(section(self.guide, "## 6. Las cifras y su tipo"))
+        wanted = (
+            [(profile_rows, family) for family in dparams.ROAD_PROFILE_FAMILIES]
+            + [(value_rows, family) for family in dparams.ROAD_ENTITY.families
+               if family.pattern.rsplit(".", 1)[1] in ROAD_ROUTE_HYPOTHESES | {"search_budget"}]
+            + [(value_rows, family) for family in dparams.ACCESS_ENTITY.families if family.pattern.rsplit(".", 1)[1] in ACCESS_HYPOTHESES])
+        self.assertEqual(len(wanted), 15 + 9 + 3)
+        for rows, family in wanted:
+            key, template = family.pattern.rsplit(".", 1)[1], family.template
+            with self.subTest(value=key):
+                self.assertIn(key, rows, f"la guía no tiene la fila de «{key}»")
+                cells = rows[key]
+                self.assertEqual(cells[1], UNIT_TEXT[template.unit])
+                self.assertEqual(cells[2], template.kind.value)
+                expected = (NO_DEFAULT if template.default is None
+                            else DEFAULT_TEXT.get(key) or spanish_number(template.default))  # type: ignore[arg-type]
+                self.assertEqual(cells[3], expected)
+        self.assertEqual({k for k, v in values_by_name(dparams.ROAD_PROFILE_FAMILIES).items() if v.default is not None}, {"mesh_factor", "metric"})  # type: ignore[attr-defined]
+        self.assertEqual(len(dprov.ROAD_MODES), 3)
+        self.assertEqual(roadprofiles().derived.__name__, "derived")
+
+    def test_the_derived_values_of_the_example_profile_are_the_code_s(self) -> None:
+        """RF-017-08 (T35b): el ejemplo de §4 —vehículo de 3,5 m, factor 3, arcén 0 m, caballón 1 m y pd 10 % (el del proyecto de referencia)— da
+        la calzada de 10,5 m, la sección de 11,5 m, la semianchura de 5,75 m y 300 m para salvar 30 m de desnivel, como ``derived``."""
+        profile = roadprofiles().RoadProfile("pista_principal", "PISTA_PRINCIPAL", 3.5, 3.0, 0.0, 1.0, 10.0, 1.0, 10.0, 20.0, 12.0, 60.0, 35.0,
+                                             60.0, "Pista de acceso")
+        derived = roadprofiles().derived(profile)
+        self.assertEqual((derived.carriageway_m, derived.section_m, derived.half_width_m, derived.min_length_m(30.0)), (10.5, 11.5, 5.75, 300.0))
+        text = self.guide_section("## 4. Perfil de pista…")
+        for fact in ("**10,5 m**", "**11,5 m**", "**5,75 m**", "**300 m**", "el del proyecto de referencia de IMGA", "no es un valor por defecto"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+
+    def test_data_paths_parameters_and_figures_are_the_code_s(self) -> None:
+        """RF-017-01, RF-017-23, RF-017-24, RF-017-27, RF-017-28 (plan 017 §5.2; T35b): §15 da la ruta de cada tabla y de cada rejilla de la 017
+        (las siete), la tabla de los perfiles, las tres familias de parámetros, cada familia de cifras como las nombra el código y los
+        cuatro tipos de operación, y dice cuál es la única capa que se edita en QGIS."""
+        text = self.guide_section("## 15. Dónde queda cada cosa en el proyecto")
+        where = inline_tokens(section(self.guide, "## 15. Dónde queda cada cosa en el proyecto"))
+        self.assertEqual(len(dprov.ROAD_DATA_FAMILIES), 7)
+        for family in dprov.ROAD_DATA_FAMILIES:
+            shown = dprov.dataset_locator(family.code, "Mi nombre" if family.named else "", "V01").replace(
+                "mi_nombre", "<nombre>").replace("v01", "<vNN>")
+            with self.subTest(dataset=family.code):
+                self.assertTrue(any(shown in token for token in where), shown)
+        for name in (roadprofiles().TABLE, dparams.ROAD_ENTITY.families[0].pattern.rsplit(".", 1)[0] + ".*",
+                     dparams.ACCESS_ENTITY.families[0].pattern.rsplit(".", 1)[0] + ".*", "des.roadprofile.{p}.*"):
+            with self.subTest(name=name):
+                self.assertIn(name, where)
+        self.assertEqual({figure.key.split("_")[0] for figure in dprov.ROAD_FIGURES}, {"des.road"})
+        self.assertEqual({figure.key.split("_")[0] for figure in dprov.ACCESS_FIGURES}, {"des.acc"})
+        for token in ("des.road_*", "des.acc_*", "rdw_001", "acc_001"):
+            with self.subTest(token=token):
+                self.assertIn(token, text)
+        for op in dprov.ROAD_OPERATION_TYPES:
+            with self.subTest(operation=op.op_type):
+                self.assertIn(op.op_type, where)
+        self.assertIn(dprov.EDIT_ROAD_PROFILES, where)
+        self.assertEqual(dparams.entity_segment("RDW-001"), "rdw_001")
+        self.assertEqual(dparams.entity_segment("ACC-001"), "acc_001")
+        self.assertEqual([family.code for family in dprov.ROAD_DATA_FAMILIES if family.qgis_editable], ["rpl"])
+        self.assertIn("la única que se edita en QGIS", text)
+
+    def test_the_head_says_it_is_pending_review_and_what_is_missing(self) -> None:
+        """Definición de hecho §3.7 (T35b): el recuadro del principio dice que la 017 está hecha en ``main``, **sin publicar**, que la guía está
+        **pendiente de la revisión de Samuel**, que **no se ha visto en pantalla**, lo que se probó sin ella y lo que falta (el banco de
+        Silvestre, la verificación única y CE-017-11); y lleva su fecha y su spec."""
+        head = one_line(re.sub(r"(?m)^> ?", "", self.guide[:self.guide.index("## 1. Las palabras")]))
+        for fact in ("**Fecha:** 21/11/2026", "**Spec:** 017", "**Hecha en `main`, sin publicar**", "**pendiente de la revisión de Samuel**",
+                     "**No se ha visto en pantalla**", "sin su interfaz", "el banco de Silvestre (CE-017-10, T36)", "la verificación única (T37)",
+                     "el H3", "CE-017-11"):
+            with self.subTest(head=fact):
+                self.assertIn(fact, head)
+        for stale in ("Visto en pantalla", "**cerrada**", "ya publicada", "falta `tasks.md`"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, head)
+
+    def test_the_words_and_the_scenarios_are_told(self) -> None:
+        """RF-017-02, RF-017-09, RF-017-11 (D-8; spec §13; T35b): §1 define el rumbo de avance (que no es el rumbo geológico), la rasante (el
+        perfil de cotas, con su pendiente), el pasillo (una holgura y no un ancho), el presupuesto de estados, la rampa y la accesibilidad; §2
+        recorre E1 a E5, y §3 dice qué hay que tener antes."""
+        self.assert_told("## 1. Las palabras", ("**Rumbo de avance**", "no es el rumbo geológico", "**Rasante**", "perfil de cotas",
+                                                "**Pendiente de la rasante**", "**Pasillo**", "una holgura y no un ancho",
+                                                "**Presupuesto de estados**", "**Rampa**", "**Accesibilidad**", "**Ramal**", "**Perfil de pista**"))
+        two = self.guide_section("## 2. El trabajo de un vistazo")
+        for scenario in ("E1", "E2", "E3", "E4", "E5"):
+            with self.subTest(scenario=scenario):
+                self.assertIn(f"| {scenario} ·", two)
+        self.assert_told("## 3. Antes de empezar", ("una versión activa que se pueda editar", "Las capas solo se leen y nunca se modifican",
+                                                    "las máscaras de la versión", "la búsqueda de intocables", "se rechaza antes de escribir nada"))
+
+    def test_the_three_modes_the_levels_and_the_start_surface_are_told(self) -> None:
+        """RF-017-02, RF-017-03, RF-017-05, RF-017-18, RF-017-04 (D-4, D-13; T35b): §5 dice los tres modos con lo que pide cada uno, los destinos
+        (un punto, una plataforma y una cota con su zona, que es la rampa), el origen en el eje de otra pista, las cotas de inicio y de fin con
+        su origen, la partida (después de los rellenos) y que «eje 3D» no corrige la línea."""
+        self.assert_told("## 5. Pista…: los tres modos", (
+            "**Trazar**", "**Sobre un eje**", "**Eje 3D**", "16 rumbos", "la línea no se corrige", "una capa de líneas de rotura del proyecto",
+            "la que deja «Proponer el trazado…»", "**El eje de otra pista**", "a una abscisa", "**Una plataforma**", "**Una cota**",
+            "es la rampa", "la tolerancia de llegada", "después de los rellenos", "la superficie de explotación", "**Se apoya en**",
+            "una cota que usted escribe queda anotada como decidida por usted", "nunca modifica", "la superficie de partida y la capa",
+            "no llega al fondo"))
+        self.assertEqual(dprov.ROAD_MODES, ("trace", "on_axis", "axis_3d"))
+        self.assertEqual(road_net().HEADING_COUNT, 16)
+
+    def test_the_confirmations_are_told(self) -> None:
+        """RF-017-17, RF-017-22, RF-017-23 (D-6; T35b): §7 dice lo que enseña **Calcular** sin escribir nada, las 23 cifras, los avisos con su lugar
+        y las dos confirmaciones: la pendiente media por encima de pm (con un motivo que queda registrado) y la calzada que no queda en su rasante
+        (sin campo de motivo); y lo que hace **Crear**."""
+        self.assert_told("## 7. Calcular, confirmar y crear", (
+            "no escribe nada", "23 cifras", "**Confirmar y crear**", "la pendiente media", "un motivo, que queda registrado", "con quién y cuándo",
+            "no se crea sin su confirmación expresa", "sin campo de motivo", "una calzada con escalones o huecos no es una pista",
+            "una sola transacción", "no declara ninguna restricción", "pulse **Calcular** otra vez", "las dos capas", "Esc"))
+        for code in ("des.road_mean_unconfirmed", "des.road_mean_reason", "des.road_carriageway_unconfirmed", "des.road_mean_gradient",
+                     "des.road_carriageway_masks"):
+            with self.subTest(code=code):
+                self.assertIn(code, dmessages.MESSAGES)
+        self.assertEqual(len(dprov.ROAD_FIGURES), 23)
+
+    def test_the_corridor_the_budget_and_the_causes_are_told(self) -> None:
+        """RF-017-09, RF-017-10, RF-017-12 (D-10, D-23, S-1; T35b): §8 dice que el pasillo es una holgura y no un ancho (con las cifras medidas), las
+        tres causas de «sin ruta», lo que dice el rechazo del presupuesto de estados agotado (que **no significa que no haya ruta**) y qué hacer;
+        con el presupuesto de 5.000.000 (ADOPTADO)."""
+        self.assert_told("## 8. Si no hay ruta, y el presupuesto de estados", (
+            "el pasillo es una holgura y no un ancho", "21.978 a 31.856 nodos", "5.640", "**tres causas**", "el origen no es alcanzable",
+            "el pasillo no contiene ninguna ruta", "se agotó el presupuesto de estados", "5.000.000", "no significa que no haya ruta",
+            "reduzca la holgura del pasillo", "suba el presupuesto", "no se relaja ningún límite", "el tramo limitante", "56,0 s", "62,9 s",
+            "la misma ruta, bit a bit"))
+        self.assertEqual({cause.value for cause in road_model().NoRouteCause},
+                         {"des.road_no_route_network", "des.road_no_route_corridor", "des.road_budget"})
+        self.assertIn("no significa que no haya ruta", dmessages.MESSAGES["des.road_budget"].es)
+        self.assertEqual(road_model().DEFAULT_SEARCH_BUDGET, 5_000_000)
+
+    def test_the_proposal_and_the_exports_are_told(self) -> None:
+        """RF-017-27, RF-017-28 (D-19, H-9; T35b): §9 dice que «Proponer el trazado…» deja una capa de líneas con Z editable en QGIS, que no es una
+        entidad ni cambia ninguna superficie, que el aviso de la media no pide confirmar y que editar su geometría **o un campo** deja obsoleta la
+        pista que la usa; y §12, la capa de ejes (no editable, con estilo por clase), la barra N, la vista previa y «Exportar pista…» (la superficie
+        y lo alcanzable a GeoTIFF y la rasante a CSV con sus seis columnas, sin escribir en el proyecto)."""
+        self.assert_told("## 9. Proponer el trazado…", ("capa de líneas con Z", "editable en QGIS", "no cambia ninguna superficie", "no es una entidad",
+                                                        "se crea sin confirmación", "también si edita un campo", "es solo un aviso"))
+        self.assert_told("## 12. Lo que se ve, lo que se exporta y lo que llega a QGIS", (
+            "capa de ejes de pistas", "no se edita a mano", "estilo por clase", "barra N", "**Vista previa**", "**Ir a**", "GeoTIFF", "CSV",
+            "BOM de UTF-8", "separado por «;»", "CRLF", "coma decimal", "no es una operación", "también con el proyecto en solo lectura",
+            "una versión superada", "sustituir un fichero que ya existe", "ni el fichero ni su temporal"))
+        for title in dexport.CSV_COLUMNS:
+            with self.subTest(column=title):
+                self.assertIn(title, self.guide)
+        self.assertEqual(dexport.ROAD_EXPORTS, ("surface", "gradient", "reach"))
+
+    def test_the_accessibility_and_its_reading_by_the_verification_are_told(self) -> None:
+        """RF-017-24, RF-017-25, RF-012-21, RF-012-22, RF-012-24 (DIFF-017; T35b): §10 dice qué es transitable, lo que da la accesibilidad (cotas, bermas,
+        plataformas y zonas «requiere acceso»), sus tres umbrales HIPÓTESIS sin valor por defecto y que no es una entidad con cadena; y §11, las tres
+        respuestas de la verificación de la 012 («Cumple», «No cumple» y «Sin comprobar»), que una accesibilidad obsoleta o hecha sobre otra
+        superficie no se usa (y la ventana dice por qué) y que cambiarla deja obsoleta la verificación."""
+        self.assert_told("## 10. Accesibilidad de las pistas…", (
+            "pendiente máxima transitable", "ancho mínimo transitable", "área mínima de un tramo de berma", "ninguno tiene valor por defecto",
+            "**no es una entidad con cadena**", "las que no se comunican salen primero", "la superficie final", "unión", "a 10 filas",
+            "**Ir a**", "no tiene vista previa", "todas las rejillas de cotas de berma", "vuelve a calcular"))
+        self.assert_told("## 11. La verificación de los límites con la accesibilidad", (
+            "**Cumple**", "**No cumple**", "**Sin comprobar**", "alguna accesibilidad al día hecha sobre esa final", "obsoleta", "otra superficie",
+            "la ventana de la verificación dice por qué", "deja obsoleta la verificación", "alguna la comunica", "no tiene celdas que incumplan",
+            "hace que la final no cumpla"))
+        res_messages = (EXTENSION_DIR / "reserves" / "messages.py").read_text(encoding="utf-8")  # el texto, sin importar el módulo
+        for code in ("res.verify_access_used", "res.verify_access_stale", "res.verify_access_other_surface"):
+            with self.subTest(code=code):
+                self.assertIn(f'"{code}"', res_messages)
+        for text in ("Complies", "Does not comply", "Not checked"):
+            with self.subTest(text=text):
+                self.assertIn(text, i18n.load_messages())
+
+    def test_what_the_tasks_left_for_the_guide_is_told(self) -> None:
+        """RF-015-18, RF-015-08, RF-015-16, RF-017-03, RF-017-28 (decisiones de la sesión principal tras la T22b, la T27, la T31b, la T33c y la H2; T35b):
+        §13 dice lo que las tareas dejaron anotado para la guía: el perfil de la pista y el campo de los nombres de su capa no viajan al traerla (se
+        calcula con el campo por defecto), el ramal se calcula después de su pista, la accesibilidad se vuelve a calcular en otra versión, la capa
+        propuesta usada como eje deja obsoleta la pista también si se edita un campo, la accesibilidad no tiene «Descartar…» y una pista
+        anterior a un relleno y el relleno no se resuelven con «Recalcular lo obsoleto»; y qué hacen «Calcular…», «Insertar…», «Cambiar parámetro…»
+        y «Descartar…» con la pista."""
+        self.assert_told("## 13. Cambiar, recalcular, traer y descartar", (
+            "el perfil de la pista no viaja con ella", "declararlos para el proyecto o en la versión nueva", "el campo de los nombres de la capa tampoco viaja",
+            "se calcula con el campo por defecto", "el ramal se calcula después de su pista", "para llevar la accesibilidad a otra versión se vuelve a calcular",
+            "no se trae", "la capa propuesta usada como eje deja obsoleta la pista también si se edita un campo", "La accesibilidad no tiene «Descartar…»",
+            "una pista anterior a un relleno", "«Recalcular lo obsoleto» no la asienta", "rehaga la pista sobre la superficie del relleno o descártela",
+            "«Calcular…» ofrece también las pistas", "«Insertar antes o después de…» abre «Plataforma…»", "no se inserta una pista",
+            "renombrar una pista no la deja obsoleta", "una cota que da la persona", "«Apoyo retirado»", "«Lo que se apoya en ella»",
+            "la capa de ejes queda marcada"))
+
+    def test_the_known_limits_are_told(self) -> None:
+        """«Lo que no hace todavía» (T35b; `des.md` §1.9, T34 y las decisiones de la sesión principal) dice los límites de **hoy**: que no se ha visto en
+        pantalla, el banco, la rasante de mínimo movimiento (RF-017-19), las rampas vectoriales y el comprobador de pistas, lo medido (la ruta
+        de 62,9 s, grabar con 2,42 M celdas en 16,75 s, que RNF-017-04 no se cumple y es decisión de Samuel, lo que ocupa en disco), la vista previa de
+        la propuesta y que el `check.py` gasta un margen corto."""
+        limits = self.guide_section("## 14. Lo que no hace todavía")
+        for fact in ("No se ha visto en pantalla", "el banco de Silvestre", "CE-017-10", "RF-017-19", "programación lineal", "sin worker",
+                     "R-35", "R-44", "62,9 s", "16,75 s", "RNF-017-04 no se cumple", "decisión de Samuel", "16,61 MiB", "0,316 GiB",
+                     "la vista previa de «Proponer el trazado…»", "no dibuja el eje", "la accesibilidad no se trae", "no tiene «Descartar…»",
+                     "la capa de ejes no queda al día sola", "«NO AL DÍA»", "un objeto cargado antes", "+2,4 s", "0,6 s", "la semianchura de 5,75 m"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, limits)
+        for stale in ("(el H3 está pendiente)", "Visto en pantalla", "no existe ninguna orden que la calcule"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, limits)
+
+
+@docs.requires_docs
+class RoadsStateDocTest(unittest.TestCase):
+    """El índice de specs, el roadmap, el glosario, ``limites-y-restricciones.md``, ``jobs.md``, ``docs/trampas.md`` y el ``CHANGELOG.md`` del código
+    dicen el estado de la 017 tras la T35b: **implementada en ``main``, sin publicar**, a falta del banco de Silvestre, la verificación única, el H3 y
+    CE-017-11 (la sesión principal marca «Cerrada» tras el H3, con R-36 como dependencia)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.specs = docs.read(SPECS_INDEX_RELPATH)
+        cls.roadmap = docs.read(ROADMAP_RELPATH)
+        cls.changelog = one_line(CHANGELOG_PATH.read_text(encoding="utf-8"))
+        cls.glossary = docs.read(GLOSSARY_RELPATH)
+        cls.index_row = re.search(r"^\| 017 \|.*$", cls.specs, re.MULTILINE)
+        cls.roadmap_row = re.search(r"^\| R-40 \|.*$", cls.roadmap, re.MULTILINE)
+        cls.ledger = re.findall(r"^\| 2026-11-21 \| R-40.*$", cls.roadmap, re.MULTILINE)
+
+    def test_the_index_says_where_the_017_is(self) -> None:
+        """Definición de hecho §3.7 (T35b): la fila de la 017 dice que está **implementada** en ``main``, sin publicar, con las tareas T01 a T35b
+        hechas, su guía (``docs/usuario/pistas-y-rampas.md``) y lo que falta (el banco de Silvestre, la verificación única, el H3 y CE-017-11), que
+        «Cerrada» no se pone hasta el H3 (R-36 como dependencia, D-3), la 012 en su 0.6 y los 51 que son sus tareas; y ya no dice que falte
+        ``tasks.md``."""
+        self.assertIsNotNone(self.index_row)
+        assert self.index_row is not None
+        row = one_line(self.index_row.group(0))
+        for fact in ("**implementada en `main`, sin publicar**", "T01 a T35b", "docs/usuario/pistas-y-rampas.md", "el banco de Silvestre (T36)",
+                     "la verificación única (T37)", "el H3 en pantalla (T38)", "CE-017-11", "«Cerrada» solo tras el H3 y CE-017-11",
+                     "R-36", "51 (T01–T38", "**Aprobada** (0.3"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, row)
+        for stale in ("falta `tasks.md`", "36 tareas orientativas más", "| — |", "**Cerrada**"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, row)
+
+    def test_the_roadmap_says_where_the_017_is(self) -> None:
+        """Definición de hecho §3.7 (T35b): la fila de R-40 dice que la 017 está **implementada** en ``main``, sin publicar, a falta del banco de Silvestre,
+        de la verificación única, del H3 en pantalla y de CE-017-11, que «Cerrada» solo la marca la sesión principal tras ellos, con R-36 como
+        dependencia (D-3), y con su guía; y su registro del 21/11/2026 lo cuenta; ya no dice «en especificación» ni que falte ``tasks.md``."""
+        self.assertIsNotNone(self.roadmap_row)
+        assert self.roadmap_row is not None
+        row = one_line(self.roadmap_row.group(0))
+        for fact in ("**implementada** en `main`, sin publicar", "de la T01 a la T35b", "a falta del banco de Silvestre (T36)",
+                     "de la verificación única (T37)", "del H3 en pantalla (T38) y de CE-017-11", "«Cerrada» solo la marca la sesión principal",
+                     "R-33, R-36", "docs/usuario/pistas-y-rampas.md"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, row)
+        for stale in ("en especificación", "falta `tasks.md`", "36 tareas orientativas)"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, row)
+        self.assertEqual(len(self.ledger), 1, self.ledger)
+        entry = one_line(self.ledger[0])
+        for fact in ("la spec 017 queda **implementada en `main`, sin publicar**", "T01 a T35b", "la guía de uso", "el glosario", "el `CHANGELOG.md`",
+                     "las tres respuestas de «requiere acceso»", "no marca R-40 como cerrada", "R-36"):
+            with self.subTest(ledger=fact):
+                self.assertIn(fact, entry)
+
+    def test_the_changelog_says_what_the_017_does_and_what_it_changes(self) -> None:
+        """Definición de hecho §3.7 (T35b): el ``CHANGELOG.md`` del código, para el ingeniero de minas y sin jerga, dice lo nuevo de la 017 (las cinco
+        órdenes, los tres modos, la ruta, el eje con curvas, la rasante, la sección grabada, la accesibilidad), las cifras ADOPTADO y HIPÓTESIS con su
+        aviso, lo que cambia la verificación de la 012, las tres órdenes provisionales que desaparecen, lo que **no** hace todavía, y, en «Corregido», el
+        error de la vista que la 017 encontró (la 010: un objeto cuya cota cambia sin cambiar su huella)."""
+        start = self.changelog.index("- **Pistas y rampas** (spec 017")
+        entry = self.changelog[start:self.changelog.index("- **Acopios, contrafuerte y cuerpos apoyados** (spec 016")]
+        for fact in ("R-40; hecha en `main`, sin publicar", "**Pista…**", "**Proponer el trazado…**", "**Accesibilidad de las pistas…**",
+                     "**Perfil de pista…**", "**Exportar pista…**", "**tres modos**", "una holgura y no un ancho", "**16 rumbos**", "**Los ocho parámetros "
+                     "de la ruta son HIPÓTESIS**", "5.000.000 de estados", "**Los tres umbrales de la accesibilidad son HIPÓTESIS**",
+                     "ADOPTADO «sin confirmar»", "**Ninguna cifra de la propiedad se da por defecto**", "no se crea sin su confirmación expresa",
+                     "«cumple», «no cumple» o «sin comprobar»", "desaparecen", "la pista graba al crearse", "**Lo que no hace todavía**",
+                     "La rasante de «mínimo movimiento»", "no se ha visto en pantalla", "el perfil de la pista no viaja con ella",
+                     "la accesibilidad no se trae"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, entry)
+        for jargon in ("RF-017", "T3", "T2", "milestone", "`des_rax_", "`des_acc_"):
+            with self.subTest(jargon=jargon):
+                self.assertNotIn(jargon, entry, "la entrada de la 017 se escribe sin jerga de tareas ni de ficheros")
+        verification = self.changelog[self.changelog.index("- **Verificación por recinto** (spec 012, versión 0.6"):
+                                      self.changelog.index("- **La comprobación de cada tarea deja fuera las pruebas pesadas de la spec 017**")]
+        for fact in ("las tres respuestas", "«cumple»", "«no cumple»", "«sin comprobar»", "accesibilidad al día", "deja obsoleta la verificación"):
+            with self.subTest(verification=fact):
+                self.assertIn(fact, verification)
+        fixed = self.changelog[self.changelog.index("- En la vista, el objeto de una entidad de diseño"):]
+        fixed = fixed[:fixed.index(" - ", 100)] if " - " in fixed[100:] else fixed[:1500]
+        for fact in ("«no al día»", "Refrescar", "la plataforma", "la pista", "cota nueva"):
+            with self.subTest(fixed=fact):
+                self.assertIn(fact, fixed)
+
+    def test_the_glossary_has_the_heading_and_the_gradient(self) -> None:
+        """RF-017-02, RF-017-09 (D-8; spec §13; T35b): el glosario gana «Rumbo de avance» (``heading``; el «Rumbo» de antes es el geológico), el perfil de
+        pista, el pasillo, el presupuesto de estados y la accesibilidad, y aclara la «Rasante» (el perfil de cotas de una pista: su pendiente es la
+        «Pendiente de la rasante»); y §14 resuelve «Rumbo». «grade» sigue siendo solo la ley (§14)."""
+        rows = {match.group(1).strip(): match.group(0) for match in re.finditer(r"^\| ([^|]+?) \|.*$", self.glossary, re.MULTILINE)}
+        for term, code in (("Rumbo de avance", "`heading`"), ("Perfil de pista", "`road_profile`"), ("Pasillo", "`corridor`"),
+                           ("Presupuesto de estados", "`search_budget`"), ("Accesibilidad", "`access`")):
+            with self.subTest(term=term):
+                self.assertIn(term, rows)
+                self.assertIn(code, rows[term])
+        for fact in ("azimut", "norte de cuadrícula", "sentido horario", "16", "No es el «Rumbo» geológico"):
+            with self.subTest(heading=fact):
+                self.assertIn(fact, rows["Rumbo de avance"])
+        self.assertIn("Rumbo de avance", rows["Rumbo"])
+        for fact in ("perfil de cotas", "`road_gradient`", "Pendiente de la rasante", "No usar `grade`"):
+            with self.subTest(gradient=fact):
+                self.assertIn(fact, rows["Rasante"])
+        for fact in ("holgura", "No es el «Corredor»"):
+            with self.subTest(corridor=fact):
+                self.assertIn(fact, rows["Pasillo"])
+        self.assertIn("| **Rumbo** |", self.glossary)
+        self.assertNotIn("Pendiente longitudinal de una pista, en %", rows["Rasante"])
+
+    def test_the_limits_guide_tells_the_three_answers(self) -> None:
+        """RF-012-21, RF-012-22, RF-012-24 (DIFF-017; T35b): ``limites-y-restricciones.md`` ya no dice «Sin comprobar (R-40)» ni que lo comprobará la
+        entrada de pistas: dice las tres respuestas de «requiere acceso» (cumple, no cumple y sin comprobar) según la accesibilidad al día de la
+        versión y remite a la guía de pistas."""
+        text = one_line(docs.read(LIMITS_GUIDE_RELPATH))
+        for stale in ("Sin comprobar (R-40)", "lo comprobará la entrada de pistas (R-40)"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, text)
+        for fact in ("**Cumple**", "**No cumple**", "**Sin comprobar**", "una «requiere acceso»", "la accesibilidad al día", "pistas-y-rampas.md",
+                     "sobre esa final", "tres respuestas"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+
+    def test_jobs_no_longer_lists_a_worker_for_the_3d_route(self) -> None:
+        """RF-017-10, RNF-017-02 (S-1; T35): ``jobs.md`` ya no lista ``route_worker`` entre los workers previstos: la ruta 3D de las pistas corre en el
+        proceso de Blender, por pasos de 0,05 s y con un presupuesto de estados."""
+        text = one_line(docs.read(JOBS_RELPATH))
+        self.assertNotIn("`route_worker`", text)
+        for fact in ("la ruta 3D de las pistas", "no usa worker", "presupuesto de estados"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+
+    def test_the_traps_have_the_017_lessons(self) -> None:
+        """Definición de hecho §3.8 (T35 y T35b): ``docs/trampas.md`` tiene la de la T35 (``gpkg_contents.identifier`` es único entre las tablas de
+        un GeoPackage de prueba) además de las de la 017 que ya estaban (la ruta 3D, el pasillo, ``grade``, la pista sin ``protect``…)."""
+        text = one_line(docs.read(TRAPS_RELPATH))
+        for fact in ("`gpkg_contents.identifier`", "«pasillo de 60 m» es una holgura, no un ancho", "«grade» no se escribe en `design/`",
+                     "La pista no tiene `protect`"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+
+
+def road_net():
+    """``design.road_net`` (perezoso, como :func:`roadprofiles`)."""
+    return import_geoblender("design.road_net")
+
+
+def road_model():
+    """``design.road_model`` (perezoso, como :func:`roadprofiles`)."""
+    return import_geoblender("design.road_model")
 
 
 if __name__ == "__main__":
