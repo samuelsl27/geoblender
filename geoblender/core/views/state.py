@@ -15,9 +15,19 @@ proyecto (:class:`ItemState`, algoritmo A1 del plan):
 3. que falta (su fichero o su tabla, RF-008-57): ``MISSING``; se marca «FALTA» y no se puede
    volver a cargar (D-11);
 4. vivo (vigente, bloqueado o dañado): no al día (``OUTDATED``) si alguno de sus objetos se cargó
-   con otro contenido (también lo que deja Ctrl+Z), con otro GeoOrigin anotado o, sin GeoOrigin
-   anotado, con la vista desfasada (RF-002-29; D-9); si no, basta con poner al día su estado o
-   su marca de obsoleto (``RESTATE``) si no son los de hoy; si no, al día (``CURRENT``).
+   con otro contenido (también lo que deja Ctrl+Z), con otro contenido de alguno de sus **datos
+   compañeros**, con otro GeoOrigin anotado o, sin GeoOrigin anotado, con la vista desfasada
+   (RF-002-29; D-9); si no, basta con poner al día su estado o su marca de obsoleto
+   (``RESTATE``) si no son los de hoy; si no, al día (``CURRENT``).
+
+**Los datos compañeros** (spec 017, T31c): el objeto de una entidad de diseño se dibuja con la cota
+de su superficie (``des_psf_``) y, el de una pista, con la rasante de su eje (``des_rdx_``), y el
+hash de la tabla de la entidad (``des_epr_``) no depende de la cota: cambiar solo la cota y
+recalcular deja ese hash y cambia el de la superficie. Un cargador declara qué otros datos del
+proyecto lee su objeto (``bl.scene.views.Loader.companions``); el objeto anota su uid y su hash
+al cargarse (:func:`companions_text`, :attr:`LoadedItem.companions`) y su contenido cuenta como
+el del dato: con otro hash, o con un compañero que ya no está vivo, el dato no está al día. Lo
+cargado sin esa anotación (antes de la T31c) no se compara.
 
 Lo lee todo en una instantánea (``BEGIN`` … ``ROLLBACK``, la de la conexión de quien llama si ya
 está en una transacción), por trozos de :data:`CHUNK` uid, y no escribe nada en el proyecto (spec
@@ -46,6 +56,7 @@ __all__ = [
     "ItemView",
     "LoadedItem",
     "RefreshPlan",
+    "companions_text",
     "origin_text",
     "pending",
     "refresh_plan",
@@ -118,9 +129,12 @@ class LoadedItem:
       antes de la 010);
     - ``statuses``: los estados del dato al cargarlos (``DatasetStatus``; se guardan en
       minúsculas, también los «CURRENT»… del ``EnumProperty`` de ``Object.geoblender``);
-    - ``stale``: si estaba obsoleto al cargarlos (o al ponerlos al día por última vez).
+    - ``stale``: si estaba obsoleto al cargarlos (o al ponerlos al día por última vez);
+    - ``companions``: los datos compañeros con que se cargaron, como texto «uid=hash uid=hash»
+      (:func:`companions_text`; se guardan sin los espacios de más); ``""``, sin ninguno o sin
+      anotar (lo cargado antes de la T31c): no se compara. Por omisión, ninguno.
 
-    Cualquier iterable vale para los cuatro conjuntos."""
+    Cualquier iterable vale para los cinco conjuntos."""
 
     dataset_uid: str
     project_uid: str
@@ -128,6 +142,7 @@ class LoadedItem:
     origins: frozenset[str]
     statuses: frozenset[str]
     stale: frozenset[bool]
+    companions: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         for name in ("dataset_uid", "project_uid"):
@@ -142,6 +157,8 @@ class LoadedItem:
         object.__setattr__(self, "statuses", frozenset(
             text.lower() for text in _texts(self.statuses, "statuses")))
         object.__setattr__(self, "stale", _flags(self.stale, "stale"))
+        object.__setattr__(self, "companions", frozenset(
+            " ".join(_origin_words(text)) for text in _texts(self.companions, "companions")))
 
 
 @dataclass(frozen=True)
@@ -171,6 +188,51 @@ def origin_text(origin: GeoOrigin) -> str:
     if not isinstance(origin, GeoOrigin):
         raise TypeError(f"el GeoOrigin del proyecto es un GeoOrigin, no {origin!r}")
     return " ".join(str(value) for value in origin.as_tuple())
+
+
+def companions_text(companions: Iterable[tuple[str, str]]) -> str:
+    """Los datos compañeros de un dato cargado, ``(uid, hash de contenido)`` de cada uno, como los
+    anota su objeto: «uid=hash uid=hash», por orden de uid; ``""`` sin ninguno. ``ValueError`` si
+    un uid o un hash está vacío o lleva un espacio o un «=», o un uid está repetido con otro hash."""
+    found: dict[str, str] = {}
+    for uid, sha in companions:
+        for what, text in (("uid", uid), ("hash", sha)):
+            if not isinstance(text, str) or not text or "=" in text or text.split() != [text]:
+                raise ValueError(f"el {what} de un dato compañero es un texto sin espacios ni «=»: "
+                                 f"{text!r}")
+        if found.setdefault(uid, sha) != sha:
+            raise ValueError(f"el dato compañero {uid} está repetido con otro hash")
+    return " ".join(f"{uid}={found[uid]}" for uid in sorted(found))
+
+
+def _companion_pairs(text: str) -> tuple[tuple[str, str], ...] | None:
+    """Los ``(uid, hash)`` de la anotación ``text`` (:func:`companions_text`); ``None`` si no se
+    entiende (otra cosa escrita a mano): se tiene por distinta de lo de hoy."""
+    pairs: list[tuple[str, str]] = []
+    for word in text.split():
+        uid, separator, sha = word.partition("=")
+        if not separator or not uid or not sha or "=" in sha:
+            return None
+        pairs.append((uid, sha))
+    return tuple(pairs)
+
+
+def _companion_uids(items: Iterable[LoadedItem]) -> frozenset[str]:
+    """Los uid de los datos compañeros anotados por ``items`` (lo que no se entiende, no cuenta)."""
+    return frozenset(uid for item in items for text in item.companions
+                     for uid, _sha in _companion_pairs(text) or ())
+
+
+def _companions_current(item: LoadedItem, today: Mapping[str, str]) -> bool:
+    """Si cada compañero anotado por los objetos de ``item`` sigue vivo en el proyecto con el hash con
+    que se cargó (``today``: el de hoy de cada uno que sigue vivo, por uid). Sin anotar, sí."""
+    for text in item.companions:
+        if not text:
+            continue  # cargado sin anotar (antes de la T31c): no se compara
+        pairs = _companion_pairs(text)
+        if pairs is None or any(today.get(uid) != sha for uid, sha in pairs):
+            return False
+    return True
 
 
 @contextmanager
@@ -229,11 +291,13 @@ def _successor(conn: sqlite3.Connection, uid: str) -> DatasetRecord | None:
 
 
 def _live_state(item: LoadedItem, record: DatasetRecord, stale: bool, where: tuple[str, ...],
-                view_stale: bool) -> ItemState:
-    """El paso 4 de A1: un dato vivo que se puede cargar."""
+                view_stale: bool, companions: Mapping[str, str]) -> ItemState:
+    """El paso 4 de A1: un dato vivo que se puede cargar (``companions``: el hash de hoy de cada
+    dato compañero vivo de los que anotaron sus objetos, por uid)."""
     unannotated = not item.origins or "" in item.origins
     if (
         item.contents != {record.content_sha256}
+        or not _companions_current(item, companions)
         or any(text and _origin_words(text) != where for text in item.origins)
         or (unannotated and view_stale)
     ):
@@ -250,8 +314,9 @@ def view_states(project: ReadableProject, items: Iterable[LoadedItem], *, projec
     ``project_uid`` y GeoOrigin ``origin``; ``view_stale``, si la vista quedó desfasada,
     RF-002-29), por uid (en el orden de los uid): véase el módulo. Lee en una instantánea (la de ``conn``,
     una conexión de lectura de quien llama, o una nueva), por trozos de :data:`CHUNK` uid,
-    ``gb_dataset``, ``gb_stale`` y el sucesor de lo sustituido; sin ningún dato de este
-    proyecto, no lee nada. No escribe. ``ValueError`` si un dato está repetido."""
+    ``gb_dataset``, ``gb_stale``, el sucesor de lo sustituido y, solo si algún dato cargado
+    anotó datos compañeros, el registro de estos; sin ningún dato de este proyecto, no lee
+    nada. No escribe. ``ValueError`` si un dato está repetido."""
     if not isinstance(project_uid, str) or not project_uid:
         raise TypeError(f"el uid del proyecto abierto es un texto no vacío, no {project_uid!r}")
     where = _origin_words(origin_text(origin))
@@ -269,12 +334,17 @@ def view_states(project: ReadableProject, items: Iterable[LoadedItem], *, projec
     records: dict[str, DatasetRecord] = {}
     stale: frozenset[str] = frozenset()
     successors: dict[str, DatasetRecord | None] = {}
+    companions: dict[str, str] = {}
     if own:
+        wanted = _companion_uids(loaded[uid] for uid in own)
         with _snapshot(project, conn) as reading:
             records = _records(reading, own)
             stale = _stale(reading, [uid for uid, record in records.items() if record.live])
             successors = {uid: _successor(reading, uid) for uid, record in records.items()
                           if record.status is DatasetStatus.SUPERSEDED}
+            if wanted:  # solo si algún dato cargado anotó compañeros: nada más que leer si no
+                companions = {uid: record.content_sha256
+                              for uid, record in _records(reading, wanted).items() if record.live}
     found: dict[str, ItemView] = {}
     for uid in sorted(loaded):
         item = loaded[uid]
@@ -288,7 +358,7 @@ def view_states(project: ReadableProject, items: Iterable[LoadedItem], *, projec
         elif record.status is DatasetStatus.MISSING:
             kind = ItemState.MISSING
         else:
-            kind = _live_state(item, record, is_stale, where, view_stale)
+            kind = _live_state(item, record, is_stale, where, view_stale, companions)
         found[uid] = ItemView(uid, kind, record, is_stale,
                               successor if kind is ItemState.REPLACED else None)
     return found

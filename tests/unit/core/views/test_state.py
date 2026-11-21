@@ -126,9 +126,10 @@ class ViewStatesTest(DemoProjectTestCase):
 
     def item(self, ref: str, *, content: str | None = None, origin: str | None = None,
              status: str = "current", stale: bool = False,
-             project: str | None = None) -> Any:
+             project: str | None = None, companions: tuple[str, ...] = ()) -> Any:
         """Lo que dicen los objetos del dato ``ref`` cargado ahora (su hash, el GeoOrigin del
-        proyecto, vigente y sin marca de obsoleto), salvo lo que se indique."""
+        proyecto, vigente y sin marca de obsoleto y sin datos compañeros), salvo lo que se
+        indique (``companions``: lo que anotó cada objeto, como textos)."""
         record = self.record(ref)
         return state.LoadedItem(
             dataset_uid=record.uid,
@@ -137,7 +138,13 @@ class ViewStatesTest(DemoProjectTestCase):
             origins=frozenset({self.where if origin is None else origin}),
             statuses=frozenset({status}),
             stale=frozenset({stale}),
+            companions=frozenset(companions),
         )
+
+    def companion(self, *refs: str) -> str:
+        """Lo que anota un objeto de sus datos compañeros ``refs`` (sus uid y sus hashes de hoy)."""
+        records = [self.record(ref) for ref in refs]
+        return state.companions_text((record.uid, record.content_sha256) for record in records)
 
     def bare(self, uid: str) -> Any:
         """Lo que dicen los objetos de un dato ``uid`` de este proyecto, vigente."""
@@ -224,6 +231,106 @@ class ViewStatesTest(DemoProjectTestCase):
         self.assertEqual((found[uid].state, found[uid].stale), (OUTDATED, True))
         found = self.states(second)
         self.assertEqual((found[uid].state, found[uid].stale), (RESTATE, True))
+
+    def test_companions_of_a_loaded_item_count_for_not_up_to_date(self) -> None:
+        """RF-010-02, RF-010-01, RF-015-25 (plan 010 A1; spec 017, T31c): un dato cargado puede
+        anotar con qué otros datos del proyecto se dibujó su objeto (sus datos compañeros, con su
+        hash). Con todos como estaban está al día y Refrescar no lo recarga; si **solo cambia un
+        compañero** (el dato sigue con el mismo hash: lo de una entidad cuando cambia solo la
+        cota) no está al día —«no al día», el control 7 lo cuenta— y Refrescar lo vuelve a
+        cargar él mismo; cargado de nuevo con lo de hoy, está al día otra vez. Lo cargado sin
+        anotar (antes de la T31c) no se compara y cambiar un compañero que el dato no anotó, no
+        lo mueve."""
+        benches, years = "demo_benches", "demo_bench_years"
+        before = self.companion(years)
+        loaded = self.item(benches, companions=(before,))
+        unannotated = self.item(benches)
+        self.assertEqual(self.kinds(self.states(loaded)), {loaded.dataset_uid: CURRENT})
+        self.assertEqual(state.pending(self.states(loaded)), 0)
+        self.change_production(400_000.0)
+        self.recompute_all()
+        after = self.companion(years)
+        self.assertNotEqual(before, after, "recalcular cambia el hash del compañero")
+        self.assertEqual(self.item(benches).contents, loaded.contents, "y el del dato no cambia")
+        found = self.states(loaded)
+        uid = loaded.dataset_uid
+        self.assertEqual((found[uid].state, found[uid].target_uid()), (OUTDATED, uid))
+        self.assertEqual(state.refresh_plan(found), state.RefreshPlan(((uid, uid),), (), (), (), 0))
+        self.assertEqual(state.pending(found), 1)
+        self.assertEqual(self.kinds(self.states(self.item(benches, companions=(after,)))), {uid: CURRENT})
+        self.assertEqual(self.kinds(self.states(unannotated)), {uid: CURRENT}, "sin anotar, no se compara")
+        marks = self.item("demo_marks", companions=(before,))  # anotó un compañero que cambió
+        self.assertEqual(self.kinds(self.states(marks)), {marks.dataset_uid: OUTDATED})
+        self.assertEqual(self.kinds(self.states(self.item("demo_marks", companions=(self.companion(benches),)))),
+                         {marks.dataset_uid: CURRENT})
+
+    def test_a_companion_that_is_gone_or_unknown_or_any_old_object_makes_it_not_up_to_date(self) -> None:
+        """RF-010-02, RF-010-01 (plan 010 A1; spec 017, T31c): un compañero que ya no está vivo
+        (descartado) o que el proyecto no tiene, o una anotación que no se entiende, deja el
+        dato «no al día» (nunca «al día» con lo que no es); basta con que **uno de sus objetos**
+        (el dato tiene varios, o uno vuelve de Ctrl+Z) tenga una anotación vieja y otro la de hoy;
+        la de otro proyecto sigue «sin respaldo» y sin leer nada más; un compañero repetido o con
+        espacios en la anotación no es un error: se normaliza."""
+        benches = self.item("demo_benches")
+        uid = benches.dataset_uid
+        marks = self.companion("demo_marks")
+        self.assertEqual(self.kinds(self.states(self.item("demo_benches", companions=(marks,)))), {uid: CURRENT})
+        unknown = f"{ids.new_uid()}={OTHER_HASH}"
+        gone = self.item("demo_benches", companions=(unknown,))
+        self.assertEqual(self.kinds(self.states(gone)), {uid: OUTDATED}, "el proyecto no tiene ese compañero")
+        for text in ("basura", "=", "a=", "=b", "a=b=c"):
+            with self.subTest(anotacion=text):
+                self.assertEqual(self.kinds(self.states(self.item("demo_benches", companions=(text,)))), {uid: OUTDATED})
+        mixed = self.item("demo_benches", companions=(marks, f"  {marks}   ", "", unknown))
+        self.assertEqual(mixed.companions, frozenset({marks, "", unknown}), "se normaliza")
+        self.assertEqual(self.kinds(self.states(mixed)), {uid: OUTDATED}, "uno de los objetos tiene la anotación vieja")
+        self.assertEqual(self.kinds(self.states(self.item("demo_benches", companions=(marks, "")))), {uid: CURRENT},
+                         "los que no anotaron no se comparan")
+        self.set_status("demo_marks", "discarded")
+        self.assertEqual(self.kinds(self.states(self.item("demo_benches", companions=(marks,)))), {uid: OUTDATED},
+                         "un compañero descartado ya no es lo que se dibujó")
+        foreign = self.item("demo_benches", companions=(marks,), project=ids.new_uid())
+        idle = Traced(self.project)
+        self.assertEqual(self.kinds(self.states(foreign, project=idle)), {uid: UNBACKED})
+        self.assertEqual((idle.opened, idle.sql), (0, []))
+
+    def test_companions_are_read_in_the_same_snapshot_and_only_when_a_loaded_item_has_them(self) -> None:
+        """RF-010-02, RNF-010-03 (plan 010 A1; spec 017, T31c): sin ningún dato cargado con
+        compañeros, la lectura es la de siempre (una consulta de ``gb_dataset``, nada más que
+        leer); con ellos, una consulta más, de sus uid, en la misma instantánea (``BEGIN`` …
+        ``ROLLBACK``) y solo con ``SELECT``; y no escribe."""
+        benches = self.item("demo_benches")
+        years = self.item("demo_bench_years", companions=(self.companion("demo_marks"),))
+        bare = Traced(self.project)
+        self.states(benches, project=bare)
+        self.assertEqual(len([sql for sql in bare.sql if "FROM gb_dataset WHERE uid IN" in sql]), 1)
+        traced = Traced(self.project)
+        found = self.states(benches, years, project=traced)
+        self.assertEqual(self.kinds(found), {benches.dataset_uid: CURRENT, years.dataset_uid: CURRENT})
+        queries = [sql for sql in traced.sql if "FROM gb_dataset WHERE uid IN" in sql]
+        self.assertEqual(len(queries), 2)
+        self.assertEqual(len(UID_IN_SQL.findall(queries[1].split(" IN ", 1)[1])), 1, "solo el uid del compañero")
+        self.assertEqual((traced.opened, traced.sql[0], traced.sql[-1]), (1, "BEGIN", "ROLLBACK"))
+        self.assertTrue(all(sql.startswith("SELECT ") for sql in traced.sql[1:-1]), traced.sql)
+
+    def test_the_companions_annotation_is_written_and_checked(self) -> None:
+        """RF-010-02 (spec 017, T31c): ``companions_text`` da «uid=hash» por orden de uid y sin
+        ninguno, la cadena vacía; rechaza lo que no se puede leer de vuelta (un uid o un hash
+        vacío, con espacios o con «=», o un uid con dos hashes); ``LoadedItem`` los admite por
+        omisión vacíos, normaliza los espacios y rechaza lo que no es un texto."""
+        self.assertEqual(state.companions_text([]), "")
+        self.assertEqual(state.companions_text([("b", "2"), ("a", "1"), ("b", "2")]), "a=1 b=2")
+        for bad in (("", "1"), ("a", ""), ("a b", "1"), ("a", "1 2"), ("a=", "1"), ("a", "=1")):
+            with self.subTest(par=bad), self.assertRaises(ValueError):
+                state.companions_text([bad])
+        with self.assertRaises(ValueError):
+            state.companions_text([("a", "1"), ("a", "2")])
+        plain = state.LoadedItem("uid", "project", frozenset(), frozenset(), frozenset(), frozenset())
+        self.assertEqual(plain.companions, frozenset())
+        with self.assertRaises(TypeError):
+            state.LoadedItem("uid", "project", frozenset(), frozenset(), frozenset(), frozenset(), frozenset({1}))
+        with self.assertRaises(TypeError):
+            state.LoadedItem("uid", "project", frozenset(), frozenset(), frozenset(), frozenset(), "a=1")
 
     def test_replaced_and_unbacked(self) -> None:
         """RF-010-01, RF-010-02 (plan 010 A1; spec §8): actualizada la entrada del límite, lo

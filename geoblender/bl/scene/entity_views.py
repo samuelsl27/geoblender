@@ -27,6 +27,11 @@ de **cada acopio** a la cota de la superficie con que se detectó (``des_stp_<no
 acopio…» y las cifras de lo apoyado) con los vértices de su contorno, y el atributo de arista :data:`STOCKPILE_ATTRIBUTE` con su posición en la tabla
 de acopios (``-1`` en ninguna). Las demás cifras y estados de cada acopio no se guardan en el objeto: la barra N las lee del proyecto.
 
+**«No al día» por la cota** (T31c; RF-010-01, RF-010-02): la tabla de la entidad (``des_epr_``) no depende de la cota —cambiar solo la cota de una plataforma o la rasante de una pista y
+recalcular deja el mismo hash—, pero la superficie (``des_psf_``) y el eje (``des_rdx_``) con que se dibuja el objeto, sí: :func:`entity_companions` los declara datos compañeros del
+cargador y el objeto anota su hash al cargarse; si cambian, el objeto queda «no al día» y Refrescar (F5) lo regenera (el de una detección de acopios, con la superficie con que se detectó:
+:func:`stockpile_companions`).
+
 **Se regenera de la base**: un ``.blend`` es una vista, no la fuente de verdad. Borrar el objeto y cargar de nuevo lo deja igual (mismos vértices,
 mismas aristas, mismo nombre). Cargar no escribe nada en el proyecto ni cambia ninguna operación. Se carga **en pasos** (RNF-006-09): cerrados antes de
 terminar, no dejan nada.
@@ -42,6 +47,7 @@ import bpy
 import numpy as np
 
 from ...core.datasets import registry as dataset_registry
+from ...core.datasets.model import DatasetRecord
 from ...core.i18n import tr
 from ...core.versions import read as versions_read
 from ...design import provenance as design_provenance
@@ -50,8 +56,8 @@ from .gis_views import _object, _polylines
 from .mesh import mesh_from_arrays, mesh_vertices_local, set_attribute, set_edge_flags
 
 __all__ = ["AXIS_ATTRIBUTE", "COLORS", "KIND", "LABEL", "PREFIX", "STOCKPILES_LABEL", "STOCKPILES_PREFIX", "STOCKPILE_ATTRIBUTE",
-           "ZONE_ATTRIBUTE", "base_name", "corner_heights", "detected_name", "group_name", "load_entity", "load_stockpiles", "register", "surface_name",
-           "unregister"]
+           "ZONE_ATTRIBUTE", "base_name", "corner_heights", "detected_name", "entity_companions", "group_name", "load_entity", "load_stockpiles", "register",
+           "road_axis_name", "stockpile_companions", "surface_name", "unregister"]
 
 KIND = "DESIGN_ENTITY"
 """El tipo (``Object.geoblender.kind``) de los objetos de una entidad de diseño."""
@@ -113,6 +119,15 @@ def base_name(table: str) -> str:
     return prefix + table[len(PREFIX):]
 
 
+def road_axis_name(table: str) -> str:
+    """El nombre del dato del eje por estaciones (``des_rdx_<nombre>``) de la pista cuya tabla es el dato ``table`` (``des_epr_<nombre>``): el mismo
+    nombre, con la familia del eje (T31c; solo existe si la entidad es una pista). ``ValueError`` si ``table`` no es la tabla de una entidad."""
+    if not table.startswith(PREFIX):
+        raise ValueError(f"«{table}» no es la tabla de una entidad: su nombre empieza por «{PREFIX}»")
+    prefix = design_provenance.FAMILIES_BY_CODE[design_provenance.ROAD_AXIS_TABLE].prefix
+    return prefix + table[len(PREFIX):]
+
+
 def detected_name(table: str) -> str:
     """El nombre del dato de la superficie con que se detectó (``des_stp_<nombre>``, dispersa: solo en las huellas) de la detección cuya
     tabla de acopios es el dato ``table`` (``des_stk_<nombre>``): el mismo nombre, con la familia de esa superficie (T33). ``ValueError`` si
@@ -157,6 +172,28 @@ def corner_heights(rows: np.ndarray, cols: np.ndarray, values: np.ndarray, mask:
     count = used.sum(axis=1)
     total = np.where(used, sampled, 0.0).sum(axis=1)
     return np.where(count > 0, total / np.maximum(count, 1), np.nan)
+
+
+def _live_named(conn: sqlite3.Connection, names: tuple[str, ...], owner: str) -> tuple[DatasetRecord, ...]:
+    """Los registros **vivos** de los datos ``names`` de la versión ``owner`` (``''``: del proyecto), en su orden; los que no existen o no están vivos no salen."""
+    found = (dataset_registry.get(conn, name, version_uid=owner) for name in names)
+    return tuple(item for item in found if item is not None and item.live)
+
+
+def entity_companions(conn: sqlite3.Connection, record: DatasetRecord) -> tuple[DatasetRecord, ...]:
+    """Los datos compañeros de la tabla de entidad ``record`` (``des_epr_``) (T31c; ``views.CompanionsReader``): los que dan la **cota** de lo que dibuja su objeto —su superficie
+    (``des_psf_``), la base de un cuerpo «bajo un techo» (``des_bds_``) y, de una pista, su eje por estaciones (``des_rdx_``: la rasante en la Z)— leídos de su versión. La tabla de la
+    entidad **no depende de la cota** (cambiar solo la cota y recalcular repone el mismo dato con el mismo hash), así que su objeto estaría «al día» con la cota de antes; con estos, el
+    cambio de la superficie o de la rasante lo deja «no al día» y Refrescar lo regenera. Solo lee."""
+    owner = versions_read.dataset_versions(conn, [record.uid]).get(record.uid, "")
+    return _live_named(conn, (surface_name(record.name), base_name(record.name), road_axis_name(record.name)), owner)
+
+
+def stockpile_companions(conn: sqlite3.Connection, record: DatasetRecord) -> tuple[DatasetRecord, ...]:
+    """Los datos compañeros de la tabla de acopios ``record`` (``des_stk_``) de una detección (T31c): la superficie con que se detectó (``des_stp_``), que da la cota de la huella de
+    cada acopio. Solo lee."""
+    owner = versions_read.dataset_versions(conn, [record.uid]).get(record.uid, "")
+    return _live_named(conn, (detected_name(record.name),), owner)
 
 
 def _height_dataset(conn: sqlite3.Connection, table: str, owner: str) -> str:
@@ -311,9 +348,9 @@ def register() -> None:
     """Registra los cargadores de la tabla de una entidad y de la tabla de acopios de una detección si aún no tienen uno; idempotente."""
     current = views.loaders()
     if PREFIX not in current:
-        views.register_loader(PREFIX, KIND, LABEL, load_entity)
+        views.register_loader(PREFIX, KIND, LABEL, load_entity, companions=entity_companions)
     if STOCKPILES_PREFIX not in current:
-        views.register_loader(STOCKPILES_PREFIX, KIND, STOCKPILES_LABEL, load_stockpiles)
+        views.register_loader(STOCKPILES_PREFIX, KIND, STOCKPILES_LABEL, load_stockpiles, companions=stockpile_companions)
 
 
 def unregister() -> None:

@@ -331,6 +331,17 @@ class GEOBLENDER_PG_core_object(bpy.types.PropertyGroup):
         default="",
         options=_STATIC,
     )
+    # Spec 017 (T31c): lo que lee el objeto de una entidad además de su dato.
+    companions: StringProperty(  # type: ignore[valid-type]
+        name="Companion data",
+        description=(
+            "The other project data this object was drawn from when it was loaded, with their "
+            "content hashes («uid=hash»): their content counts as the content of its data to "
+            "tell whether the view is up to date"
+        ),
+        default="",
+        options=_STATIC,
+    )
     figures: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_figure,
         name="Figures",

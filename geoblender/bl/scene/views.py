@@ -68,6 +68,11 @@ A3, D-9 a D-13 y D-17; generaliza lo de los sondeos, spec 005, T47):
   (:class:`LiveHook`: lo que lee en la misma instantánea, :func:`live_reads`, y cómo lo aplica)
   y lo que no se guarda en el ``.blend`` (:class:`SessionParts`; la superposición de los
   sondeos, ``bl.scene.dh_view``, que la marca en vivo rehace tras abrir el proyecto);
+- un cargador declara al registrarse (:func:`register_loader`) los **datos compañeros** de su
+  dato (:data:`CompanionsReader`; spec 017, T31c): los otros datos del proyecto con que dibuja su
+  objeto (la superficie y el eje de una entidad de diseño: la cota de lo que se ve es suya y no
+  la de la tabla). Al cargar, el objeto anota su uid y su hash (``Object.geoblender.companions``,
+  ``core.views.state.companions_text``) y ``core.views.state`` los cuenta para «no al día»;
 - :func:`load_steps` vuelve a cargar con Refrescar (F5): en su último paso, además, quita lo
   sustituido por lo que carga (``replaces``), marca «sin respaldo en el proyecto» sin borrarlos
   los objetos de los datos ``unbacked`` y, con ``clear_view_stale``, quita la marca de vista
@@ -104,7 +109,7 @@ from ...core.georef import (
 from ...core.i18n import language, tr, translate
 from ...core.project.model import Progress
 from ...core.versions import read as versions_read
-from ...core.views.state import ItemState, ItemView, LoadedItem, origin_text
+from ...core.views.state import ItemState, ItemView, LoadedItem, companions_text, origin_text
 from ..props.core import OBJECT_PROPERTY
 from . import georef
 from .mesh import curves_positions_local, mesh_vertices_world
@@ -234,12 +239,20 @@ class SessionParts:
     rebuild: Callable[[Any], bool]
 
 
+CompanionsReader = Callable[[sqlite3.Connection, DatasetRecord], Sequence[DatasetRecord]]
+"""Lo que declara un cargador de sus **datos compañeros** (spec 017, T31c): dado el registro del
+dato que se va a cargar y una conexión de lectura, los registros de los otros datos del proyecto con
+que dibuja su objeto (los vivos que lee: no los de otra versión que no lee). Cuentan como su
+contenido para «no al día». Solo lee."""
+
+
 @dataclass(frozen=True)
 class Loader:
     """Un cargador registrado: el comienzo del nombre de sus datos, el tipo de sus objetos
     (``Object.geoblender.kind``), el ``msgid`` de ese tipo en el nombre generado y la
     función; y, si los declara (:func:`extend_loader`; spec 010), su marca en vivo y lo que
-    no guarda el ``.blend``."""
+    no guarda el ``.blend``; y, si los declara al registrarse (:func:`register_loader`; spec
+    017, T31c), sus datos compañeros."""
 
     prefix: str
     kind: str
@@ -247,6 +260,7 @@ class Loader:
     load: ViewLoader
     live: LiveHook | None = None
     session_parts: SessionParts | None = None
+    companions: CompanionsReader | None = None
 
 
 @dataclass(frozen=True)
@@ -275,11 +289,13 @@ _VIEW_LISTENERS: list[ViewListener] = []
 # --- Cargadores ------------------------------------------------------------------------------
 
 
-def register_loader(prefix: str, kind: str, label: str, load: ViewLoader) -> None:
+def register_loader(prefix: str, kind: str, label: str, load: ViewLoader, *,
+                    companions: CompanionsReader | None = None) -> None:
     """Registra el cargador de los datos cuyo nombre empieza por ``prefix`` (D-10): sus
     objetos son del tipo ``kind`` (uno de :data:`BRANCHES`) y su nombre empieza por el
-    ``msgid`` ``label``. ``ValueError`` si ya hay uno para ese comienzo o el tipo no tiene
-    rama."""
+    ``msgid`` ``label``; con ``companions``, los otros datos del proyecto con que dibuja su
+    objeto (:data:`CompanionsReader`: cuentan para «no al día»). ``ValueError`` si ya hay uno
+    para ese comienzo o el tipo no tiene rama."""
     if not isinstance(prefix, str) or not prefix:
         raise ValueError(f"un cargador se registra por el comienzo de un nombre, no {prefix!r}")
     if kind not in BRANCHES or kind == ANCHOR_KIND:
@@ -287,7 +303,9 @@ def register_loader(prefix: str, kind: str, label: str, load: ViewLoader) -> Non
                          f"{', '.join(k for k in BRANCHES if k != ANCHOR_KIND)}")
     if prefix in _LOADERS:
         raise ValueError(f"ya hay un cargador para los datos «{prefix}…»")
-    _LOADERS[prefix] = Loader(prefix, kind, label, load)
+    if companions is not None and not callable(companions):
+        raise TypeError(f"los datos compañeros de un cargador los lee una función, no {companions!r}")
+    _LOADERS[prefix] = Loader(prefix, kind, label, load, companions=companions)
 
 
 def unregister_loader(prefix: str) -> None:
@@ -576,13 +594,14 @@ def show_figures(project: Any, groups: Mapping[str, Sequence[bpy.types.Object]])
 
 
 def _mark(obj: bpy.types.Object, kind: str, shown: Any, project: Any, origin: str,
-          figures: Sequence[FigureText]) -> None:
+          figures: Sequence[FigureText], companions: str = "") -> None:
     props = getattr(obj, OBJECT_PROPERTY)
     record = shown.record
     props.kind = kind
     props.dataset_uid = record.uid
     props.project_uid = project.uid
     props.content_sha256 = record.content_sha256
+    props.companions = companions
     props.status = STATUS_TEXT.get(record.status, "NONE")
     props.date = shown.date
     props.stale = shown.stale
@@ -631,7 +650,8 @@ def loaded_item(uid: str, objects: Sequence[bpy.types.Object]) -> LoadedItem:
     marks = [getattr(obj, OBJECT_PROPERTY) for obj in objects]
     return LoadedItem(uid, marks[0].project_uid, [props.content_sha256 for props in marks],
                       [props.origin for props in marks], [props.status for props in marks],
-                      [bool(props.stale) for props in marks])
+                      [bool(props.stale) for props in marks],
+                      [props.companions for props in marks])
 
 
 def _dataset_collections() -> dict[str, bpy.types.Collection]:
@@ -830,6 +850,7 @@ class _Built:
     name: str = ""
     parts: ViewParts | None = None
     version_uid: str = ""  # la versión del dato ('' del proyecto; spec 009, RF-009-30)
+    companions: str = ""  # sus datos compañeros con su hash al empezar a cargarlo (T31c)
 
 
 def _parts(found: Any, start: float, width: float,
@@ -944,7 +965,8 @@ def load_steps(context: Any, project: Any, refs: Iterable[str], *, lod: int = 0,
             owner, code, title = _dataset_label(project, record.uid)
             name = view_name(loader, record, stale=shown.stale, title=title or None,
                              version=code or None)
-            entry = _Built([], loader, shown, name, version_uid=owner)
+            entry = _Built([], loader, shown, name, version_uid=owner,
+                           companions=_companions_of(project, loader, record))
             built.append(entry)
             try:
                 entry.parts = yield from _parts(
@@ -981,6 +1003,18 @@ def _unsuffixed(obj: bpy.types.Object, name: str) -> None:
         found = None if item is None else _SUFFIX.fullmatch(item.name)
         if found is not None and found.group(1).startswith(name):
             item.name = found.group(1)
+
+
+def _companions_of(project: Any, loader: Loader, record: DatasetRecord) -> str:
+    """Los datos compañeros de ``record`` que declara su cargador (``Loader.companions``) con su
+    hash de hoy, como los anota su objeto (``core.views.state.companions_text``; ``""`` si no
+    declara ninguno). Se leen **antes** de que el cargador lea el dato: si cambian mientras tanto,
+    el objeto queda «no al día» (nunca «al día» con lo que no es). Solo lee."""
+    if loader.companions is None:
+        return ""
+    with project.read() as conn:
+        found = loader.companions(conn, record)
+    return companions_text((item.uid, item.content_sha256) for item in found)
 
 
 def _dataset_label(project: Any, uid: str) -> tuple[str, str, str]:
@@ -1043,7 +1077,7 @@ def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[s
             for obj in parts.objects:
                 _unsuffixed(obj, entry.name)
                 collection.objects.link(obj)
-                _mark(obj, loader.kind, shown, project, origin, texts)
+                _mark(obj, loader.kind, shown, project, origin, texts, entry.companions)
                 remember(obj)
             loaded.append(record.name)
             owner = owners.get(entry.version_uid)

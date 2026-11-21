@@ -1784,6 +1784,12 @@ es = "Cifras"
 ["Figures recorded for its data when it was loaded or refreshed, as text: only to show them"]
 es = "Cifras registradas de su dato al cargarlo o al refrescar, en texto: solo para mostrarlas"
 
+["Companion data"]
+es = "Datos compañeros"
+
+["The other project data this object was drawn from when it was loaded, with their content hashes («uid=hash»): their content counts as the content of its data to tell whether the view is up to date"]
+es = "Los demás datos del proyecto con que se dibujó este objeto al cargarlo, con su hash de contenido («uid=hash»): su contenido cuenta como el de su dato para saber si la vista está al día"
+
 ["Key"]
 es = "Clave"
 
