@@ -3405,6 +3405,24 @@ CATALOG: tuple[Message, ...] = (
         "un límite de las máscaras de la versión o la banda de uno",
         "note",
     ),
+    # T22b (hallazgo C-4 de la 016, con la pista): traer las entidades de otra versión con la pista, cuyo origen (un punto del eje de otra pista) y cuyo destino (una entidad) son
+    # una referencia más a otra entidad: si esa no se trae, quedan sin valor y la pista no se puede calcular hasta que se elija otro. Como ``des.body_bring_surface_lost``.
+    Message(
+        "des.road_bring_origin_lost",
+        "«{name}»: its origin is a point of the axis of «{target}», which is not brought from {source} to {version}; the haul road "
+        "is left without an origin and cannot be calculated until you choose one.",
+        "«{name}»: su origen es un punto del eje de «{target}», que no se trae de {source} a {version}; la pista queda sin origen y no "
+        "se puede calcular hasta que elija uno.",
+        "warning",
+    ),
+    Message(
+        "des.road_bring_destination_lost",
+        "«{name}»: its destination is the entity «{target}», which is not brought from {source} to {version}; the haul road is left "
+        "without a destination and cannot be calculated until you choose one.",
+        "«{name}»: su destino es la entidad «{target}», que no se trae de {source} a {version}; la pista queda sin destino y no se "
+        "puede calcular hasta que elija uno.",
+        "warning",
+    ),
     # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase): la pista y la accesibilidad no declaran restricción
     # alguna (D-15), así que no se usa; existe, como el de la detección de acopios.
     Message(

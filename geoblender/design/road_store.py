@@ -39,7 +39,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 import sqlite3
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -178,7 +177,7 @@ _LIVE_STATES = (EntityState.CURRENT, EntityState.STALE, EntityState.SUPPORT_REMO
 """Los estados de una entidad **viva y calculada**: lo único en lo que se puede apoyar una pista (RF-015-15)."""
 _MISSING_SUPPORT = "no existe en la versión, no está calculada o se descartó"
 _SECTION_COLUMNS = "station_m, x, y, terrain_m, level_m"
-_AXIS_REFERENCE = re.compile(r"(?P<code>[A-Z]{2,5}-[0-9]{3,})@(?P<station>[0-9]+(?:[.,][0-9]+)?)")
+_AXIS_REFERENCE = entities.AXIS_REFERENCE
 _ROUTE_PARAMS = (RoadParam.MESH, RoadParam.LEVEL_STEP, RoadParam.MAX_CUT_FILL, RoadParam.LAMBDA, RoadParam.TURN, RoadParam.MARGIN, RoadParam.SIMPLIFY, RoadParam.ARRIVAL_TOL,
                  RoadParam.SEARCH_BUDGET)
 """Los parámetros de la ruta (solo los lee el modo «trazar», P-14)."""

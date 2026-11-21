@@ -178,6 +178,7 @@ if TYPE_CHECKING:
     from ..gis.grid import Grid
 
 __all__ = [
+    "AXIS_REFERENCE",
     "ENTITY_PREFIX",
     "DeclaredZone",
     "Dependent",
@@ -220,6 +221,7 @@ __all__ = [
     "predecessor_of",
     "project_registry",
     "ref_code",
+    "refers_to",
     "register_entity_type",
     "registered_types",
     "registry",
@@ -233,6 +235,7 @@ __all__ = [
     "surface_ref",
     "unregister_entity_type",
     "unsupportable",
+    "with_code",
 ]
 
 
@@ -588,6 +591,41 @@ def ref_code(text: str | None) -> str | None:
         raise TypeError(f"la partida de una entidad es un texto, no {text!r}")
     found = _REF.fullmatch(text.strip())
     return None if found is None else found["code"]
+
+
+AXIS_REFERENCE = re.compile(r"(?P<code>[A-Z]{2,5}-[0-9]{3,})@(?P<station>[0-9]+(?:[.,][0-9]+)?)")
+"""Un punto del eje de otra pista a una abscisa (spec 017, RF-017-03): ``RDW-001@100,5``, el origen de un ramal; la abscisa, en metros y con coma o con punto. La usan la preparación de la
+pista (``road_store.parse_reference``) y traer las entidades de otra versión (:func:`refers_to`, :func:`with_code`)."""
+
+
+def refers_to(text: str | None) -> str | None:
+    """El código de la entidad a la que apunta el texto ``text`` de un origen o un destino de una pista (spec 017, T22b; RF-017-03, RF-015-18): ``entity:PLT-001`` es la superficie de
+    ``PLT-001`` y ``RDW-001@100,5`` (:data:`AXIS_REFERENCE`) un punto del eje de ``RDW-001``; ``None`` si ``text`` es ``None``, está en blanco o es otra cosa (el nombre de un punto de una
+    capa, una abscisa mal escrita, un código sin ``@``). :class:`TypeError` si no es un texto."""
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        raise TypeError(f"la referencia a una entidad es un texto, no {text!r}")
+    wanted = text.strip()
+    found = _REF.fullmatch(wanted) or AXIS_REFERENCE.fullmatch(wanted)
+    return None if found is None else found["code"]
+
+
+def with_code(text: str, code: str) -> str:
+    """La referencia ``text`` (:func:`refers_to`) apuntada a otra entidad, la de código ``code``, **sin tocar lo demás** (spec 017, T22b; RF-015-18): ``entity:PLT-001`` →
+    ``entity:PLT-003`` y ``RDW-001@100,5`` → ``RDW-004@100,5`` (la abscisa queda escrita como estaba). :class:`ValueError` si ``text`` no es una referencia o ``code`` no es el de una
+    entidad (errores del programa); :class:`TypeError` si no son textos."""
+    if not isinstance(text, str) or not isinstance(code, str):
+        raise TypeError("una referencia a una entidad y su código son textos")
+    wanted = text.strip()
+    if _REF.fullmatch(wanted) is not None:
+        return surface_ref(code)
+    found = AXIS_REFERENCE.fullmatch(wanted)
+    if found is None:
+        raise ValueError(f"{text!r} no apunta a una entidad (entity:PLT-001 o RDW-001@100,5)")
+    if _CODE.fullmatch(code) is None:
+        raise ValueError(f"el código {code!r} no es de una entidad (PLT-001: letras mayúsculas, un guion y al menos tres cifras)")
+    return f"{code}@{found['station']}"
 
 
 def _records(records: Iterable[EntityRecord]) -> tuple[EntityRecord, ...]:

@@ -260,6 +260,7 @@ from .params import (
     PLATFORM_PARAMS,
     BodyParam,
     PlatformParam,
+    RoadParam,
     check_entity_param,
     entity_key,
     entity_params,
@@ -2707,6 +2708,17 @@ def _has_footprint(entry: entities.EntityEntry) -> bool:
     declaran restricciones y salen en la capa de entidades. **La detección de acopios no** (spec 016, T21): lee ``des_epr_`` de
     toda entidad viva y una detección no la tiene (un acopio es una fila de su tabla ``des_stk_``)."""
     return entities.entity_type(entry.record.kind).has_footprint
+
+
+def _can_declare(entry: entities.EntityEntry) -> bool:
+    """Si la entidad de ``entry`` es de un tipo que **puede declarar** una restricción: deja la tabla de su huella (:func:`_has_footprint`) y tiene el parámetro ``protect``
+    (spec 017, T22b; RF-017-01, D-15). **La pista no lo tiene**: no declara nada (su zona se corta y se rellena a la vez) y la declaración no la recoge —ni su ``protect`` ni la
+    huella que leería—; sin esto, ``declaration_pending`` y ``declared_sources`` pedían la clave ``des.road.{e}.protect``, que no existe, y toda orden de entidades que declara
+    fallaba en su primera etapa con una plataforma o un contrafuerte en la versión."""
+    spec = entities.entity_type(entry.record.kind)
+    return spec.has_footprint and PlatformParam.PROTECT.value in spec.params.names
+
+
 _DECISION_PARAMS = (PlatformParam.NAME, PlatformParam.PROTECT, PlatformParam.GUARD, PlatformParam.REASON)
 """Los parámetros de los que sale lo que declara una entidad (su nombre, si protege, su resguardo y su
 motivo): la decisión de la restricción es la más reciente de ellos (``decided_by`` y ``decided_at`` de su
@@ -2953,7 +2965,8 @@ def declared_sources(project: StoreProject, version: Version, *,
                      conn: sqlite3.Connection | None = None) -> tuple[DeclaredSource, ...]:
     """Las entidades **vivas y calculadas** de la versión ``version`` como las ve la declaración (RF-015-10;
     solo lee): las del registro de la versión (``entities.registry``) con operación vigente y datos sin
-    descartar (:data:`_LIVE_STATES`: no declaran ni una «sin calcular» ni una descartada), cada una con sus
+    descartar (:data:`_LIVE_STATES`: no declaran ni una «sin calcular» ni una descartada) y de un tipo que **puede declarar**
+    (:func:`_can_declare`: **no la pista**, que no tiene ``protect``; spec 017, T22b), cada una con sus
     parámetros vigentes en la versión (si protege, su modo, su resguardo y el motivo que editó la persona,
     :func:`~.entity_store.platform_parameters`), su decisor y la fecha de su decisión (:func:`_decision`) y su
     huella, leída de su tabla ``des_epr_`` vigente (:func:`read_entity_footprint`). Por orden de código.
@@ -2963,7 +2976,7 @@ def declared_sources(project: StoreProject, version: Version, *,
             return declared_sources(project, version, conn=reading)
     registry = entities.registry(project, version.uid, conn=conn)
     live = [entry for entry in registry
-            if entry.operation_uid is not None and entry.record.state in _LIVE_STATES and _has_footprint(entry)]
+            if entry.operation_uid is not None and entry.record.state in _LIVE_STATES and _can_declare(entry)]
     keys = {entity_key(entry.record.code, param): (entry.record.code, param)
             for entry in live for param in (PlatformParam.PROTECT, PlatformParam.MODE,
                                             PlatformParam.GUARD, PlatformParam.REASON)
@@ -3148,7 +3161,7 @@ def declaration_pending(project: StoreProject, conn: sqlite3.Connection, version
     códigos de la tabla de declaradas, **sin leer su geometría ni la huella de nadie**. Compara con **lo que falta**,
     no con lo que difiere: que una fila declare un resguardo anterior lo dice el hash de la tabla (el grafo de la
     008, :func:`declaration_diverges`). Una entidad ``UNCALCULATED`` o ``DISCARDED`` no declara (:data:`_LIVE_STATES`,
-    como :func:`declared_sources`). Si no se puede saber (un registro roto: ``des.entity_name_missing``, una tabla
+    como :func:`declared_sources`), ni la pista (:func:`_can_declare`, spec 017, T22b). Si no se puede saber (un registro roto: ``des.entity_name_missing``, una tabla
     ilegible), **está pendiente**: lo seguro es no dar las máscaras por buenas, y la operación que lo intente
     declarar dirá el motivo."""
     if not provenance.has_declaring_operation(conn, version_uid):
@@ -3156,7 +3169,7 @@ def declaration_pending(project: StoreProject, conn: sqlite3.Connection, version
     try:
         registry = entities.registry(project, version_uid, conn=conn)
         live = [entry.record.code for entry in registry
-                if entry.operation_uid is not None and entry.record.state in _LIVE_STATES and _has_footprint(entry)]
+                if entry.operation_uid is not None and entry.record.state in _LIVE_STATES and _can_declare(entry)]
         if not live:
             return False
         keys = {entity_key(code, PlatformParam.PROTECT): code for code in live}
@@ -4263,7 +4276,12 @@ _NOT_BROUGHT = frozenset({PlatformParam.DISCARDED})
 """Los parámetros de la entidad que no se traen: ``discarded`` solo existe en las descartadas sin calcular, que no se
 traen (lo descartado es un estado de la versión de origen)."""
 _FOLLOW_CODES = "; sus referencias siguen los códigos de las entidades traídas"
-_REFERENCES = frozenset({PlatformParam.START, PlatformParam.SUPPORT, PlatformParam.SUPPORTS, BodyParam.SURFACE})
+_REFERENCES = frozenset({PlatformParam.START, PlatformParam.SUPPORT, PlatformParam.SUPPORTS, BodyParam.SURFACE, RoadParam.ORIGIN, RoadParam.DESTINATION})
+_POINT_REFERENCES: Mapping[str, tuple[tuple[RoadParam, str], ...]] = MappingProxyType({
+    "road": ((RoadParam.ORIGIN, "des.road_bring_origin_lost"), (RoadParam.DESTINATION, "des.road_bring_destination_lost"))})
+"""Los valores que son **un texto con el código de otra entidad**, por tipo (spec 017, T22b; hallazgo C-4 con la pista), con el aviso de lo que se pierde: el origen de una pista
+(``RDW-001@100,5``, un punto del eje de otra pista) y su destino (``entity:PLT-001``, una entidad). Traer las entidades de otra versión los re-apunta como la partida y el apoyo
+(:func:`bring_entities`); el nombre de un punto de la capa no es una referencia y se conserva."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -4408,6 +4426,22 @@ def _brought_surface(conn: sqlite3.Connection, source: Version, listed: EntityRe
     return ref, None
 
 
+def _brought_point(listed: EntityRegistry, ref: str | None, new: Mapping[str, str]) -> tuple[str | None, str | None]:
+    """El origen o el destino ``ref`` de una pista de la versión de origen (``RDW-001@100,5``, ``entity:PLT-001`` o el nombre de un punto de su capa) como vale en el destino:
+    ``(valor, nombre de lo que se pierde)`` (spec 017, T22b; C-4). La referencia a una entidad que se trae pasa a su código nuevo (``entities.with_code``: la abscisa se queda como estaba);
+    la de una que no se trae —o que ni existe— queda **sin valor**, con el nombre de la entidad (o su código si no existe); lo demás (un punto de la capa, que es del proyecto) se
+    conserva."""
+    if ref is None or not ref.strip():
+        return None, None
+    code = entities.refers_to(ref)
+    if code is None:
+        return ref, None
+    if code in new:
+        return entities.with_code(ref, new[code]), None
+    other = listed.get(code)
+    return None, other.record.name if other is not None else code
+
+
 def _brought_supports(text: str | None, new: Mapping[str, str]) -> tuple[str | None, tuple[str, ...]]:
     """Lo que la persona declaró que la entidad apoya (``supports``: códigos separados por comas) como vale en el
     destino: ``(texto, lo que no se trae)``. Cada código pasa al nuevo; el de una entidad que no se trae se pierde (aunque
@@ -4459,13 +4493,15 @@ def bring_entities(project: StoreProject, source_version: Version | str, target_
     ``codes``: las que se traen, por su código o su nombre en la versión de origen (por defecto, todas las que no están
     descartadas; una descartada es un registro y no se trae, y pedirla se rechaza). **Códigos y nombres**: si el código
     de una ya está ocupado en el destino (también por una descartada), recibe el siguiente (``entities.next_code``) y las
-    referencias entre las traídas (``start``, ``support`` y ``supports``) siguen el código nuevo; si su nombre ya lo tiene
+    referencias entre las traídas (``start``, ``support`` y ``supports``; y, de una pista, su **origen** en el eje de otra pista, ``RDW-001@100,5``, y su **destino** en
+    una entidad, ``entity:PLT-001``: spec 017, T22b) siguen el código nuevo; si su nombre ya lo tiene
     una entidad o un dato del destino, se le añade la versión de origen entre paréntesis («Carga (V09)»; con otro
     número si también está ocupado). **Partidas**: una superficie de la versión de origen que no existe en el destino
     —la de una entidad que no se trae, o un dato suyo— queda **sin valor**, con un aviso (la entidad no se puede
     calcular hasta que se elija otra); el terreno y lo demás del proyecto se conservan; y una que ya es la de otra
     entidad del destino también (de cada superficie parte una entidad: RF-015-04). Lo declarado en ``supports`` sobre una
-    entidad que no se trae se pierde, con su aviso.
+    entidad que no se trae se pierde, con su aviso. Y el origen o el destino de una pista que apunta a una entidad que no se trae (o que no existe) queda **sin valor**, con
+    ``des.road_bring_origin_lost`` o ``des.road_bring_destination_lost``: la pista no se puede calcular hasta que se elija otro; el nombre de un punto de la capa se conserva.
 
     **Una sola transacción**: si algo falla, no queda nada. Nada se escribe si no hay nada que traer. No encadena la
     declaración ni las máscaras (lo que se trae no está calculado, no declara nada) ni deja ningún evento: el historial
@@ -4507,6 +4543,15 @@ def bring_entities(project: StoreProject, source_version: Version | str, target_
                 original = store.get(entity_key(record.code, known), version=source.uid, conn=conn)
                 surface, lost_surface = _brought_surface(
                     conn, source, listed, None if original is None or original.value is None else str(original.value), new)
+            pointed: dict[str, str | None] = {}
+            lost_points: list[tuple[str, str]] = []
+            for param, message in _POINT_REFERENCES.get(str(record.kind), ()):  # el origen y el destino de una pista: una referencia más (T22b, C-4)
+                original = store.get(entity_key(record.code, param), version=source.uid, conn=conn)
+                if original is None or original.value is None:
+                    continue
+                pointed[param], gone = _brought_point(listed, str(original.value), new)
+                if gone is not None:
+                    lost_points.append((message, gone))
             taken = entities.start_conflict(records, start)
             if taken is not None:  # de cada superficie parte una entidad: la traída no puede ser la segunda
                 notices.append(Notice("des.entity_bring_start_taken", {
@@ -4518,7 +4563,7 @@ def bring_entities(project: StoreProject, source_version: Version | str, target_
                 None if declared is None or declared.value is None else str(declared.value), new)
             made = _entity_rows(store, conn, source, record, fresh, label, {
                 PlatformParam.NAME: name, PlatformParam.START: start, PlatformParam.SUPPORT: support,
-                PlatformParam.SUPPORTS: supports, **({} if known is None else {known: surface})})
+                PlatformParam.SUPPORTS: supports, **({} if known is None else {known: surface}), **pointed})
             rows.extend(made)
             brought.append(BroughtEntity(record.code, fresh, record.name, name, start, support, len(made)))
             if fresh != record.code:
@@ -4533,6 +4578,8 @@ def bring_entities(project: StoreProject, source_version: Version | str, target_
                 if gone is not None:
                     notices.append(Notice(message, {
                         "name": name, "surface": gone, "source": source.code, "version": target.code}))
+            for message, gone in lost_points:
+                notices.append(Notice(message, {"name": name, "target": gone, "source": source.code, "version": target.code}))
             if lost_supports:
                 notices.append(Notice("des.entity_bring_supports_lost", {
                     "name": name, "entities": ", ".join(f"«{part}»" for part in lost_supports)}))

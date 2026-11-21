@@ -122,6 +122,9 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # «Apoyo retirado» de cada tipo (``EntityType.removed``; RF-015-17).
     "des.road_support_removed": ("note", "RF-015-17", {"name"}),
     "des.access_support_removed": ("note", "RF-015-17", {"name"}),
+    # T22b: traer las entidades de otra versión con la pista: su origen (el eje de otra pista) o su destino (una entidad) que no se trae (RF-015-18, hallazgo C-4).
+    "des.road_bring_origin_lost": ("warning", "RF-015-18", {"name", "target", "source", "version"}),
+    "des.road_bring_destination_lost": ("warning", "RF-015-18", {"name", "target", "source", "version"}),
     # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase y no usado: la T03 los puso).
     "des.road_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.access_declared_reason": ("note", "RF-015-10", {"name"}),

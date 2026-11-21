@@ -658,6 +658,14 @@ class RoadRegistryProjectTest(efx.EntityProjectCase):
             self.assertEqual(caught.exception.code, expected)
         self.assertEqual(change_counter(self.root), before, "una comprobación no escribe")
 
+    def test_a_live_road_does_not_make_the_declaration_pending(self) -> None:
+        """RF-017-01, RF-015-10, RF-015-29 (T22b: lo que sigue a «Cambiar parámetro…» con la pista; D-15): la pista **no declara** nada y no tiene ``protect``: con una plataforma y una pista vivas (de las que ninguna
+        protege) la declaración **no está pendiente**. Antes, ``declaration_pending`` pedía el ``protect`` de la pista, la clave no existía (``ValueError``) y lo daba por pendiente, con lo que las máscaras nunca se daban
+        por al día y toda orden de entidades que declara (``after_entity_change``) fallaba en su primera etapa, con una plataforma o un contrafuerte en la versión."""
+        with self.project.read() as conn:
+            self.assertTrue(provenance.has_declaring_operation(conn, self.v1.uid), "la plataforma es de un tipo que declara")
+            self.assertFalse(entity_store.declaration_pending(self.project, conn, self.v1.uid))
+
 
 class ClosedListsTest(unittest.TestCase):
     """Las listas cerradas por tipo de operación del lado del dominio (plan 017 §2.1): cada tipo nuevo está en todas, o la
