@@ -25,6 +25,7 @@ import numpy as np
 
 from tests.support import road_data as rd
 from tests.support.package import import_geoblender
+from tests.support.versions_fixtures import change_counter
 from tests.unit.design.milestone_road_chain import ChainCase, finish_steps
 from tests.unit.design.milestone_road_create import FIRST, SECOND
 from tests.unit.design.milestone_road_recompute import PROFILE_STEP, THICKNESS, RecomputeCase
@@ -34,10 +35,12 @@ from tests.unit.gis.masks.test_declared_blocked import core_operations_registere
 
 core_params = import_geoblender("core.params")
 dataset_registry = import_geoblender("core.datasets.registry")
+design_params = import_geoblender("design.params")
 entities = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
 external = import_geoblender("core.datasets.external")
 gwkb = import_geoblender("core.gpkg.wkb")
+messages = import_geoblender("design.messages")
 provenance = import_geoblender("design.provenance")
 recompute_mod = import_geoblender("core.provenance.recompute")
 road_layer = import_geoblender("design.road_layer")
@@ -345,6 +348,38 @@ class RoadLayerStateTest(SingleRoadCase):
         self.assertEqual([str(self.query("SELECT op_type FROM gb_operation WHERE uid = ?", uid)[0][0]) for uid in made], [LAYER])
         self.assertEqual((self.layer_rows()["RDW-001"].class_name, self.pending()), ("ITC 07.1.03, pista de acceso", False))
         self.assertIn("&quot;class_name&quot; = 'ITC 07.1.03, pista de acceso'", self.query("SELECT styleQML FROM layer_styles WHERE f_table_name = ?", TABLE)[0][0])
+
+
+    def test_f_renaming_the_road_does_not_make_it_stale_and_the_layer_says_the_new_name_at_once(self) -> None:
+        """RF-015-08, RF-015-01, RF-015-16, RF-017-27, RF-015-27 (T29c): renombrar la pista con «Cambiar parámetro…» (``by_hand``: la orden pide la fila del proyecto de su nombre, que **creó la pista al
+        crearse**, y cambia la de la versión) **no la deja obsoleta** (su operación no lee el nombre) y deja la capa **marcada** (dice el nombre de antes); lo que sigue a la orden
+        (``after_entity_change``, lo que lanza «Cambiar parámetro…» por ``des_entity_refresh``) la **pone al día al instante**: la fila dice el nombre nuevo, al día y sin marca, con el mismo eje; el
+        nombre vacío o repetido se rechaza con 0 transacciones."""
+        name_key = design_params.entity_key("RDW-001", "name")
+        row = core_params.ParameterStore(self.project).get(name_key)
+        self.assertIsNotNone(row, "la pista creó la fila de su nombre en el proyecto")
+        self.assertEqual((row.scope, row.unconfirmed, row.value), ("project", True, None))
+        axis = self.axis_of("Pista de la rampa")
+        old, uid = self.layer_rows()["RDW-001"].name, self.current_layer()
+        before = change_counter(self.root)
+        for blank in ("", "  ", None):
+            with self.subTest(value=blank), self.assertRaises(messages.DesignError) as caught:
+                entity_store.check_parameter_change(self.project, name_key, blank, version=self.v1.uid)
+            self.assertEqual(caught.exception.code, "des.entity_param_missing")
+        self.assertEqual(change_counter(self.root), before, "los rechazos no escriben")
+        op = self.query("SELECT uid FROM gb_operation WHERE op_type = ? AND status = 'done' AND superseded_by IS NULL", provenance.ROAD)
+        self.by_hand(name_key, "Pista de la rampa norte")
+        self.assertEqual(self.registry_states(), {"RDW-001": "current"}, "renombrarla no la deja obsoleta")
+        self.assertEqual(self.query("SELECT uid FROM gb_operation WHERE op_type = ? AND status = 'done' AND superseded_by IS NULL", provenance.ROAD), op)
+        self.assertEqual(self.recompute_plan(), [], "ni hay nada que recalcular")
+        self.assertEqual(self.layer_rows()["RDW-001"].name, old, "la capa dice todavía el nombre de antes")
+        self.assertTrue(self.pending(), "marcada")
+        chain = self.after()
+        self.assertEqual((chain.road_layer, chain.road_layer_changed, chain.road_layer_failure), (1, True, None))
+        found = self.layer_rows()["RDW-001"]
+        self.assertEqual((found.name, str(found.state), self.pending()), ("Pista de la rampa norte", "current", False))
+        np.testing.assert_array_equal(found.points, axis)
+        self.assertNotEqual(self.current_layer(), uid, "la capa se regeneró")
 
 
 class RoadLayerFailureTest(SingleRoadCase):

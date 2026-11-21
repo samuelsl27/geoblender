@@ -102,6 +102,7 @@ from .params import (
     check_entity_param,
     entity_key,
     entity_params,
+    parse_entity_key,
     road_profile_key,
 )
 from .platform import QuarryOrder, _project_number, _window_grid, magnitude_notices
@@ -173,13 +174,16 @@ __all__ = [
     "create_road",
     "create_road_steps",
     "default_start",
+    "ensure_name_row",
     "frozen_geometry",
     "frozen_profile",
     "line_3d",
     "other_design_notices",
     "other_designs",
     "other_reader",
+    "parameter_changes",
     "parse_reference",
+    "person_level_changes",
     "prepare_propose",
     "prepare_propose_units",
     "prepare_road",
@@ -390,6 +394,57 @@ def write_followed(project: StoreProject, prepared: PreparedRoad, *, decided_by:
         return write(conn)
     with project.write_transaction() as writing:
         return write(writing)
+
+
+# --- «Cambiar parámetro…» de una pista: su nombre y las cotas de la persona (spec 017, T29c; RF-015-08, RF-017-03, D-13) -------------------------------------------------------------------------
+
+
+_HAND_LEVELS = frozenset({RoadParam.START_LEVEL.value, RoadParam.END_LEVEL.value})
+"""Los dos valores de una pista que puede derivar el algoritmo y que la persona puede dar a mano: las cotas de inicio y de fin (D-13)."""
+_HAND_SOURCE = "orden «Cambiar parámetro…»"
+"""El origen de la cota que la persona cambia a mano con «Cambiar parámetro…» (la pista al final, si se sabe)."""
+
+
+def ensure_name_row(project: StoreProject, code: str, *, conn: sqlite3.Connection) -> ParameterRecord:
+    """La fila **del proyecto** del nombre de la pista ``code`` (``des.road.{e}.name``), que la crea «sin confirmar», sin valor y con el decisor por defecto si no estaba (spec 017, T29c; RF-015-08,
+    RF-015-01, RF-017-01): lo que deja la declaración de la plataforma al leer su nombre. «Cambiar parámetro…» (``geoblender.core_set_parameter``) pide la fila del proyecto del parámetro antes de
+    cambiar la de la versión («El parámetro … no está registrado en el proyecto») y la operación de la pista **no lee su nombre** (renombrarla no la deja obsoleta), así que sin esto nadie la creaba y
+    una pista no se podía renombrar. El nombre de verdad es el de la fila de su versión (``set_entity_params``); esta no se toca y, si ya existe, se devuelve tal cual. Escribe en la transacción
+    ``conn`` (la de quien crea, recalcula o trae la pista). ``ValueError`` si ``code`` no es el código de una pista."""
+    parsed = parse_entity_key(entity_key(code, RoadParam.NAME))
+    if parsed is None or parsed[1] != EntityKind.ROAD.value:
+        raise ValueError(f"{code!r} no es el código de una pista")
+    return ParameterStore(project).ensure_default(conn, entity_key(code, RoadParam.NAME), geoblender_version=project.session.geoblender_version)
+
+
+def person_level_changes(key: str, record: Any, changes: Mapping[str, Any], *, entity: str | None = None) -> dict[str, Any]:
+    """Los cambios de «Cambiar parámetro…» de ``key`` con lo que añade la pista (spec 017, T29c; RF-017-03, D-13, RF-015-01; **pura**): quien **cambia a mano el valor** de la cota de inicio o de fin
+    de una pista (``changes["value"]``) que había anotado el algoritmo (``record.source_kind`` es ``algorithm``: la derivó de la superficie de partida, del eje de otra pista o de la entidad de destino)
+    **deja su** ``source_kind`` **en** ``person`` y su origen en la orden (y la pista, si se da su nombre ``entity``): sin eso, ``ParameterStore.change`` conserva la clase del origen, la cota seguiría
+    siendo «derivada» y recalcular (:func:`resolve_level`) la volvería a tomar de su origen y pisaría lo que escribió. Lo que la persona dice ella (otra clase o texto de origen) manda; lo que
+    anotó un documento, una norma, una cifra adoptada o la propia persona se conserva; adoptar una cifra calculada (``from_figure``), un cambio sin valor nuevo (el decisor, el origen) y **cualquier
+    otro parámetro** —de la pista o de otro tipo de entidad— no cambian. Devuelve un diccionario nuevo (``changes`` no se modifica)."""
+    found = dict(changes)
+    parsed = parse_entity_key(key)
+    if parsed is None or parsed[1] != EntityKind.ROAD.value or parsed[2] not in _HAND_LEVELS:
+        return found
+    if "value" not in found or "from_figure" in found or "source_kind" in found or str(record.source_kind) != SourceKind.ALGORITHM.value:
+        return found
+    found["source_kind"] = SourceKind.PERSON
+    if "source" not in found:
+        found["source"] = _HAND_SOURCE if not entity else f"{_HAND_SOURCE}, pista «{entity}»"
+    return found
+
+
+def parameter_changes(project: StoreProject, key: str, record: Any, changes: Mapping[str, Any], *, version: str) -> dict[str, Any]:
+    """Lo que ``des`` registra en «Cambiar parámetro…» de las pistas (``bl.ops.des._adjust_entity_parameter``; spec 017, T29c): :func:`person_level_changes` con el nombre de la pista de ``key`` en
+    ``version`` (uid o código; su parámetro ``name``, para el origen de la cota; si no lo tiene, solo la orden). Para una clave que no es de las dos cotas de una pista, ``changes`` tal cual y **sin
+    leer el proyecto**. Solo lee."""
+    parsed = parse_entity_key(key)
+    if parsed is None or parsed[1] != EntityKind.ROAD.value or parsed[2] not in _HAND_LEVELS or "value" not in changes:
+        return dict(changes)
+    named = ParameterStore(project).get(entity_key(parsed[0], RoadParam.NAME), version=version)
+    return person_level_changes(key, record, changes, entity=str(named.value) if named is not None and isinstance(named.value, str) else None)
 
 
 # --- Las referencias del origen y del destino ---------------------------------------------------
@@ -2129,6 +2184,7 @@ def create_road_steps(project: StoreProject, writer: DesignWriter, prepared: Pre
                 write_followed(project, prepared, decided_by=decided_by, conn=conn)
         else:
             entity_store.set_entity_params(project, prepared.rows, version=prepared.version_uid, decided_by=decided_by, conn=conn)
+        ensure_name_row(project, prepared.code, conn=conn)  # la fila del proyecto del nombre, que pide «Cambiar parámetro…» para renombrarla y que la operación no lee (T29c)
         if handle is not None:  # los otros diseños que difieren en la huella se anotan al completarla, con el hash que tenían al preparar (``des.input_changed`` si cambiaron)
             late.register(conn, handle)
 

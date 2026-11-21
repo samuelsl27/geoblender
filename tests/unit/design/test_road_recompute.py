@@ -194,6 +194,56 @@ class LevelFollowTest(unittest.TestCase):
             self.assertNotIn("{", notice.text(language))
 
 
+class HandEditedLevelTest(unittest.TestCase):
+    """RF-017-03, D-13, RF-015-01, RF-015-08 (T29c): quien **cambia a mano** la cota de inicio o de fin de una pista con «Cambiar parámetro…» la deja **suya** (``source_kind = person``, con su origen
+    anotado), de modo que recalcular no la vuelve a derivar (T24b: solo se vuelve a derivar lo que anotó el algoritmo). **Sin proyecto**: lo que cambia es una función pura de la clave, de la fila y de
+    lo que cambió la persona (:func:`~design.road_store.person_level_changes`); con el proyecto, la orden y recalcular son de ``milestone_road_chain.HandEditedLevelTest`` y de ``test_road_ops``."""
+
+    END = "des.road.rdw_001.end_level_m"
+    START = "des.road.rdw_001.start_level_m"
+    ALGORITHM = SimpleNamespace(source_kind="algorithm")
+    ASKED = {"reason": "Se da la cota", "value": 111.9}
+
+    def test_a_a_derived_level_the_person_edits_becomes_the_persons_with_its_origin(self) -> None:
+        """RF-017-03, D-13: la cota de inicio o de fin anotada por el algoritmo (la que derivó el código de la plataforma de destino o del eje de otra pista) cuyo **valor** cambia la persona pasa a
+        ``person`` y a un origen que lo dice (la orden y la pista, no el texto del algoritmo); el valor y el motivo son los suyos y no se añade nada más."""
+        for key in (self.END, self.START):
+            with self.subTest(key=key):
+                changes = road_store.person_level_changes(key, self.ALGORITHM, dict(self.ASKED), entity="Pista a P1")
+                self.assertEqual(changes["source_kind"], "person")
+                self.assertEqual(changes["source"], "orden «Cambiar parámetro…», pista «Pista a P1»")
+                self.assertEqual((changes["value"], changes["reason"]), (111.9, "Se da la cota"))
+                self.assertEqual(set(changes), {"value", "reason", "source_kind", "source"})
+        self.assertEqual(self.ASKED, {"reason": "Se da la cota", "value": 111.9}, "no cambia lo que se le da")
+        anonymous = road_store.person_level_changes(self.END, self.ALGORITHM, dict(self.ASKED))
+        self.assertEqual((anonymous["source_kind"], anonymous["source"]), ("person", "orden «Cambiar parámetro…»"), "sin el nombre de la pista, solo la orden")
+
+    def test_b_what_the_person_says_or_what_is_not_the_algorithms_is_kept(self) -> None:
+        """RF-017-03, D-13: lo que **no** es del algoritmo se conserva —la cota que ya dio la persona, la que anotó un documento, una norma o una cifra adoptada: no las derivó el código— y lo que la persona
+        dice **ella** (otra clase de origen, otro texto de origen) manda; también se conserva la adopción de una cifra calculada."""
+        for kind in ("person", "document", "standard", "operation"):
+            with self.subTest(kind=kind):
+                changes = road_store.person_level_changes(self.END, SimpleNamespace(source_kind=kind), dict(self.ASKED), entity="Pista a P1")
+                self.assertEqual(changes, self.ASKED, "ni la clase ni el origen cambian")
+        said = {**self.ASKED, "source_kind": "document", "source": "Proyecto de la pista, plano 7"}
+        self.assertEqual(road_store.person_level_changes(self.END, self.ALGORITHM, dict(said), entity="Pista a P1"), said, "lo que dice la persona manda")
+        own = road_store.person_level_changes(self.END, self.ALGORITHM, {**self.ASKED, "source": "Cota del proyecto"}, entity="Pista a P1")
+        self.assertEqual((own["source_kind"], own["source"]), ("person", "Cota del proyecto"), "el origen que escribió se respeta")
+        figure = {"reason": "Se adopta", "from_figure": "uid-de-una-cifra"}
+        self.assertEqual(road_store.person_level_changes(self.END, self.ALGORITHM, dict(figure)), figure)
+
+    def test_c_only_the_two_levels_of_a_road_and_only_when_the_value_changes(self) -> None:
+        """RF-015-01, RF-015-08 (el marco de 015 y 016 no cambia): ningún otro parámetro de la pista (el nombre, el perfil, la partida, las cotas de destino, los de la ruta), ni de otro tipo de entidad
+        (la plataforma tiene su ``start_level_m``), ni una clave que no es de una entidad se toca; y un cambio **sin valor nuevo** (el decisor, el origen) tampoco: no es dar una cota."""
+        for key in ("des.road.rdw_001.name", "des.road.rdw_001.profile", "des.road.rdw_001.start", "des.road.rdw_001.dest_level_m", "des.road.rdw_001.mesh_m",
+                    "des.platform.plt_001.start_level_m", "des.stockpile.stk_001.margin_m", "des.road.rdw_001", "des.roadprofile.pista_principal.pd", "res.thickness"):
+            with self.subTest(key=key):
+                changes = road_store.person_level_changes(key, self.ALGORITHM, dict(self.ASKED), entity="Pista a P1")
+                self.assertEqual(changes, self.ASKED)
+        without = {"reason": "Se cambia el decisor", "decided_by": "Otra persona"}
+        self.assertEqual(road_store.person_level_changes(self.END, self.ALGORITHM, dict(without)), without)
+
+
 class CheckRecordedTest(unittest.TestCase):
     """RF-013-17, RF-015-02, D-14: lo que anotó la operación al empezar es lo que leyó el cálculo al prepararse."""
 

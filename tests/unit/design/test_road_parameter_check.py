@@ -28,6 +28,7 @@ design_params = import_geoblender("design.params")
 entities = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
 messages = import_geoblender("design.messages")
+road_store = import_geoblender("design.road_store")
 
 GROUND = "gis_dtm_ladera"
 OTHER_GROUND = "gis_dtm_levantamiento"
@@ -194,6 +195,65 @@ class RoadParameterTest(RoadParameterCase):
         self.accepted(key("RDW-001", "name"), 5)
         entity_store.check_parameter_change(self.project, key("RDW-001", "name"), "", version=None)
         entity_store.check_parameter_change(self.project, key("RDW-001", "name"), "", version="V99")
+
+
+class RoadNameRowTest(RoadParameterCase):
+    """RF-015-01, RF-015-08, RF-017-01 (T29c): **renombrar una pista** con «Cambiar parámetro…» (``geoblender.core_set_parameter``). La orden pide la fila **del proyecto** del parámetro (``store.get(clave)``
+    sin versión: «El parámetro … no está registrado en el proyecto») y la pista no la tenía: su operación **no lee su nombre** (renombrarla no la deja obsoleta), así que nadie la creaba; la plataforma
+    sí la tiene porque la declaración de sus restricciones lee su nombre. **La pista crea la fila de su nombre** como ella (:func:`~design.road_store.ensure_name_row`: «sin confirmar», sin valor y con
+    el decisor por defecto: el nombre es el de la versión). Aquí, sin operaciones: la fila y lo que la orden hace con ella; crear, recalcular, traer y la capa de ejes con el proyecto son de los hitos
+    y de ``test_road_ops``. **En orden** (``test_a`` a ``test_c``)."""
+
+    CODES = ("RDW-001", "RDW-002", "RDW-003")
+
+    def project_row(self, code: str) -> Any:
+        """La fila **del proyecto** del nombre de ``code`` (la que pide la orden), o ``None``."""
+        return core_params.ParameterStore(self.project).get(key(code, "name"))
+
+    def test_a_a_road_has_no_row_of_its_name_in_the_project_until_it_is_created(self) -> None:
+        """RF-015-08, RF-017-01: el estado de partida de lo que arregla la tarea: las pistas de la versión tienen su nombre (el valor de V01) y **ninguna tiene la fila del proyecto**, que es la que pide
+        «Cambiar parámetro…» para renombrar."""
+        for code in self.CODES:
+            with self.subTest(code=code):
+                self.assertIsNone(self.project_row(code))
+                self.assertEqual(core_params.ParameterStore(self.project).get(key(code, "name"), version=self.v1.uid).value, WORLD[code][0])
+
+    def test_b_the_road_creates_the_row_of_its_name_unconfirmed_without_value_and_only_once(self) -> None:
+        """RF-015-08, RF-017-01: ``ensure_name_row`` deja la fila **del proyecto** del nombre «sin confirmar», sin valor y con el decisor por defecto —lo que deja la declaración de la plataforma—, sin
+        tocar la de la versión; llamarla otra vez no la cambia (la misma fila, la misma revisión): crear, recalcular y traer la llaman sin mirar si ya está."""
+        store = core_params.ParameterStore(self.project)
+        before = {code: store.get(key(code, "name"), version=self.v1.uid) for code in self.CODES}
+        with self.project.write_transaction() as conn:
+            made = {code: road_store.ensure_name_row(self.project, code, conn=conn) for code in self.CODES}
+        for code, record in made.items():
+            with self.subTest(code=code):
+                self.assertEqual((record.key, record.scope, record.scope_uid), (key(code, "name"), core_params.PROJECT_SCOPE, ""))
+                self.assertTrue(record.unconfirmed)
+                self.assertIsNone(record.value)
+                self.assertEqual(record.decided_by, core_params.DEFAULT_DECIDER)
+                self.assertEqual(self.project_row(code).uid, record.uid)
+                self.assertEqual(store.get(key(code, "name"), version=self.v1.uid), before[code], "la fila de la versión no cambia")
+        with self.project.write_transaction() as conn:
+            again = {code: road_store.ensure_name_row(self.project, code, conn=conn) for code in self.CODES}
+        self.assertEqual({code: (record.uid, record.rev) for code, record in again.items()}, {code: (record.uid, record.rev) for code, record in made.items()})
+
+    def test_c_with_the_row_the_command_finds_the_parameter_and_renaming_works_without_making_it_stale(self) -> None:
+        """RF-015-08, RF-015-01, RF-015-16: con las dos filas, lo que hace la orden —busca la del proyecto y la de la versión, comprueba el nombre y cambia la de la versión— renombra la pista: el registro
+        de las entidades dice el nombre nuevo; el nombre vacío o repetido se sigue rechazando **sin escribir nada** (y con la fila del proyecto, que no cambia lo que dicen los rechazos)."""
+        store = core_params.ParameterStore(self.project)
+        record = store.get(key("RDW-002", "name"))
+        own = store.get(key("RDW-002", "name"), version=self.v1.uid)
+        self.assertIsNotNone(record, "la orden la pide")
+        self.assertIsNotNone(own)
+        self.refused(key("RDW-002", "name"), "", "des.entity_param_missing", entity="Ramal")
+        self.refused(key("RDW-002", "name"), "Pista a P1", "des.entity_name_repeated", other="Pista a P1")
+        self.accepted(key("RDW-002", "name"), "Ramal norte")
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            changed = store.change(conn, key("RDW-002", "name"), value="Ramal norte", reason="Se renombra la pista", version=self.v1.uid)
+        self.assertEqual((changed.value, changed.rev, str(changed.scope)), ("Ramal norte", own.rev + 1, core_params.VERSION_SCOPE))
+        self.assertEqual(entities.registry(self.project, self.v1.uid).get("RDW-002").record.name, "Ramal norte")
+        self.assertEqual(store.get(key("RDW-002", "name")).uid, record.uid, "la fila del proyecto sigue siendo la misma")
 
 
 if __name__ == "__main__":

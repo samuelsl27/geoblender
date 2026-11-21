@@ -237,6 +237,21 @@ class BroughtRoadsTest(efx.EntityProjectCase):
         self.assertEqual(self.values(v5, "RDW-001")["destination"], "entity:PLT-001")
         self.assertEqual([item.code for item in found.notices if item.code == "des.road_bring_destination_lost"], [])
 
+    def test_f_a_brought_road_has_the_row_of_its_name_in_the_project_and_a_brought_platform_does_not(self) -> None:
+        """RF-015-08, RF-015-18, RF-017-01 (T29c): «Cambiar parámetro…» pide la fila del proyecto del nombre; una pista traída a otra versión (con el mismo código o con otro, si el suyo estaba ocupado)
+        **la tiene** —la crea ``bring_entities``, «sin confirmar», sin valor y con el decisor por defecto; la fila de la versión es la que lleva el nombre—, de modo que se puede **renombrar antes de
+        calcularla**; la plataforma traída sigue sin ella (su fila es la que deja la declaración al calcularla: el marco de la 015 no cambia)."""
+        store = core_params.ParameterStore(self.project)
+        for code in ("RDW-001", "RDW-002", "RDW-003", "RDW-004", "RDW-005", "RDW-006"):
+            with self.subTest(code=code):
+                row = store.get(key(code, "name"))
+                self.assertIsNotNone(row)
+                self.assertEqual((row.scope, row.unconfirmed, row.value, row.decided_by), (core_params.PROJECT_SCOPE, True, None, core_params.DEFAULT_DECIDER))
+        self.assertEqual(store.get(key("RDW-004", "name"), version=self.v2.uid).value, "Pista a P1 (V01)", "el nombre es el de la fila de la versión")
+        for code in ("PLT-001", "PLT-002", "PLT-003", "PLT-004"):
+            with self.subTest(code=code):
+                self.assertIsNone(store.get(key(code, "name")), "la plataforma no la tiene hasta que se declara")
+
 
 if __name__ == "__main__":
     unittest.main()

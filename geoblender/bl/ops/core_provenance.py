@@ -179,7 +179,8 @@ ADR-0025).
   una entidad, por pasos y con Esc en un operador suyo) y lo que pone al día **al terminar** «Recalcular lo obsoleto»
   (:func:`register_recompute_after`: sus pasos corren en el mismo modal antes de decir lo que pasó, y no si se canceló;
   **Esc vale también mientras corren** —se cierra el paso en curso, no corre lo que falta y el resultado dice que se
-  canceló—, T49: hasta entonces se ignoraba y la capa de entidades se escribía entera tras Esc).
+  canceló—, T49: hasta entonces se ignoraba y la capa de entidades se escribía entera tras Esc). Y, de la spec 017 (T29c), lo que
+  **añade** al cambio antes de escribirlo (:func:`register_parameter_adjust`: la pista deja suya la cota que la persona da a mano).
 
 ``core.i18n`` no tiene cómo quitar traducciones: :func:`unregister` las deja (como los
 trabajos de la 004), y volver a registrar las instala otra vez sin cambiar nada.
@@ -1713,6 +1714,42 @@ def check_parameter_change(project: Any, key: str, value: Any, version_uid: str 
             check(project, key, value, version_uid)
 
 
+# --- Lo que un módulo añade al cambio de sus parámetros (spec 017, T29c) ----------------------
+
+type ParameterAdjust = Callable[[Any, str, Any, dict[str, Any], str], dict[str, Any]]
+"""Lo que un módulo registra para **completar** el cambio de **sus** parámetros con «Cambiar parámetro…»:
+``adjust(proyecto, clave, fila, cambios, uid de la versión)`` da los ``cambios`` (lo que va a ``ParameterStore.change``: el
+valor, el tipo, el origen, el decisor y el motivo, solo lo que cambia) con lo que añade el módulo (la 017: quien da a mano
+la cota de una pista que había derivado el algoritmo la deja suya) y ``fila`` es la que se cambia. **Solo lee**: se llama
+antes de abrir la transacción que escribe, tras las comprobaciones (:func:`register_parameter_check`)."""
+_PARAMETER_ADJUSTS: dict[str, ParameterAdjust] = {}
+
+
+def register_parameter_adjust(prefix: str, adjust: ParameterAdjust) -> None:
+    """Registra ``adjust`` para las claves de parámetro que empiezan por ``prefix`` (``des.road.``); el que había con
+    ese principio, si lo había, se sustituye (idempotente)."""
+    _PARAMETER_ADJUSTS[prefix] = adjust
+
+
+def unregister_parameter_adjust(prefix: str, adjust: ParameterAdjust) -> None:
+    """Quita lo registrado para ``prefix`` si es ``adjust`` (lo que otro registró después es suyo); idempotente."""
+    if _PARAMETER_ADJUSTS.get(prefix) is adjust:
+        del _PARAMETER_ADJUSTS[prefix]
+
+
+def adjust_parameter_changes(project: Any, key: str, record: Any, changes: dict[str, Any],
+                             version_uid: str | None) -> dict[str, Any]:
+    """Los ``changes`` del cambio de ``key`` (la ``record`` que se cambia) con lo que añaden los módulos
+    (:func:`register_parameter_adjust`) en la versión ``version_uid`` (``None``: el cambio es del proyecto, sin
+    versión: ninguno se aplica). Sin nada registrado para la clave, los mismos ``changes``."""
+    if version_uid is None:
+        return changes
+    for prefix, adjust in tuple(_PARAMETER_ADJUSTS.items()):
+        if key.startswith(prefix):
+            changes = adjust(project, key, record, changes, version_uid)
+    return changes
+
+
 # --- Lo que un módulo hace tras cambiar sus parámetros y tras recalcular (spec 015, T43) -------
 
 type ParameterAfter = Callable[[Any, str, str], None]
@@ -2074,6 +2111,8 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
             if "value" in changes:  # las reglas entre entidades de un módulo, antes de abrir la transacción (T39)
                 check_parameter_change(project, self.key, changes["value"],
                                        None if version is None else version.uid)
+            changes = adjust_parameter_changes(project, self.key, record, changes,  # lo que añade el módulo (T29c)
+                                               None if version is None else version.uid)
             with project.write_transaction() as conn:
                 changed = store.change(conn, self.key, **changes,
                                        version=None if version is None else version.uid)

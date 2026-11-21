@@ -220,10 +220,8 @@ class TargetPlatformTest(ChainCase):
         self.assertEqual((branch["x"], branch["y"]), (axis[100.0]["x"], axis[100.0]["y"]))
 
 
-class FollowLevelsTest(ChainCase):
-    """RF-017-03, D-13, RF-015-01, RF-015-16, CE-017-08, E5 (T24b): **recalcular sigue a la plataforma de destino**: las cotas de inicio y de fin cuyo origen anotado en su fila es el del algoritmo
-    (la superficie de la entidad de destino en el punto, el eje de otra pista en esa abscisa) se vuelven a derivar al recalcular; las que dio la persona, no. **En orden** (``test_a`` a ``test_g``):
-    cada una parte de lo que dejó la anterior."""
+class LevelCase(ChainCase):
+    """Lo que miran las pruebas de las cotas de inicio y de fin de las pistas de la cadena (T24b y T29c): sus filas, sus ejes y repetir una pista como «Recalcular» (sin pruebas propias)."""
 
     LEVEL = design_params.entity_key("PLT-001", "start_level_m")
     """La cota de ``P1`` (plana, 112 m): cambiarla cambia su superficie y con ella la cota a la que llega la pista."""
@@ -233,7 +231,6 @@ class FollowLevelsTest(ChainCase):
     NEW_M = 111.6
     """La cota nueva de ``P1`` (0,4 m más baja: más alta, la plataforma plana sube en contra de su rasante y no se crea sin confirmar)."""
 
-    before: ClassVar[dict[str, Any]]
     said: str = ""
 
     def record(self, key: str) -> Any:
@@ -259,6 +256,14 @@ class FollowLevelsTest(ChainCase):
         with self.project.write_transaction() as conn:
             core_params.ParameterStore(self.project).change(conn, key, value=value, source="Proyecto de la pista (prueba de la T24b)", source_kind="person", decided_by=BY, reason="La da la persona",
                                                            version=self.v1.uid)
+
+
+class FollowLevelsTest(LevelCase):
+    """RF-017-03, D-13, RF-015-01, RF-015-16, CE-017-08, E5 (T24b): **recalcular sigue a la plataforma de destino**: las cotas de inicio y de fin cuyo origen anotado en su fila es el del algoritmo
+    (la superficie de la entidad de destino en el punto, el eje de otra pista en esa abscisa) se vuelven a derivar al recalcular; las que dio la persona, no. **En orden** (``test_a`` a ``test_g``):
+    cada una parte de lo que dejó la anterior."""
+
+    before: ClassVar[dict[str, Any]]
 
     def test_a_changing_the_level_of_the_target_platform_moves_the_end_of_the_road(self) -> None:
         """RF-017-03, D-13, CE-017-08, E5: cambiar la cota de ``P1`` (112 → 111,6 m) y «Recalcular lo obsoleto» (la plataforma, la pista, el ramal y el relleno, en ese orden) hace que la pista **acabe a la cota
@@ -397,6 +402,94 @@ class FollowLevelsTest(ChainCase):
         datos y las mismas cifras: lo congelado lleva los valores que anotó la operación y **la reproducción no vuelve a derivar nada** (nada nuevo en lo congelado)."""
         self.clock.advance(minutes=1)
         revision = str(finish_steps(freeze.freeze_steps(self.project, self.v1.uid, reason="Entrega de la prueba de la T24b")).frozen.uid)
+        self.clock.advance(minutes=1)
+        before = (files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root))
+        report = finish_steps(reproduce_mod.reproduce_steps(self.project, revision))
+        self.assertEqual((files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root)), before, "reproducir no escribe en el proyecto")
+        for code in ("RDW-001", "RDW-002"):
+            uid = self.current(code)
+            with self.subTest(road=code):
+                mine = [check for check in report.outputs if check.operation_uid == uid]
+                self.assertEqual([check.role for check in mine], ["entity_surface", "entity", "road_axis", "entity_report"])
+                self.assertTrue(all(check.same for check in mine), [check for check in mine if not check.same])
+                found = [check for check in report.figures if check.operation_uid == uid]
+                self.assertTrue(found and all(check.same for check in found), [check for check in found if not check.same])
+
+
+class HandEditedLevelTest(LevelCase):
+    """RF-017-03, D-13, RF-015-01, RF-015-16, CE-017-08, E5 (T29c): la cota de inicio o de fin que **cambia a mano la persona** con «Cambiar parámetro…» (``by_hand``: lo que hace la orden, con lo que
+    registra ``des`` de las pistas) **deja de ser del algoritmo** y recalcular no la vuelve a derivar —antes, «Cambiar parámetro…» solo cambiaba el valor y el recálculo la pisaba con la de la plataforma—;
+    la que sigue siendo derivada sí se vuelve a derivar (T24b) y reproducir lo congelado da lo mismo. **En orden** (``test_a`` a ``test_d``): cada una parte de lo que dejó la anterior."""
+
+    GIVEN_M = 111.9
+    """La cota de fin que escribe la persona: 0,1 m por debajo de la de ``P1`` (112 m), que es de donde la había derivado el algoritmo."""
+
+    def test_a_editing_the_derived_end_level_by_hand_makes_it_the_persons_and_the_road_ends_there(self) -> None:
+        """RF-017-03, D-13: la cota de fin de la «Pista a P1» salió de la superficie de ``P1`` (origen «algoritmo»); la persona la cambia a 111,9 m con «Cambiar parámetro…» y queda **suya** (``person``,
+        con el origen de la orden y de la pista, su valor y su decisor); la pista queda obsoleta (lee la cota), «Recalcular lo obsoleto» la repite y **acaba a la cota que dio la persona**, sin
+        reescribir la fila (la misma revisión)."""
+        before = self.record(self.ROAD_END)
+        self.assertEqual((str(before.source_kind), before.rev), ("algorithm", 1))
+        given = self.by_hand(self.ROAD_END, self.GIVEN_M)
+        self.assertEqual((given.value, str(given.source_kind), given.rev, given.decided_by), (self.GIVEN_M, "person", 2, BY))
+        self.assertEqual(given.source, f"orden «Cambiar parámetro…», pista «{FIRST}»")
+        self.assertNotEqual(given.source, before.source)
+        self.assertEqual(self.recompute_plan(), [(provenance.ROAD,), (provenance.ROAD,), (provenance.PLATFORM,)], "la pista, el ramal y el relleno: leen la cota")
+        self.clock.advance(minutes=1)
+        self.recompute_all()
+        kept = self.record(self.ROAD_END)
+        self.assertEqual((kept.value, str(kept.source_kind), kept.rev), (self.GIVEN_M, "person", 2), "recalcular no la reescribe")
+        stations, levels = self.levels_of(FIRST)
+        self.assertAlmostEqual(float(levels[-1]), self.GIVEN_M, places=9)
+        self.assertEqual(self.recompute_plan(), [])
+
+    def test_b_recomputing_after_the_target_platform_changes_does_not_touch_it_nor_say_the_platform_changed(self) -> None:
+        """RF-017-03, D-13, E5: cambiar la cota de ``P1`` (112 → 111,6 m) y «Recalcular lo obsoleto» **no cambia la cota de fin de la persona** (el mismo valor, origen, revisión y decisor), la pista acaba
+        donde ella dijo y el recálculo de la pista **no dice** que la cota cambió «porque la plataforma cambió» (el último paso no habla de la cota de fin)."""
+        recorded = self.record(self.ROAD_END)
+        self.change(self.LEVEL, self.NEW_M)
+        self.clock.advance(minutes=1)
+        made = self.recompute_all()
+        self.assertIn(provenance.ROAD, [self.type_of(uid) for uid in made], "la pista se recalculó con la plataforma")
+        kept = self.record(self.ROAD_END)
+        self.assertEqual((kept.value, str(kept.source_kind), kept.rev, kept.decided_by), (self.GIVEN_M, "person", recorded.rev, BY))
+        stations, levels = self.levels_of(FIRST)
+        self.assertAlmostEqual(float(levels[-1]), self.GIVEN_M, places=9, msg="acaba a la cota de la persona, no a la de la plataforma")
+        self.repeat_road("RDW-001")
+        self.assertNotIn("cota de fin", self.said)
+        self.assertNotIn("cambió", self.said)
+        self.assertEqual(self.record(self.ROAD_END).rev, recorded.rev, "repetirla otra vez tampoco la escribe")
+
+    def test_c_the_level_that_stays_derived_is_still_derived_while_the_one_edited_by_hand_is_kept(self) -> None:
+        """RF-017-03, D-13, CE-017-08: lo que **sigue siendo derivado** se vuelve a derivar (T24b): el ramal sale de la rasante de la pista a 1 m de su origen; la persona sube 1 m la cota de inicio de la
+        pista con «Cambiar parámetro…» (de ser del algoritmo pasa a ser suya) y el ramal **sale de la rasante nueva** al recalcular, mientras la cota de inicio de la pista conserva lo que escribió la persona
+        y la de fin sigue siendo la suya."""
+        self.change(design_params.entity_key("RDW-002", "origin"), "RDW-001@1")
+        self.clock.advance(minutes=1)
+        self.recompute_all()
+        old = self.record(self.BRANCH_START)
+        self.assertEqual(str(old.source_kind), "algorithm")
+        self.assertEqual(str(self.record(self.ROAD_START).source_kind), "algorithm")
+        given = self.record(self.ROAD_START).value + 1.0
+        edited = self.by_hand(self.ROAD_START, given)
+        self.assertEqual((edited.value, str(edited.source_kind)), (given, "person"))
+        self.clock.advance(minutes=1)
+        self.recompute_all()
+        self.repeat_road("RDW-002")
+        stations, levels = self.levels_of(FIRST)
+        branch = self.record(self.BRANCH_START)
+        self.assertAlmostEqual(branch.value, float(np.interp(1.0, stations, levels)), places=9)
+        self.assertGreater(branch.value - old.value, 0.5, "la rasante de la pista a 1 m de su origen subió")
+        self.assertEqual(str(branch.source_kind), "algorithm", "la derivada sigue siendo derivada")
+        self.assertAlmostEqual(float(levels[0]), given, places=9, msg="la pista sale de la cota que dio la persona")
+        self.assertEqual((self.record(self.ROAD_START).value, str(self.record(self.ROAD_START).source_kind)), (given, "person"))
+        self.assertEqual((self.record(self.ROAD_END).value, str(self.record(self.ROAD_END).source_kind)), (self.GIVEN_M, "person"))
+
+    def test_d_the_frozen_revision_reproduces_the_roads_with_the_levels_the_person_gave(self) -> None:
+        """RF-009-11, RF-015-02, RF-017-03: reproducir ``V01.r1`` —congelada **después** de que la persona diera sus cotas a mano— da de cada pista el **mismo hash** de sus cuatro datos y las mismas
+        cifras, sin escribir nada: lo congelado lleva los valores y la reproducción no vuelve a derivar nada."""
+        self.clock.advance(minutes=1)
+        revision = str(finish_steps(freeze.freeze_steps(self.project, self.v1.uid, reason="Entrega de la prueba de la T29c")).frozen.uid)
         self.clock.advance(minutes=1)
         before = (files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root))
         report = finish_steps(reproduce_mod.reproduce_steps(self.project, revision))

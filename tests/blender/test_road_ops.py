@@ -20,6 +20,8 @@ Las pruebas, en el orden de sus letras sobre el mismo estado.
 - RF-015-29, RF-017-30, RF-017-04 (e): Esc a mitad, Cancelar la confirmación y lo que se rechaza no dejan nada (0 transacciones).
 - RF-017-26, RF-015-26 (f): «Vista previa» y sus campos; tras calcular, le da lo calculado; se quita al cancelar, con Esc y al crear.
 - RF-017-03 (g): un ramal parte del eje de otra pista a una abscisa; la pista a una cota y su zona (la rampa).
+- RF-015-08, RF-015-01, RF-017-27, RF-017-03, D-13 (g·b, T29c): «Cambiar parámetro…» de una pista: renombrarla funciona, no la deja obsoleta y la capa de ejes dice el nombre nuevo; el nombre vacío o repetido
+  se rechaza sin escribir; la cota que da a mano la persona queda suya.
 - RF-017-29, RF-015-28 (h): la orden sale desactivada con su motivo con el proyecto en solo lectura, con la versión activa no editable y sin versión activa.
 - Principio 8 (z): desactivar Geoblender quita la orden y no deja nada.
 
@@ -681,6 +683,59 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
         self.assertEqual(self.parameter_row(ramp_code, "dest_level_m")[0], 101.8)
         self.assertEqual(self.parameter_row(ramp_code, "dest_tol_m")[0], 0.3)
         self.assertEqual(self.table_state(ZONES), self.layers_before[ZONES], "la capa de la zona no se toca")
+
+    # --- g·b: «Cambiar parámetro…» de una pista ------------------------------------------------------
+
+    def test_g_b_changing_a_parameter_of_a_road_renames_it_and_the_level_the_person_gives_is_theirs(self) -> None:
+        """RF-015-08, RF-015-01, RF-017-01, RF-017-27, RF-015-27, RF-017-03, D-13 (T29c): «Cambiar parámetro…» (``core_set_parameter``, la orden real) de una **pista**. **Renombrarla** funciona
+        (la orden pide la fila del proyecto de su nombre, que la pista crea al crearse como la plataforma: antes, «El parámetro … no está registrado en el proyecto»), no la deja obsoleta y la
+        capa de ejes dice el nombre nuevo al terminar lo que sigue al cambio; el nombre vacío o repetido se rechaza con su texto y **sin escribir nada**. La cota de fin que había derivado el algoritmo y
+        la persona **cambia a mano** queda **suya** (``person``, con su origen), también si da la de inicio; la que ya era de otra clase de origen, no se toca."""
+        self.refresh()
+        self.assertEqual(bpy.ops.geoblender.core_set_active_version(version_uid=self.v01.uid), {"FINISHED"})
+        first = self.code_of(FIRST)
+        prefix = f"des.road.{first.lower().replace('-', '_')}"
+        self.assertEqual(self.rows("SELECT unconfirmed FROM gb_parameter WHERE key = ? AND scope = 'project'", f"{prefix}.name"), [(1,)], "la pista creó la fila de su nombre")
+
+        def change(param: str, value: str, **extra: Any) -> set[str]:
+            return bpy.ops.geoblender.core_set_parameter("EXEC_DEFAULT", key=f"{prefix}.{param}", value=value, scope="VERSION", decided_by=PERSON, reason=REASON, **extra)
+
+        before = self.state()
+        for value, text in (("", "no tiene valor"), (BRANCH, f"ya lo tiene la entidad «{BRANCH}»"), (BRANCH.upper(), f"ya lo tiene la entidad «{BRANCH}»")):
+            with self.subTest(value=value), self.assertRaises(RuntimeError) as caught:
+                change("name", value, source="Criterio de la prueba")
+            self.assertIn(text, str(caught.exception))
+            self.assertNotIn("Traceback", str(caught.exception))
+            self.assertEqual(self.state(), before, "el rechazo no escribe nada")
+        old_operation = self.rows("SELECT uid FROM gb_operation WHERE op_type = ? AND status = 'done' AND superseded_by IS NULL ORDER BY fid", ROAD_TYPE)
+        self.assertEqual(change("name", "Pista de la carga norte", source="Criterio de la prueba"), {"FINISHED"})
+        self.assertEqual(self.parameter_row(first, "name")[0], "Pista de la carga norte")
+        self.finish_refresh()  # lo que sigue al cambio, por pasos (los temporizadores no corren en ``blender -b``)
+        entry = self.entities.registry(self.project, self.v01.uid).get(first)
+        self.assertEqual((entry.record.name, str(entry.record.state)), ("Pista de la carga norte", "current"), "renombrarla no la deja obsoleta")
+        self.assertEqual(self.rows("SELECT uid FROM gb_operation WHERE op_type = ? AND status = 'done' AND superseded_by IS NULL ORDER BY fid", ROAD_TYPE), old_operation)
+        shown = {code: (name, state) for code, name, state in self.rows('SELECT code, name, state FROM "des_rax_v01"')}
+        self.assertEqual(shown[first], ("Pista de la carga norte", "current"), "la capa de ejes dice el nombre nuevo")
+        self.assertEqual(shown[self.code_of(BRANCH)][0], BRANCH)
+
+        derived = self.parameter_row(first, "end_level_m")
+        self.assertEqual(derived[2], "algorithm", "la cota de fin que no escribió la persona la derivó el algoritmo")
+        self.assertEqual(change("end_level_m", "101,5"), {"FINISHED"})
+        value, source, kind, decider = self.parameter_row(first, "end_level_m")
+        self.assertEqual((value, kind, decider), (101.5, "person", PERSON))
+        self.assertEqual(source, "orden «Cambiar parámetro…», pista «Pista de la carga norte»")
+        self.finish_refresh()
+        entry = self.entities.registry(self.project, self.v01.uid).get(first)
+        self.assertEqual(str(entry.record.state), "stale", "la pista lee la cota: queda obsoleta con ella")
+        start = self.parameter_row(first, "start_level_m")
+        self.assertEqual(start[2], "person", "la de inicio la escribió la persona al crear la pista")
+        self.assertEqual(change("start_level_m", "100,6", source="Proyecto de la pista", source_kind="DOCUMENT"), {"FINISHED"})
+        self.assertEqual(self.parameter_row(first, "start_level_m")[:3], (100.6, "Proyecto de la pista", "document"), "lo que dice la persona manda")
+        self.finish_refresh()
+        self.assertEqual(change("start_level_m", "100,7"), {"FINISHED"})
+        value, _source, kind, _decider = self.parameter_row(first, "start_level_m")
+        self.assertEqual((value, kind), (100.7, "document"), "lo anotado por un documento se conserva")
+        self.finish_refresh()
 
     # --- h: desactivada con su motivo ---------------------------------------------------------------
 

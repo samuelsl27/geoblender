@@ -13,6 +13,8 @@ con pasos sintéticos.
   **cancelado** no corren; **Esc mientras corren** (T49) cierra el que está en curso, no corre lo que falta y el resultado
   llega cancelado; un fallo suyo no impide el resultado; sin nada registrado, los pasos de siempre; y cerrar el
   generador cierra los pasos del recálculo.
+- **Lo que un módulo añade al cambio** (``adjust_parameter_changes``, spec 017, T29c; RF-017-03, D-13): ``AdjustTest``: lo registrado para el principio de la clave completa los cambios de una versión
+  (el del proyecto y los de otro principio, no); ``des`` registra solo lo de ``des.road.`` y desactivar Geoblender lo quita.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -241,6 +243,66 @@ class AftersTest(unittest.TestCase):
         self.assertEqual(order, ["a"])
         self.assertTrue(found[-1].result.cancelled)
         self.assertEqual([step.message for step in found], ["uno", "dos", "a", "Recalcular lo obsoleto: cancelado."])
+
+
+class AdjustTest(unittest.TestCase):
+    """Lo que un módulo **añade** al cambio de sus parámetros antes de escribirlo (spec 017, T29c; RF-017-03, D-13): ``register_parameter_adjust`` y ``adjust_parameter_changes`` de
+    ``bl.ops.core_provenance``, que ``des`` usa para que la cota que la persona da a mano a una pista deje de ser del algoritmo. Sin proyecto y con funciones sintéticas."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.release()
+        blender_ext.enable()
+        cls.cp = _module("bl.ops.core_provenance")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.release()
+
+    def test_a_a_registered_adjust_completes_the_change_of_its_prefix_in_a_version_and_only_then(self) -> None:
+        """RF-017-03: lo registrado para ``des.road.`` recibe el proyecto, la clave, la fila, los cambios y la versión y da los cambios completados; un cambio **del proyecto** (sin versión) y una
+        clave de otro principio los dejan tal cual; registrar es idempotente, sustituye lo del mismo principio y quitar lo que ya no es lo registrado no quita lo actual."""
+        calls: list[tuple[Any, ...]] = []
+
+        def mine(*args: Any) -> dict[str, Any]:
+            calls.append(args)
+            return {**args[3], "source_kind": "person"}
+
+        def other(*_args: Any) -> dict[str, Any]:
+            raise AssertionError("no es de su principio")
+
+        with mock.patch.dict(self.cp._PARAMETER_ADJUSTS, clear=True):  # noqa: SLF001 - los registros son de la prueba
+            self.cp.register_parameter_adjust("des.road.", mine)
+            self.cp.register_parameter_adjust("des.road.", mine)
+            self.cp.register_parameter_adjust("gis.", other)
+            asked = {"value": 1.0, "reason": "x"}
+            row = SimpleNamespace(source_kind="algorithm")
+            found = self.cp.adjust_parameter_changes("proyecto", "des.road.rdw_001.end_level_m", row, asked, "uid-v01")
+            self.assertEqual(found, {"value": 1.0, "reason": "x", "source_kind": "person"})
+            self.assertEqual(calls, [("proyecto", "des.road.rdw_001.end_level_m", row, asked, "uid-v01")])
+            self.assertIs(self.cp.adjust_parameter_changes("proyecto", "des.road.rdw_001.end_level_m", row, asked, None), asked, "el del proyecto, sin versión, no se completa")
+            self.assertIs(self.cp.adjust_parameter_changes("proyecto", "des.platform.plt_001.start_level_m", row, asked, "uid-v01"), asked)
+            replacement = lambda *args: {**args[3], "reason": "otra"}  # noqa: E731
+            self.cp.register_parameter_adjust("des.road.", replacement)
+            self.cp.unregister_parameter_adjust("des.road.", mine)
+            self.assertEqual(self.cp.adjust_parameter_changes("p", "des.road.rdw_001.end_level_m", row, asked, "v")["reason"], "otra", "quitar lo que ya no es lo registrado no quita lo actual")
+            self.cp.unregister_parameter_adjust("des.road.", replacement)
+            self.cp.unregister_parameter_adjust("des.road.", replacement)
+            self.assertIs(self.cp.adjust_parameter_changes("p", "des.road.rdw_001.end_level_m", row, asked, "v"), asked)
+
+    def test_b_des_registers_the_road_adjust_only_for_the_two_levels_and_unregistering_removes_it(self) -> None:
+        """RF-017-03, principio 8: habilitar Geoblender registra lo de ``des.road.`` y **solo** eso; con cualquier parámetro que no es el valor de una cota de pista (el nombre, el perfil, los de la
+        ruta, o un cambio sin valor nuevo) devuelve los mismos cambios sin leer el proyecto; desactivar Geoblender lo quita."""
+        self.assertEqual([prefix for prefix in self.cp._PARAMETER_ADJUSTS if prefix.startswith("des.")], ["des.road."])  # noqa: SLF001
+        des = _module("bl.ops.des")
+        asked = {"value": "x", "reason": "y"}
+        for key in ("des.road.rdw_001.name", "des.road.rdw_001.profile", "des.road.rdw_001.mesh_m"):
+            with self.subTest(key=key):
+                self.assertIs(self.cp.adjust_parameter_changes("proyecto", key, SimpleNamespace(source_kind="algorithm"), asked, "v"), asked)
+        without = {"reason": "sin valor"}
+        self.assertIs(des._adjust_entity_parameter("proyecto", "des.road.rdw_001.end_level_m", None, without, "v"), without)  # noqa: SLF001
+        blender_ext.release()
+        self.assertNotIn("des.road.", self.cp._PARAMETER_ADJUSTS)  # noqa: SLF001
 
 
 if __name__ == "__main__":

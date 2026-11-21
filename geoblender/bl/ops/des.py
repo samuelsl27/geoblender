@@ -498,11 +498,13 @@ from .core_provenance import (
     ensure_ready,
     error_text,
     read_only_dirs,
+    register_parameter_adjust,
     register_parameter_after,
     register_parameter_check,
     register_recompute_after,
     scope_choice,
     typed_value,
+    unregister_parameter_adjust,
     unregister_parameter_after,
     unregister_parameter_check,
     unregister_recompute_after,
@@ -965,6 +967,22 @@ def _check_entity_parameter(project: Any, key: str, value: Any, version_uid: str
     entity_store.check_parameter_change(project, key, value, version=version_uid)
 
 
+ROAD_PARAMETER_PREFIX = f"{design_params.ROAD_ENTITY.key_prefix}."
+"""El principio de las claves de los parámetros de una pista (``des.road.``): el único del que :func:`_adjust_entity_parameter` completa el cambio."""
+_HAND_LEVEL_SUFFIXES = (f".{design_params.RoadParam.START_LEVEL}", f".{design_params.RoadParam.END_LEVEL}")
+
+
+def _adjust_entity_parameter(project: Any, key: str, record: Any, changes: dict[str, Any], version_uid: str) -> dict[str, Any]:
+    """Lo que ``des`` registra para completar «Cambiar parámetro…» (:func:`~.core_provenance.register_parameter_adjust`; spec 017, T29c; RF-017-03, D-13): quien cambia a mano **el valor de la
+    cota de inicio o de fin de una pista** que había derivado el algoritmo la deja **suya** (``source_kind = person``, con su origen: ``design.road_store.parameter_changes``), de modo que recalcular
+    no la vuelve a derivar. Con cualquier otro parámetro, los mismos cambios y sin importar el almacén (habilitar no carga las pistas)."""
+    if "value" not in changes or not key.endswith(_HAND_LEVEL_SUFFIXES):
+        return changes
+    from ...design import road_store  # al usarlo: habilitar no carga las pistas
+
+    return road_store.parameter_changes(project, key, record, changes, version=version_uid)
+
+
 # --- Lo que sigue a cambiar una entidad y a «Recalcular lo obsoleto» (spec 015, T43; RF-015-10, RF-015-27) ---
 
 REFRESH_ENTITIES = "geoblender.des_entity_refresh"
@@ -1041,6 +1059,8 @@ def register() -> None:
         _UNDO.append(functools.partial(unregister_parameter_check, prefix, _check_entity_parameter))
         register_parameter_after(prefix, _after_entity_parameter)
         _UNDO.append(functools.partial(unregister_parameter_after, prefix, _after_entity_parameter))
+    register_parameter_adjust(ROAD_PARAMETER_PREFIX, _adjust_entity_parameter)  # la cota que da la persona a mano (T29c)
+    _UNDO.append(functools.partial(unregister_parameter_adjust, ROAD_PARAMETER_PREFIX, _adjust_entity_parameter))
     register_recompute_after(_layers_after_recompute)
     _UNDO.append(functools.partial(unregister_recompute_after, _layers_after_recompute))
     if project_changed not in project_session.listeners():

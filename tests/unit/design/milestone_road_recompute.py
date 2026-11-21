@@ -51,7 +51,8 @@ core_params = import_geoblender("core.params")
 design_params = import_geoblender("design.params")
 design_reproduce = import_geoblender("design.reproduce")
 entities = import_geoblender("design.entities")
-freeze = import_geoblender("core.versions.freeze")
+entity_store = import_geoblender("design.entity_store")
+freeze =import_geoblender("core.versions.freeze")
 messages = import_geoblender("design.messages")
 model = import_geoblender("design.model")
 provenance = import_geoblender("design.provenance")
@@ -125,6 +126,18 @@ class RecomputeCase(CreateCase):
         with cls.project.write_transaction() as conn:
             core_params.ParameterStore(cls.project).change(conn, key, value=value, source="prueba de recalcular (T22)", source_kind="person", decided_by=BY,
                                                            reason="Se cambia un parámetro de la pista", version=cls.v1.uid if in_version else None)
+
+    def by_hand(self, key: str, value: Any, *, entity: str = "") -> Any:
+        """«Cambiar parámetro…» (``geoblender.core_set_parameter``) de ``key`` en V01, como la orden: comprueba el valor (``check_parameter_change``), añade lo que registra ``des`` de las pistas (``road_store.
+        parameter_changes``: la cota que da la persona deja de ser del algoritmo) y cambia la fila de la versión, un minuto después de lo anterior; quien lo hace es ``BY`` y no da otro origen. La fila nueva."""
+        store_ = core_params.ParameterStore(self.project)
+        self.assertIsNotNone(store_.get(key), f"la orden pide la fila del proyecto de «{key}»: «El parámetro … no está registrado en el proyecto»")
+        record = store_.get(key, version=self.v1.uid)
+        entity_store.check_parameter_change(self.project, key, value, version=self.v1.uid)
+        changes = road_store.parameter_changes(self.project, key, record, {"value": value, "reason": "Se cambia a mano un parámetro de la pista", "decided_by": BY}, version=self.v1.uid)
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            return store_.change(conn, key, version=self.v1.uid, **changes)
 
     def recompute_all(self) -> list[str]:
         """«Recalcular lo obsoleto» de V01: lo que repite, unidad a unidad y en su orden (los uid de las operaciones nuevas); ninguna unidad falla."""

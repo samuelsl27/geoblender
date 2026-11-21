@@ -4385,6 +4385,9 @@ _POINT_REFERENCES: Mapping[str, tuple[tuple[RoadParam, str], ...]] = MappingProx
 """Los valores que son **un texto con el código de otra entidad**, por tipo (spec 017, T22b; hallazgo C-4 con la pista), con el aviso de lo que se pierde: el origen de una pista
 (``RDW-001@100,5``, un punto del eje de otra pista) y su destino (``entity:PLT-001``, una entidad). Traer las entidades de otra versión los re-apunta como la partida y el apoyo
 (:func:`bring_entities`); el nombre de un punto de la capa no es una referencia y se conserva."""
+_NAME_ROW_KINDS = frozenset({"road"})
+"""Los tipos cuya operación **no lee el nombre** de la entidad ni nada que lo lea lo declara (la pista: no declara, D-15) y que, por eso, no tienen la fila del proyecto de su nombre que pide
+«Cambiar parámetro…» para renombrarla (spec 017, T29c): la crea quien las crea o las trae (``road_store.ensure_name_row``; aquí, :func:`bring_entities`)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -4692,5 +4695,8 @@ def bring_entities(project: StoreProject, source_version: Version | str, target_
             store.create(conn, row.key, row.value, kind=kind, source=row.record.source,  # type: ignore[arg-type]
                          source_kind=row.record.source_kind, decided_by=row.record.decided_by,
                          decided_at=row.record.decided_at, reason=row.reason, version=target.uid)
+        for item, entry in zip(brought, chosen, strict=True):  # la fila del proyecto del nombre de la pista, que pide «Cambiar parámetro…» para renombrarla (spec 017, T29c)
+            if entry.record.kind in _NAME_ROW_KINDS:
+                store.ensure_default(conn, entity_key(item.code, PlatformParam.NAME), geoblender_version=project.session.geoblender_version)
     done = Notice("des.entity_bring_done", {"count": len(brought), "source": source.code, "version": target.code})
     return Brought(source.code, target.code, label, tuple(brought), (done, *notices))
