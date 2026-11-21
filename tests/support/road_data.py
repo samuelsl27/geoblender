@@ -48,6 +48,9 @@ caben todos en el mismo proyecto como rejillas distintas y comparten las capas.
 - **Los oráculos propios** (:func:`oracle_slope_pct`, :func:`oracle_reachable`, :func:`erode`, :func:`opening`): la
   pendiente local, el alcance 4-conexo y la apertura de ancho, hechos aquí para comprobar los datos (y las tareas que los usan), no con el
   código de ``road_access``.
+- **Un trabajo de accesibilidad y la apertura con un disco exacto** (:func:`access_job`, :func:`oracle_disc_opening`; T15): un ``AccessJob`` sobre cualquier rejilla y superficie, con los
+  puntos de entrada locales, y la apertura de A10 hecha a mano (la erosión y la dilatación como el ``y`` y el ``o`` de la máscara vista desde cada desplazamiento del disco),
+  independiente de ``design.morphology``.
 - **La sección tipo** (:func:`straight_section_by_hand`, :func:`oracle_section`; T12, CE-017-06): la calzada, el arcén y el caballón de un
   eje recto a mano (fórmulas cerradas) y de una poligonal cualquiera por fuerza bruta (el tramo más próximo uno a uno, sin teselas), en las
   mismas celdas, con un terreno de fórmula cerrada para el lado del arcén; independientes de ``design.road_section``.
@@ -933,6 +936,57 @@ def opening(mask: np.ndarray, steps: int) -> np.ndarray:
     «apertura con un disco» de A10 hace con el ancho mínimo, en pequeño; quita lo más fino que ``2·steps + 1``
     celdas."""
     return dilate(erode(mask, steps), steps)
+
+
+def _shifted(mask: np.ndarray, d_row: int, d_col: int, fill: bool) -> np.ndarray:
+    """``mask`` visto desde la celda desplazada ``(d_row, d_col)``: ``found[i, j] = mask[i + d_row, j + d_col]`` y ``fill`` donde esa celda cae fuera de la rejilla."""
+    rows, columns = mask.shape
+    found = np.full(mask.shape, fill, dtype=bool)
+    i0, i1 = max(0, -d_row), min(rows, rows - d_row)
+    j0, j1 = max(0, -d_col), min(columns, columns - d_col)
+    if i0 < i1 and j0 < j1:
+        found[i0:i1, j0:j1] = mask[i0 + d_row:i1 + d_row, j0 + d_col:j1 + d_col]
+    return found
+
+
+def disc_offsets(radius_m: float, cell_m: float) -> tuple[tuple[int, int], ...]:
+    """Los desplazamientos ``(fila, columna)`` de un disco **exacto** de radio ``radius_m`` m sobre celdas de ``cell_m`` m: los de ``d_fila² + d_columna² ≤ (radio/celda)²``.
+    El cociente se toma tal cual, sin tolerancia: los casos de las pruebas son de radios exactos en binario (2,0 celdas, 1,5…)."""
+    reach = radius_m / cell_m
+    whole = math.floor(reach)
+    return tuple((i, j) for i in range(-whole, whole + 1) for j in range(-whole, whole + 1) if i * i + j * j <= reach * reach)
+
+
+def oracle_disc_opening(mask: np.ndarray, radius_m: float, cell_m: float) -> np.ndarray:
+    """La apertura de ``mask`` con el disco exacto de :func:`disc_offsets`, **a mano** y sin ``design.morphology``: la erosión es el ``y`` lógico de la máscara vista desde
+    cada desplazamiento del disco y la dilatación, el ``o``; lo que cae fuera de la rejilla no cuenta (el elemento neutro de cada una, como dice A10). Es el «ancho mínimo
+    transitable» de RF-017-24: lo que un disco de ese radio puede tocar por dentro."""
+    found = np.asarray(mask, dtype=bool)
+    offsets = disc_offsets(radius_m, cell_m)
+    eroded = np.ones(found.shape, dtype=bool)
+    for d_row, d_col in offsets:
+        eroded &= _shifted(found, d_row, d_col, True)
+    opened = np.zeros(found.shape, dtype=bool)
+    for d_row, d_col in offsets:
+        opened |= _shifted(eroded, d_row, d_col, False)
+    return opened
+
+
+def access_job(grid: Any, surface: np.ndarray, entries: Sequence[tuple[float, float]], *, untouchable: np.ndarray | None = None, access: AccessData = ACCESS,
+               final: np.ndarray | None = None, berms: Sequence[Any] = (), platforms: Sequence[Any] = (), zones: Sequence[Any] = (),
+               layer: str = ENTRIES_LAYER, name: str = "Accesibilidad de prueba") -> Any:
+    """Un ``AccessJob`` (``ACC-001``) sobre ``grid`` con la superficie ``surface`` (m; ``nan``, sin dato), los puntos de entrada ``entries`` **locales** ``(x, y)`` (se
+    llaman ``E1``, ``E2``… y pasan a absolutas), los umbrales de ``access`` (por defecto, los de la referencia) y, si se dan, lo intocable, la superficie final de una cantera, las
+    bermas (``BermGrid``), las plataformas y las zonas «requiere acceso» (``AccessCells``). Sin lo que no se da: nada intocable y ninguna de las demás cosas."""
+    road_model = import_geoblender("design.road_model")
+    request = road_model.AccessRequest(name, road_model.LayerFields(layer, "nombre"), "gis_dtm_prueba", walk_slope_pct=access.walk_slope_pct,
+                                       walk_width_m=access.walk_width_m, min_berm_area_m2=access.min_berm_area_m2)
+    found = absolute(entries, grid) if len(entries) else np.empty((0, 2))
+    points = tuple(road_model.EntryPoint(f"E{number}", float(x), float(y)) for number, (x, y) in enumerate(found, start=1))
+    return road_model.AccessJob(
+        request=request, code="ACC-001", grid=grid, surface=np.asarray(surface, dtype=np.float64), entries=points,
+        untouchable=np.zeros(grid.shape, dtype=bool) if untouchable is None else untouchable, walk_slope_pct=access.walk_slope_pct,
+        walk_width_m=access.walk_width_m, min_berm_area_m2=access.min_berm_area_m2, final=final, berms=tuple(berms), platforms=tuple(platforms), zones=tuple(zones))
 
 
 def stations_by_hand(length_m: float, step_m: float) -> np.ndarray:

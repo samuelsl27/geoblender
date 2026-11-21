@@ -61,7 +61,9 @@ __all__ = [
     "Lowering",
     "Previous",
     "Volumes",
+    "max_tangents",
     "moved_cells",
+    "padded_rows",
     "report_steps",
     "volumes",
 ]
@@ -295,9 +297,10 @@ def volumes(start: np.ndarray, other: np.ndarray, geometry: Grid, min_thickness_
 # --- Inclinación y borde: una banda con sus filas vecinas --------------------------------------
 
 
-def _padded(values: np.ndarray, low: int, high: int) -> np.ndarray:
+def padded_rows(values: np.ndarray, low: int, high: int) -> np.ndarray:
     """Las filas ``low:high`` de ``values`` con una vuelta de ``NaN`` alrededor; las cotas no
-    finitas se ven como sin dato."""
+    finitas se ven como sin dato. Pública desde la spec 017 (T15: la pendiente local de la
+    accesibilidad la usa; antes ``_padded``, sin cambiar un resultado)."""
     padded = np.full((high - low + 2, values.shape[1] + 2), np.nan)
     inner = padded[1:-1, 1:-1]
     inner[...] = values[low:high]
@@ -305,9 +308,11 @@ def _padded(values: np.ndarray, low: int, high: int) -> np.ndarray:
     return padded
 
 
-def _max_tangents(padded: np.ndarray, dx: float, dy: float) -> np.ndarray:
+def max_tangents(padded: np.ndarray, dx: float, dy: float) -> np.ndarray:
     """La mayor pendiente (tangente) a las 8 vecinas con dato de cada celda de ``padded`` (``NaN``
-    sin ninguna): cuatro pares desplazados atribuidos a las dos celdas."""
+    sin ninguna): cuatro pares desplazados atribuidos a las dos celdas. Pública desde la spec 017
+    (T15: la usan la plataforma, la pista y la accesibilidad; antes ``_max_tangents``, sin cambiar
+    un resultado)."""
     height, width = padded.shape
     diagonal = math.hypot(dx, dy)
     best = np.full(padded.shape, np.nan)
@@ -445,9 +450,9 @@ def _report_units(start: np.ndarray, design: np.ndarray, geometry: Grid, allowed
         band = moved[first:last]
         if band.any():
             low, high = max(first - 1, 0), min(last + 1, rows)
-            padded = _padded(design, low, high)
+            padded = padded_rows(design, low, high)
             base = 1 + first - low
-            tangents = _max_tangents(padded, geometry.dx, geometry.dy)[
+            tangents = max_tangents(padded, geometry.dx, geometry.dy)[
                 base:base + (last - first), 1:cols + 1]
             pick = band & np.isfinite(tangents)
             if pick.any():

@@ -1111,7 +1111,7 @@ class PlanNamesTest(unittest.TestCase):
             "design.supported_edge": ("outside_notice", "order_notice", "clipped_notice", "no_data_notice"),
             "design.morphology": ("opening",),
             "design.grids": ("label_components", "label_components_steps", "nearest_value_steps"),
-            "design.report": ("_max_tangents",),
+            "design.report": ("max_tangents", "padded_rows"),
             "reserves.compliance": ("Counts", "Verdict", "Checker", "counts_of"),
             "reserves.compliance_store": ("select_bases", "verify_inputs", "verify_settings", "begin_verify",
                                           "check_sources", "freeze_findings"),

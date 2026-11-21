@@ -171,11 +171,14 @@ PENDING_015_API: frozenset[str] = frozenset({
     "check_road_profile_value", "road_half_width_m", "road_profile_key",
     "access_figures", "access_inputs", "access_params", "propose_figures", "road_figures", "road_inputs",
     "road_operation_defs", "road_params", "reproduce_road", "reproduce_road_access", "reproduce_road_propose",
+    # La 017, T15 (``report.max_tangents`` y ``report.padded_rows``, antes privadas ``_max_tangents`` y ``_padded``: las usa también la accesibilidad):
+    "max_tangents", "padded_rows",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 017, T04 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):
     "design.road_profiles", "design.road_model", "design.road_net", "design.road_route",
     "design.road_axis", "design.road_gradient", "design.road_section", "design.road_engrave",
+    "design.road_access",
 })
 
 

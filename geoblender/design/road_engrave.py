@@ -76,7 +76,7 @@ from .platform import (
     work_window,
 )
 from .preview import Notice
-from .report import REPORT_CELLS_PER_UNIT, _max_tangents, _padded, _thickness
+from .report import REPORT_CELLS_PER_UNIT, _thickness, max_tangents, padded_rows
 from .road_model import RoadJob
 from .road_profiles import RoadProfile, derived
 from .road_section import Section, SectionClass, section_window
@@ -553,8 +553,8 @@ def _units(job: RoadJob, section: Section, levels: np.ndarray, settings: _Settin
             low, high_row = max(first - 1, 0), min(last + 1, shape[0])
             start = 1 + first - low
             rows_of = slice(start, start + (last - first))
-            tangents = _max_tangents(_padded(surface, low, high_row), grid.dx, grid.dy)[rows_of, 1:shape[1] + 1]
-            own = _max_tangents(_padded(z, low, high_row), grid.dx, grid.dy)[rows_of, 1:shape[1] + 1]
+            tangents = max_tangents(padded_rows(surface, low, high_row), grid.dx, grid.dy)[rows_of, 1:shape[1] + 1]
+            own = max_tangents(padded_rows(z, low, high_row), grid.dx, grid.dy)[rows_of, 1:shape[1] + 1]
             with np.errstate(invalid="ignore"):
                 limit = np.where(z[first:last] > surface[first:last], limit_cut, limit_fill)
                 degrees = np.degrees(np.arctan(tangents))

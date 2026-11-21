@@ -177,7 +177,7 @@ from .quarry import (
     axis_paths,
     corridor_window,
 )
-from .report import REPORT_CELLS_PER_UNIT, Previous, _max_tangents, _padded, _thickness
+from .report import REPORT_CELLS_PER_UNIT, Previous, _thickness, max_tangents, padded_rows
 from .seeds import pace_progress
 from .zones import _paint, _polygon_spans
 
@@ -1838,9 +1838,9 @@ def _edge_units(job: PlatformJob, footprint: Footprint, applied: Applied, settin
             low, high = max(first - 1, 0), min(last + 1, shape[0])
             start = 1 + first - low
             rows_of = slice(start, start + (last - first))
-            tangents = _max_tangents(_padded(surface, low, high), grid.dx, grid.dy)[
+            tangents = max_tangents(padded_rows(surface, low, high), grid.dx, grid.dy)[
                 rows_of, 1:shape[1] + 1]
-            own = _max_tangents(_padded(z, low, high), grid.dx, grid.dy)[rows_of, 1:shape[1] + 1]
+            own = max_tangents(padded_rows(z, low, high), grid.dx, grid.dy)[rows_of, 1:shape[1] + 1]
             with np.errstate(invalid="ignore"):
                 degrees = np.degrees(np.arctan(tangents))
                 over = band & (degrees > limit) & (tangents > own)
