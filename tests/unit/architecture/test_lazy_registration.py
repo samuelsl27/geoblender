@@ -95,6 +95,9 @@ HEAVY: frozenset[str] = frozenset({
     "design.road_gradient",
     # La sección tipo de la 017 (spec 017, T12; huella, lados y cotas con numpy): la pide quien calcula una pista; ``design.model`` y el arranque no la importan.
     "design.road_section",
+    # El grabado de la sección y su borde con dos ángulos de la 017 (spec 017, T13; envolventes y alcance de la 013, copia de ``platform._edge_units``): lo pide quien
+    # calcula una pista; ``design.model`` y el arranque no lo importan.
+    "design.road_engrave",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 

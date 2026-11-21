@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Los mensajes de la pista y de la accesibilidad de la 017 (spec 017, T02; RF-017-04 a 07, 12, 14, 16, 17, 18 y 22;
+"""Los mensajes de la pista y de la accesibilidad de la 017 (spec 017, T02 y T13; RF-017-04 a 07, 12, 14, 16, 17, 18, 21 y 22;
 plan 017 §5.1 y §5.5; principio 10).
 
 Un código ``des.road_*`` o ``des.access_*`` por cada rechazo y aviso de la spec, con su ``msgid`` en inglés y su texto
@@ -84,6 +84,9 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.road_carriageway_masks": ("warning", "RF-017-22", {"entity", "area", "difference", "blocker", *POSITION}),
     "des.road_carriageway_entity": ("warning", "RF-017-22", {"entity", "area", "difference", "blocker", *POSITION}),
     "des.road_carriageway_height": ("warning", "RF-017-22", {"entity", "area", "difference", "height", *POSITION}),
+    # RF-017-21 (T13): la pared del borde de la pista, más empinada que su ángulo de desmonte o de terraplén más la tolerancia de cara.
+    "des.road_edge_steep": ("warning", "RF-017-21", {"entity", "cells", "cut_angle", "fill_angle", "tolerance", "max", "at_reach", "reach", "at_masks",
+                                                      "other", *POSITION}),
     # «Apoyo retirado» de cada tipo (``EntityType.removed``; RF-015-17).
     "des.road_support_removed": ("note", "RF-015-17", {"name"}),
     "des.access_support_removed": ("note", "RF-015-17", {"name"}),

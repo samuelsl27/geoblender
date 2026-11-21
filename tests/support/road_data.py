@@ -51,6 +51,9 @@ caben todos en el mismo proyecto como rejillas distintas y comparten las capas.
 - **La sección tipo** (:func:`straight_section_by_hand`, :func:`oracle_section`; T12, CE-017-06): la calzada, el arcén y el caballón de un
   eje recto a mano (fórmulas cerradas) y de una poligonal cualquiera por fuerza bruta (el tramo más próximo uno a uno, sin teselas), en las
   mismas celdas, con un terreno de fórmula cerrada para el lado del arcén; independientes de ``design.road_section``.
+- **El grabado** (:func:`axis_job`, :func:`hand_engrave`; T13, CE-017-01): un ``RoadJob`` en el modo «sobre un eje» y el grabado de una sección a su
+  rasante **a mano** (un bucle por celda de la sección para lo que se mueve y su causa; el borde por fuerza bruta con ``design_oracles``: la
+  envolvente de todas las semillas y la distancia al alcance), independiente de ``design.road_engrave``.
 - **El proyecto** (:func:`project_template`, :class:`RoadProjectCase`): el de la cantera de la 015 con los terrenos
   como rejillas (:data:`RASTERS`) y las capas. Se crea **una vez por proceso** y paso de rejilla (en ≤ 2 s de CPU:
   :data:`BUILD_BUDGET_S`, lo que añade a la cantera de la 015) y cada clase trabaja en su copia. Las zonas «requiere
@@ -80,6 +83,7 @@ import numpy as np
 
 from tests.support import constraints_fixtures as cfx
 from tests.support import constraints_project as cp
+from tests.support import design_oracles as oracles
 from tests.support import entity_fixtures as efx
 from tests.support import quarry_fixtures as qfx
 from tests.support import stockpile_data as sdata
@@ -1065,6 +1069,112 @@ def oracle_section(grid: Any, window: tuple[slice, slice], path: np.ndarray, sta
     found = _kinds(lateral, shoulder_right, inside, carriageway_m, shoulder_m, berm_m)
     arc = stations[segment] + along / length[segment] * (stations[segment + 1] - stations[segment])
     return SectionByHand(found.kind, found.side, np.where(found.kind != KIND_NONE, arc, np.nan), found.lateral)
+
+
+# --- El grabado, a mano (T13; CE-017-01, RF-017-21, 22 y 23) ---------------------------------------------------------
+
+ENGRAVE_LEVEL_TOL_M = 0.001
+"""Lo que una celda de la calzada puede separarse de su rasante y seguir «en ella» (RF-017-22: 1 mm), copia independiente de ``road_engrave``."""
+ENGRAVE_CAUSES: tuple[str, ...] = ("cut_allowed", "fill_allowed", "max_height")
+"""Las tres causas de una celda de la calzada que no queda en su rasante (por el valor de ``road_engrave.EngraveCause``)."""
+
+
+def axis_job(grid: Any, surface: np.ndarray, line: np.ndarray, *, profile: ProfileData = PROFILE, cut_allowed: np.ndarray | None = None,
+             fill_allowed: np.ndarray | None = None, untouchable: np.ndarray | None = None, avoid_weight: np.ndarray | None = None) -> Any:
+    """Un ``RoadJob`` en el modo «sobre un eje» (sin ruta, sin altura máxima de desmonte y terraplén) sobre ``grid`` con la superficie de partida
+    ``surface`` y la línea absoluta ``line`` (``(k, 2)``): el perfil ``profile`` y, si no se dan, el corte y el relleno admitidos en todas partes, nada
+    intocable y ninguna zona «preferible no afectar»."""
+    road_model = import_geoblender("design.road_model")
+    shape = grid.shape
+    request = road_model.RoadRequest("Pista de prueba", road_model.LayerFields("gis_fea_pistas_ejes", "nombre"), "on_axis", "pista_principal", "gis_dtm_prueba")
+    return road_model.RoadJob(
+        request=request, code="RDW-001", profile=road_profile(profile), grid=grid, start=np.asarray(surface, dtype=np.float64),
+        cut_allowed=np.ones(shape, dtype=bool) if cut_allowed is None else cut_allowed,
+        fill_allowed=np.ones(shape, dtype=bool) if fill_allowed is None else fill_allowed,
+        untouchable=np.zeros(shape, dtype=bool) if untouchable is None else untouchable,
+        geometry=road_model.RoadGeometry(line=np.asarray(line, dtype=np.float64)), avoid_weight=avoid_weight)
+
+
+@dataclass(frozen=True, slots=True)
+class EngraveByHand:
+    """El grabado de una pista calculado a mano en las celdas de una ventana: la superficie tras aplicar la sección (``applied``) y con el borde
+    (``surface``), las celdas de la sección en su rasante (``at_level``), las que el alcance deja tocar (``reachable``), las que el borde mueve
+    (``changed``) y las que sus máscaras no dejan mover (``held``), las celdas de la calzada que no quedan en su rasante por causa (``off``: el valor de
+    ``ENGRAVE_CAUSES`` → máscara), el corte y el relleno de la sección y del borde (m³), las alturas máximas de desmonte y de terraplén (m) y la mayor
+    pared del borde (m)."""
+
+    applied: np.ndarray
+    surface: np.ndarray
+    at_level: np.ndarray
+    reachable: np.ndarray
+    changed: np.ndarray
+    held: np.ndarray
+    off: Mapping[str, np.ndarray]
+    section_cut_m3: float
+    section_fill_m3: float
+    edge_cut_m3: float
+    edge_fill_m3: float
+    cut_height_max_m: float
+    fill_height_max_m: float
+    wall_max_m: float
+
+
+def hand_engrave(grid: Any, window: tuple[slice, slice], start: np.ndarray, level: np.ndarray, cells: np.ndarray, kind: np.ndarray, cut_ok: np.ndarray,
+                 fill_ok: np.ndarray, *, cut_deg: float, fill_deg: float, reach_m: float, mesh_factor: float = 1.0,
+                 max_height_m: float | None = None) -> EngraveByHand:
+    """El grabado de la sección ``cells`` (las celdas de la ventana ``window``, con su ``kind`` de ``KIND_*``) a la rasante ``level`` (m, de la forma de la
+    ventana) sobre ``start`` (la rejilla entera), **a mano**: un bucle de Python por celda de la sección para lo que se mueve y la causa de lo que no
+    —bajar donde ``cut_ok``, subir donde ``fill_ok`` y solo si el movimiento no pasa de ``max_height_m``—, y para el borde la **fuerza bruta**
+    (``design_oracles.brute_force_euclidean``: ``mín_q [f_q + t·|p − q|]`` de todas las semillas, la distancia al alcance y la descendente, con
+    ``t = tan(ángulo) · factor de malla``). ``cut_ok`` y ``fill_ok`` son de la forma de la ventana (ya sin lo intocable). Con la regla del plan 017 §5.4
+    A8 y A9, no con el código de ``road_engrave``: cada cifra, como suma de las celdas con ``math.fsum``."""
+    z = np.asarray(start, dtype=np.float64)[window]
+    shape = z.shape
+    area = grid.cell_area
+    applied = z.copy()
+    at_level = np.zeros(shape, dtype=bool)
+    off = {name: np.zeros(shape, dtype=bool) for name in ENGRAVE_CAUSES}
+    cuts: list[float] = []
+    fills: list[float] = []
+    for row, col in zip(*np.nonzero(cells), strict=True):
+        terrain, wanted = float(z[row, col]), float(level[row, col])
+        gap = terrain - wanted
+        too_high = max_height_m is not None and abs(gap) > max_height_m + 1e-9
+        new = wanted if (not too_high and ((gap > 0.0 and cut_ok[row, col]) or (gap < 0.0 and fill_ok[row, col]))) else terrain
+        applied[row, col] = new
+        left = new - wanted
+        if abs(left) <= ENGRAVE_LEVEL_TOL_M:
+            at_level[row, col] = True
+        elif kind[row, col] == KIND_CARRIAGEWAY:
+            denied = not (cut_ok[row, col] if left > 0.0 else fill_ok[row, col])
+            off[("cut_allowed" if left > 0.0 else "fill_allowed") if denied else "max_height"][row, col] = True
+        (cuts if terrain - new > 0.0 else fills).append(abs(terrain - new))
+    unit = float(grid.dx)
+    distance = oracles.brute_force_euclidean(np.where(at_level, 0.0, np.nan), 1.0, unit)
+    seeds = np.where(at_level, applied, np.nan)
+    up = oracles.brute_force_euclidean(seeds, math.tan(math.radians(cut_deg)) * mesh_factor, unit, direction="up")
+    down = oracles.brute_force_euclidean(seeds, math.tan(math.radians(fill_deg)) * mesh_factor, unit, direction="down")
+    with np.errstate(invalid="ignore"):
+        reachable = (distance <= reach_m) & ~cells & np.isfinite(z)
+        want_cut = reachable & (z > up)
+        want_fill = reachable & (z < down)
+    changed = want_cut & cut_ok
+    held = want_cut & ~cut_ok
+    final = z.copy()
+    final[changed] = up[changed]
+    filled = want_fill & fill_ok
+    held |= want_fill & ~fill_ok
+    final[filled] = down[filled]
+    changed |= filled
+    surface = np.where(changed, final, applied)
+    moved = (z - surface)[changed]
+    edge_cuts, edge_fills = moved[moved > 0.0], -moved[moved < 0.0]
+    return EngraveByHand(
+        applied=applied, surface=surface, at_level=at_level, reachable=reachable, changed=changed, held=held, off=off,
+        section_cut_m3=math.fsum(cuts) * area, section_fill_m3=math.fsum(fills) * area, edge_cut_m3=math.fsum(edge_cuts) * area,
+        edge_fill_m3=math.fsum(edge_fills) * area,
+        cut_height_max_m=max([*cuts, *edge_cuts.tolist()], default=0.0), fill_height_max_m=max([*fills, *edge_fills.tolist()], default=0.0),
+        wall_max_m=float(np.abs(moved).max()) if moved.size else 0.0)
 
 
 # --- El proyecto -----------------------------------------------------------------------------------------------

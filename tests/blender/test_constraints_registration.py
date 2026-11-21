@@ -660,7 +660,9 @@ HEAVY: tuple[str, ...] = (
     # La rasante acotada de la 017 (spec 017, T11): la pide quien da la rasante a un eje.
     "design.road_gradient",
     # La sección tipo de la 017 (spec 017, T12): la pide quien calcula una pista.
-    "design.road_section")
+    "design.road_section",
+    # El grabado de la sección y su borde con dos ángulos de la 017 (spec 017, T13): lo pide quien calcula una pista.
+    "design.road_engrave")
 """Lo que habilitar no importa (los de la 012 que fija ``tests/unit/architecture/test_lazy_registration``,
 y los de la 016 y la 017, que esa prueba mira por sus importaciones de nivel de módulo)."""
 LIGHT: tuple[str, ...] = ("core.constraints.provenance", "gis.masks.provenance",

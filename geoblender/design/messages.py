@@ -3160,6 +3160,25 @@ CATALOG: tuple[Message, ...] = (
         "una calzada con escalones o huecos no es una pista.",
         "warning",
     ),
+    # RF-017-21 (con RF-015-13): la pared del borde de la pista, más empinada que su ángulo de desmonte o de terraplén más la tolerancia de cara. Los demás
+    # avisos del borde (el salto creado, lo que llega al borde de la rejilla, el orden con la cantera) usan los de la 013 a la 015.
+    Message(
+        "des.road_edge_steep",
+        "Haul road «{entity}»: {cells} cells of its edge are steeper than its cut angle ({cut_angle}°) or its fill angle ({fill_angle}°) plus the face "
+        "tolerance ({tolerance}°); the worst is {max}°, at x = {x} m, y = {y} m: {at_reach} at the reach limit ({reach} m), {at_masks} next to what the masks "
+        "do not let move and {other} because of the haul road itself. Widen the reach or check the slope; a wall like that is only admitted at those limits.",
+        "Pista «{entity}»: {cells} celdas de su borde quedan más empinadas que su ángulo de desmonte ({cut_angle}°) o de terraplén ({fill_angle}°) más la "
+        "tolerancia de cara ({tolerance}°); la peor, {max}°, en x = {x} m, y = {y} m: {at_reach} en el límite del alcance ({reach} m), {at_masks} junto a lo "
+        "que las máscaras no dejan mover y {other} por la propia pista. Amplíe el alcance o revise la ladera; una pared así solo se admite en esos límites.",
+        "warning",
+        count="cells",
+        one_msgid="Haul road «{entity}»: {cells} cell of its edge is steeper than its cut angle ({cut_angle}°) or its fill angle ({fill_angle}°) plus the face "
+        "tolerance ({tolerance}°); it is {max}°, at x = {x} m, y = {y} m: {at_reach} at the reach limit ({reach} m), {at_masks} next to what the masks "
+        "do not let move and {other} because of the haul road itself. Widen the reach or check the slope; a wall like that is only admitted at those limits.",
+        one_es="Pista «{entity}»: {cells} celda de su borde queda más empinada que su ángulo de desmonte ({cut_angle}°) o de terraplén ({fill_angle}°) más la "
+        "tolerancia de cara ({tolerance}°); es de {max}°, en x = {x} m, y = {y} m: {at_reach} en el límite del alcance ({reach} m), {at_masks} junto a lo "
+        "que las máscaras no dejan mover y {other} por la propia pista. Amplíe el alcance o revise la ladera; una pared así solo se admite en esos límites.",
+    ),
     # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase): la pista y la accesibilidad no declaran restricción
     # alguna (D-15), así que no se usa; existe, como el de la detección de acopios.
     Message(
