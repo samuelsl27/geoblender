@@ -107,6 +107,7 @@ __all__ = [
     "RemovalSummary",
     "RestingItem",
     "RestingLine",
+    "RoadSummary",
     "SectorStatus",
     "StockpileLine",
     "StockpilePreview",
@@ -883,6 +884,56 @@ class ButtressSummary:
     height_max_y: float | None
     protect: bool
     guard_m: float | None
+    notices: tuple[Notice, ...]
+    obsolete: tuple[Obsolete, ...] = ()
+
+    def lines(self, language: str = "es") -> tuple[str, ...]:
+        """Todo lo que dice el resumen, línea a línea, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices)
+
+    def warnings(self, language: str = "es") -> tuple[str, ...]:
+        """Solo los avisos, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices if notice.severity == "warning")
+
+
+# --- El resumen de la pista (spec 017, T20b; RF-017-23, RF-017-17, RF-017-22, RF-017-12, RF-015-03; plan 017 §5.8 H-10) ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RoadSummary:
+    """El resumen de «Calcular» una pista (RF-015-03, RF-017-23): su ``name`` y su ``code`` (``RDW-001``), la ``version`` (su código), el ``mode`` (``trace``, ``on_axis`` o ``axis_3d``), el código del
+    ``profile``, las ``figures`` que se registrarán (CALCULADO, con su unidad y el ámbito de la entidad), la longitud del eje (``length_m``), las cotas de inicio y de fin (``start_level_m`` y
+    ``end_level_m``), la pendiente media (``gradient_mean_pct``) y la máxima (``gradient_max_pct``) con su abscisa y su lugar (``gradient_max_station_m``, ``gradient_max_x``, ``gradient_max_y``), el radio mínimo
+    (``radius_min_m``; ``None`` sin curvas) y las curvas, el corte y el relleno de la sección y del borde **juntos** (``cut_m3`` y ``fill_m3``) y el neto (``net_m3``), **la holgura del pasillo** de la ruta
+    (``margin_m``, m: la ruta cambia con ella, H-10; ``None`` fuera de «trazar», que no busca ruta), si la pendiente media pasa de la del perfil y pide confirmar con un motivo
+    (``needs_mean_confirmation``, RF-017-17; el límite del perfil, ``mean_limit_pct``), si hay calzada que no queda en su rasante y pide confirmar (``needs_carriageway_confirmation``, RF-017-22; su área,
+    ``carriageway_area_m2``), los ``notices`` en el orden en que se enseñan (la nota de la ruta, los avisos del cálculo con su lugar, los de la calzada con la restricción o la entidad que lo impide, lo que no
+    se mueve por una restricción y, al final, lo que quedará obsoleto) y ``obsolete``, lo que quedará obsoleto al crearla (si sustituye a otra operación), con su lista entera."""
+
+    name: str
+    code: str
+    version: str
+    mode: str
+    profile: str
+    figures: tuple[FigureSpec, ...]
+    length_m: float
+    start_level_m: float
+    end_level_m: float
+    gradient_mean_pct: float
+    gradient_max_pct: float
+    gradient_max_station_m: float
+    gradient_max_x: float
+    gradient_max_y: float
+    radius_min_m: float | None
+    curves: int
+    cut_m3: float
+    fill_m3: float
+    net_m3: float
+    margin_m: float | None
+    needs_mean_confirmation: bool
+    mean_limit_pct: float
+    needs_carriageway_confirmation: bool
+    carriageway_area_m2: float
     notices: tuple[Notice, ...]
     obsolete: tuple[Obsolete, ...] = ()
 

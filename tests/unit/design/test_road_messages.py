@@ -111,6 +111,14 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # RF-017-21 (T13): la pared del borde de la pista, más empinada que su ángulo de desmonte o de terraplén más la tolerancia de cara.
     "des.road_edge_steep": ("warning", "RF-017-21", {"entity", "cells", "cut_angle", "fill_angle", "tolerance", "max", "at_reach", "reach", "at_masks",
                                                       "other", *POSITION}),
+    # T20b: la huella que la rejilla recorta (RF-015-13), la holgura del pasillo en el resumen (H-10), las dos confirmaciones que faltan (RF-017-17 y 22) y el nombre de lo que impide mover la calzada
+    # cuando ninguna zona lo explica (una nota que va entre los valores de otro aviso: ``preview.Named``).
+    "des.road_footprint_clipped": ("warning", "RF-015-13", {"entity", "cells", "area", *POSITION}),
+    "des.road_route_margin": ("note", "RF-017-10", {"entity", "mesh", "margin", "expanded", "budget"}),
+    "des.road_mean_unconfirmed": ("error", "RF-017-17", {"entity", "mean", "limit"}),
+    "des.road_mean_reason": ("error", "RF-017-17", {"entity", "mean", "limit"}),
+    "des.road_carriageway_unconfirmed": ("error", "RF-017-22", {"entity", "area", "difference"}),
+    "des.road_blocker_masks": ("note", "RF-017-22", set()),
     # «Apoyo retirado» de cada tipo (``EntityType.removed``; RF-015-17).
     "des.road_support_removed": ("note", "RF-015-17", {"name"}),
     "des.access_support_removed": ("note", "RF-015-17", {"name"}),
@@ -118,7 +126,7 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.road_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.access_declared_reason": ("note", "RF-015-10", {"name"}),
 }
-"""Los códigos de la T02 (y los de la T13 y la T17) con su gravedad, su RF y lo que su texto nombra."""
+"""Los códigos de la T02 (y los de la T13, la T17 y la T20b) con su gravedad, su RF y lo que su texto nombra."""
 PREFIXES = ("des.road_", "des.access_")
 PROFILE_CODES = frozenset(code for code in CODES if code.startswith("des.road_profile_")) - {"des.road_profile_unknown"}
 """Los rechazos del perfil mismo (no de la pista que lo nombra: ``des.road_profile_unknown`` es de la pista)."""
@@ -194,7 +202,8 @@ class RoadMessagesTest(unittest.TestCase):
                   "z_origin": 120.0, "z_destination": 128.5, "gradient": 12.5, "margin": 60.0, "budget": 5000000,
                   "expanded": 5000001, "length_before": 14.0, "length_after": 18.0, "fitted": 9.0, "minimum": 12.0,
                   "length": 200.0, "needed": 300.0, "drop": 30.0, "name": "Pista 1",
-                  "fields": "nombre, cota", "version": "V01", "step": 2.0, "target": "PLT-001", "points": 2, "expected": "puntos"}
+                  "fields": "nombre, cota", "version": "V01", "step": 2.0, "target": "PLT-001", "points": 2, "expected": "puntos",
+                  "mean": 10.5, "area": 60.0, "difference": 0.4}
         for code, (severity, _rf, _marks) in CODES.items():
             with self.subTest(code=code):
                 if severity == "error":

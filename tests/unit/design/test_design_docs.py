@@ -179,6 +179,8 @@ PENDING_015_API: frozenset[str] = frozenset({
     "access_request",
     # La 017, T19 (los ajustes de la pista; lo demás de la T19 es de ``design.road_store``, un módulo pendiente):
     "road_settings",
+    # La 017, T20b («Calcular» una pista: ``steps.road_run`` y el resumen ``preview.RoadSummary``; lo demás de la T20b es de ``design.road_store``, un módulo pendiente):
+    "road_run", "RoadSummary",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 017, T04 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):

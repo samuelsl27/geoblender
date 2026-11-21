@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Calcular la pista por pasos: la orquestación por modos, las cifras de RF-017-23 y el ``RoadOutcome`` (spec 017, T20 (a); HU-017-1 y HU-017-2; RF-017-23, 17, 22, 12, 05 (b), 06, 14 y 16;
-RF-015-03, RF-015-09, RF-015-13 y RF-015-29; RNF-017-04, 06 y 07; plan 017 §5.3.2, §5.4 A0, §5.7 P-4 y P-14 y §5.8 H-10).
+"""Calcular la pista por pasos: la orquestación por modos, las cifras de RF-017-23 y el ``RoadOutcome`` (spec 017, T20 (a)), y la ``Calculation``, las dos confirmaciones y el resumen (T20b; HU-017-1 y
+HU-017-2; RF-017-23, 17, 22, 12, 05 (b), 06, 14 y 16; RF-015-03, RF-015-09, RF-015-13 y RF-015-29; RNF-017-04, 06 y 07; plan 017 §5.3.2, §5.4 A0, §5.7 P-4 y P-14 y §5.8 H-10).
 
 ``road_store.road_compute_steps(job, common, ...)`` es el cálculo que comparten «Calcular», el recálculo y la reproducción: encadena, por modo (P-14), la red 2D desde el destino y desde el origen y el
 pasillo, la ruta 3D con su presupuesto (solo «trazar»), el eje con curvas, la rasante, la ventana de trabajo (A0), la sección y el grabado, **sin proyecto y sin escribir nada**, por pasos de ≤ 0,05 s con
@@ -8,16 +8,26 @@ su progreso y cancelable. Lo que se comprueba aquí es **la orquestación**: que
 contrasta cada pieza con el cálculo a mano en las mismas celdas), las veintitrés cifras con sus valores de a mano de CE-017-01, CE-017-02 y CE-017-03, los rechazos como ``DesignError`` de la persona
 (RF-012, RF-014, RF-016, RF-015-09), los avisos que añade (la media por encima de pm, RF-017-05 (b), la magnitud) y que cerrar a mitad no deja nada ni toca ninguna entrada.
 
-Todo en la rejilla de 2 m de la cantera sintética (200 × 200 celdas; ``rd.grid_of(2.0)``): un cálculo cuesta ≈ 0,1 s. La ``Calculation`` (``road_run``), las confirmaciones y el resumen son de la
-T20b (parte (b) de ``test_road_operation``); la pista de E1 y la rampa a una cota, con la cantera y la malla de 4 m, van a ``milestone_road_operation``.
+Todo en la rejilla de 2 m de la cantera sintética (200 × 200 celdas; ``rd.grid_of(2.0)``): un cálculo cuesta ≈ 0,1 s. La pista de E1 y la rampa a una cota, con la cantera y la malla de 4 m, van a
+``milestone_road_operation``.
+
+**La parte (b)** (T20b), **sin proyecto** (el «verde»): la huella que la rejilla recorta (``des.road_footprint_clipped``; RF-015-13), las dos confirmaciones —la pendiente media por encima de pm con su
+motivo, RF-017-17, y la calzada que no queda en su rasante, RF-017-22— con lo que se registra de quién y cuándo, la restricción o la entidad que impide mover la calzada, y el resumen con las cifras, la
+holgura del pasillo (H-10) y los avisos en su orden. La ``Calculation`` (``steps.road_run``) con el proyecto —Calcular no escribe, cerrar a mitad no deja nada, la causa de un «sin ruta», las confirmaciones
+sobre la ``Calculation``— es de ``milestone_road_calculate``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import datetime as dt
+import json
+import sqlite3
 import time
 import unittest
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -28,15 +38,21 @@ from tests.support import road_data as rd
 from tests.support.package import import_geoblender
 from tests.unit.design.test_road_no_route import strip_case
 
+access = import_geoblender("gis.masks.access")
+masks_zones = import_geoblender("gis.masks.zones")
 messages = import_geoblender("design.messages")
 params = import_geoblender("design.params")
 platform = import_geoblender("design.platform")
+preview = import_geoblender("design.preview")
 provenance = import_geoblender("design.provenance")
 report = import_geoblender("design.report")
 road_engrave = import_geoblender("design.road_engrave")
+road_axis = import_geoblender("design.road_axis")
 road_gradient = import_geoblender("design.road_gradient")
 road_model = import_geoblender("design.road_model")
 road_net = import_geoblender("design.road_net")
+road_profiles = import_geoblender("design.road_profiles")
+road_section = import_geoblender("design.road_section")
 road_store = import_geoblender("design.road_store")
 
 TOL = 1e-9
@@ -585,6 +601,453 @@ class AvoidAndMagnitudeTest(unittest.TestCase):
         self.assertGreaterEqual(len(outcome.off_level), 1)
         self.assertGreater(outcome.off_level[0].area_m2, 0.0)
         self.assertGreater(outcome.off_level[0].max_m, 0.0)
+
+
+# --- T20b: la huella que la rejilla recorta, las confirmaciones y el resumen (sin proyecto) -------------------------------------
+
+
+def clipped_of(outcome: Any) -> list[Any]:
+    """Los avisos de la huella que la rejilla recorta de un resultado."""
+    return [notice for notice in outcome.notices if notice.code == "des.road_footprint_clipped"]
+
+
+class ClippedFootprintTest(unittest.TestCase):
+    """RF-015-13 (último inciso: «la huella que la rejilla recorta»), RF-017-20, RF-017-23: la sección de una pista junto al borde de la rejilla sale de ella; lo de fuera no se calcula y se avisa, con
+    su área y su lugar, como la plataforma, el contrafuerte y el cuerpo apoyado."""
+
+    def test_a_a_road_along_the_north_edge_loses_the_rows_of_its_left_side_outside_the_grid(self) -> None:
+        """RF-015-13, RF-017-20: el eje de 200 m a 1 m del borde norte (y = 399 m; la rejilla acaba en 400 m) y el terreno sin dato al norte: el caballón va a la derecha (al sur) y el lado izquierdo, el
+        del borde, es la calzada sola (5,25 m: arcén 0). Las filas de fuera son las de los centros a 401 y 403 m (a 2 y 4 m del eje; la de 405 m está a 6 m), por los 100 centros de columna entre 100
+        y 300 m: 200 celdas, 800 m², la primera —de norte a sur y de oeste a este— en (101, 403). El aviso va **el primero** (no hay avisos del eje) y la sección que queda es la de dentro."""
+        job = axis_job(((100.0, 399.0), (300.0, 399.0)))
+        outcome = last(road_store.road_compute_steps(job, COMMON))
+        found = clipped_of(outcome)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(outcome.notices[0].code, "des.road_footprint_clipped")
+        values = found[0].values
+        columns = np.arange(101.0, 300.0, 2.0)  # los centros de celda de x entre 100 y 300 m (los extremos de la calzada son planos)
+        rows = np.arange(401.0, 410.0, 2.0)  # los centros de las filas de fuera de la rejilla (al norte de y = 400 m)
+        inside = np.abs(rows - 399.0) <= 10.5 / 2.0  # el lado del borde es la calzada sola: sin arcén
+        cells = columns.size * int(inside.sum())
+        self.assertEqual((columns.size, int(inside.sum()), cells), (100, 2, 200))
+        self.assertEqual((values["entity"], values["cells"], values["area"]), (ENTITY, cells, float(cells) * GRID.cell_area))
+        self.assertEqual((values["x"], values["y"]), tuple(float(value) for value in rd.absolute([(columns[0], rows[inside].max())], GRID)[0]))
+        self.assertEqual(found[0].severity, "warning")
+        self.assertTrue(bool(outcome.footprint.any()), "lo de dentro se calcula")
+
+    def test_a2_the_notice_goes_before_those_of_the_engraving_and_the_magnitude(self) -> None:
+        """RF-015-13: en el orden del resultado el aviso de lo que la rejilla recorta va tras los del eje y **antes** de los del grabado (el salto creado y sus tramos) y de la magnitud, como el de la huella
+        de la plataforma va antes de los de su borde; con el escalón del terreno la pista los tiene todos."""
+        job = axis_job(((100.0, 399.0), (300.0, 399.0)), terrain=rd.step_terrain(GRID))
+        outcome = last(road_store.road_compute_steps(job, COMMON))
+        codes = [notice.code for notice in outcome.notices]
+        self.assertTrue(outcome.engraved.notices and codes.count("des.road_footprint_clipped") == 1)
+        self.assertEqual(codes.index("des.road_footprint_clipped"), 0)
+        self.assertLess(codes.index("des.road_footprint_clipped"), min(codes.index(notice.code) for notice in outcome.engraved.notices))
+        self.assertLess(codes.index("des.edge_surface_step"), codes.index("des.magnitude_no_reference"))
+
+    def test_b_a_road_along_the_east_edge_loses_its_berm_side_columns(self) -> None:
+        """RF-015-13, RF-017-20, D-12: el eje de 200 m a 1 m del borde este (x = 399 m) hacia el norte: con el terreno sin dato fuera, el caballón (1 m) va a la derecha, al este, y el lado de fuera mide
+        5,25 + 1 = 6,25 m: las columnas de 401, 403 y 405 m (a 2, 4 y 6 m) por las 100 filas de 101 a 299 m: 300 celdas, 1.200 m², la primera en (401, 299)."""
+        job = axis_job(((399.0, 100.0), (399.0, 300.0)))
+        outcome = last(road_store.road_compute_steps(job, COMMON))
+        (notice,) = clipped_of(outcome)
+        columns = np.arange(401.0, 410.0, 2.0)
+        within = columns[np.abs(columns - 399.0) <= 10.5 / 2.0 + 1.0]
+        cells = within.size * np.arange(101.0, 300.0, 2.0).size
+        self.assertEqual(cells, 300)
+        self.assertEqual((notice.values["cells"], notice.values["area"]), (cells, 1200.0))
+        self.assertEqual((notice.values["x"], notice.values["y"]), tuple(float(value) for value in rd.absolute([(within.min(), 299.0)], GRID)[0]))
+
+    def test_b2_in_a_corner_the_strips_give_what_the_whole_extended_grid_gives(self) -> None:
+        """RF-015-13: una pista que acaba en la esquina nordeste de la rejilla sale por el norte y por el este: la cuenta por franjas (cuántas celdas y la primera, de norte a sur y de oeste a este)
+        es la de medir la sección entera sobre una rejilla ampliada (diez celdas por lado, el terreno sin dato fuera) y quedarse con lo que cae fuera de la rejilla; las dos franjas tienen celdas."""
+        job = axis_job(((330.0, 340.0), (399.0, 399.0)))
+        profile = job.profile
+        axis = road_axis.axis_of(job.geometry.line, profile.curve_radius_m, profile.min_radius_m, profile.station_step_m)
+        carriageway = road_profiles.derived(profile).carriageway_m
+        pad = 10
+        wide = type(GRID)(west=GRID.west - pad * GRID.dx, north=GRID.north + pad * GRID.dy, dx=GRID.dx, dy=GRID.dy, ncols=GRID.ncols + 2 * pad, nrows=GRID.nrows + 2 * pad)
+        whole = road_section.section_cells(axis, carriageway, profile.shoulder_m, profile.berm_m, np.pad(job.start, pad, constant_values=np.nan), wide)
+        rows, columns = np.nonzero(whole.cells)
+        rows, columns = rows + whole.window[0].start, columns + whole.window[1].start
+        out = ~((rows >= pad) & (rows < pad + GRID.nrows) & (columns >= pad) & (columns < pad + GRID.ncols))
+        north, east = int((out & (rows < pad)).sum()), int((out & (columns >= pad + GRID.ncols)).sum())
+        self.assertTrue(north > 0 and east > 0, "sale por el norte y por el este")
+        first = min(zip(rows[out].tolist(), columns[out].tolist(), strict=True))
+        found = last(road_section.clipped_steps(axis, carriageway, profile.shoulder_m, profile.berm_m, job.start, GRID))
+        self.assertEqual(found[0], int(out.sum()))
+        self.assertEqual((found[1], found[2]), (float(wide.west + (first[1] + 0.5) * wide.dx), float(wide.north - (first[0] + 0.5) * wide.dy)))
+
+    def test_c_a_section_that_stays_inside_the_grid_or_a_road_in_the_middle_has_no_notice(self) -> None:
+        """RF-015-13: una pista a 10 m del borde (la sección llega a 6,25 m) y la rampa de en medio no recortan nada: ningún aviso."""
+        near = last(road_store.road_compute_steps(axis_job(((100.0, 390.0), (300.0, 390.0))), COMMON))
+        self.assertEqual(clipped_of(near), [])
+        self.assertEqual(clipped_of(last(road_store.road_compute_steps(ramp_job(), COMMON))), [])
+
+    def test_d_the_budget_does_not_change_it_the_steps_are_short_and_the_text_has_both_languages(self) -> None:
+        """RNF-017-06, RF-015-02: con el presupuesto mínimo el aviso es el mismo y ninguna llamada del hilo pasa de 0,2 s; el texto, en español y en inglés (con su singular), no deja ningún marcador."""
+        job = axis_job(((100.0, 399.0), (300.0, 399.0)))
+        _steps, fine, slowest = run(job, budget_s=1e-9)
+        whole = last(road_store.road_compute_steps(job, COMMON))
+        self.assertEqual([(n.code, dict(n.values)) for n in clipped_of(fine)], [(n.code, dict(n.values)) for n in clipped_of(whole)])
+        self.assertLessEqual(slowest, 0.2)
+        (notice,) = clipped_of(whole)
+        for language, words in (("es", ("«Pista de prueba»", "recorta su huella", "800 m²", "200 celdas")), ("en", ("«Pista de prueba»", "cuts its footprint", "800 m²", "200 cells"))):
+            text = notice.text(language)
+            self.assertNotIn("{", text)
+            for word in words:
+                self.assertIn(word, text)
+        one = preview.Notice("des.road_footprint_clipped", {**notice.values, "cells": 1, "area": 4.0})
+        self.assertIn("(1 celda)", one.text("es"))
+        self.assertIn("(1 cell)", one.text("en"))
+
+
+A15_PROFILE = rd.profile_with(reach_m=12.5, max_gradient_pct=12.0)
+"""pd = 12 % con la pm = 10 % del perfil de referencia: la media de 10,5 % de la «opción A15» de la propiedad (N-15; D-6) la pasa."""
+
+
+def a15_job() -> Any:
+    """La pista «sobre un eje» de 200 m sobre un plano del 10,5 % (la «opción A15»): su media pasa de pm sin pasar de pd."""
+    x, _y = rd.local_centers(GRID)
+    return axis_job(line_of_ramp(), terrain=rd.RAMP_Z0_M + 0.105 * x, profile=A15_PROFILE)
+
+
+def restricted_job(**changes: Any) -> Any:
+    """La rampa con el 20 % transversal donde no se admite el corte en la caja de ``h1.MASK_BOX``: la calzada del norte no queda en su rasante."""
+    return AvoidAndMagnitudeTest.cross_job(cut_allowed=~rd.in_box(h1.MASK_BOX, GRID), **changes)
+
+
+def masks_of(code: str | None = None, ctype: str = "no_cut", box: tuple[float, float, float, float] = h1.MASK_BOX) -> Any:
+    """Las máscaras de la versión con una sola zona ``code`` de tipo ``ctype`` (o ninguna) en la caja ``box``, como las lee un ``MaskSet``."""
+    zones = {} if code is None else {code: masks_zones.Runs.from_mask(rd.in_box(box, GRID))}
+    types = {} if code is None else {code: ctype}
+    return access.MaskSet(GRID, "v-mano", "op-mano", access.MaskState.CURRENT, (), np.zeros(GRID.shape, dtype=np.uint16), zones=zones, ctypes=types)
+
+
+class ConfirmationsTest(unittest.TestCase):
+    """RF-017-17, RF-017-22, D-6: la pista no se crea sin la confirmación expresa de la pendiente media por encima de pm (con un motivo, que queda registrado con quién y cuándo y no la bloquea) ni de la
+    calzada que no queda en su rasante (como la contrapendiente de RF-015-23)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.a15 = last(road_store.road_compute_steps(a15_job(), COMMON))
+        cls.carriageway = last(road_store.road_compute_steps(restricted_job(), COMMON))
+        cls.clean = last(road_store.road_compute_steps(ramp_job(), COMMON))
+
+    def refused(self, outcome: Any, expected: str, **given: Any) -> Any:
+        """``check_road_confirmed`` se rechaza con ``expected`` como ``DesignError`` con su texto sin marcadores en los dos idiomas."""
+        with self.assertRaises(messages.DesignError) as caught:
+            road_store.check_road_confirmed(outcome, **given)
+        error = caught.exception
+        self.assertEqual(error.code, expected)
+        for text in (error.text, error.text_in("en")):
+            self.assertNotIn("{", text)
+            self.assertNotIn("?", text)
+        return error
+
+    def test_a_the_option_a15_mean_over_pm_is_not_created_without_the_confirmation_and_a_reason(self) -> None:
+        """RF-017-17, D-6, N-15: la media de 10,5 % frente al 10 % del perfil pide la confirmación: sin ella, ``des.road_mean_unconfirmed`` con la media y el límite; con ella y sin motivo (ausente, vacío o en
+        blanco), ``des.road_mean_reason``; con las dos, se crea (no se bloquea). El aviso de antes de crear es el de la media, con la bandera del resultado."""
+        outcome = self.a15
+        self.assertAlmostEqual(values_of(outcome)["des.road_gradient_mean_pct"], 10.5, delta=1e-6)
+        self.assertTrue(outcome.mean_exceeded)
+        error = self.refused(outcome, "des.road_mean_unconfirmed")
+        self.assertAlmostEqual(float(error.values["mean"]), 10.5, delta=0.01)
+        self.assertEqual((error.values["limit"], error.values["entity"]), (10.0, ENTITY))
+        for reason in (None, "", "   "):
+            with self.subTest(reason=reason):
+                self.assertEqual(self.refused(outcome, "des.road_mean_reason", mean=True, reason=reason).values["limit"], 10.0)
+        self.assertIsNone(road_store.check_road_confirmed(outcome, mean=True, reason="Opción A15 de la propiedad (N-15)"))
+        self.assertTrue(any(notice.code == "des.road_mean_gradient" for notice in outcome.notices))
+
+    def test_b_the_carriageway_off_its_level_is_not_created_without_the_confirmation(self) -> None:
+        """RF-017-22: con la calzada del norte sin corte, ``des.road_carriageway_unconfirmed`` dice el área de lo que no queda en su rasante (la suma de sus grupos) y la diferencia máxima; con la
+        confirmación, se crea; confirmar la media (que no pasa de pm) no la sustituye."""
+        outcome = self.carriageway
+        self.assertTrue(outcome.engraved.needs_confirmation and not outcome.mean_exceeded)
+        error = self.refused(outcome, "des.road_carriageway_unconfirmed")
+        groups = outcome.off_level
+        self.assertEqual(error.values["area"], sum(group.area_m2 for group in groups))
+        self.assertEqual(error.values["difference"], round(max(group.max_m for group in groups), 3))
+        self.assertEqual(self.refused(outcome, "des.road_carriageway_unconfirmed", mean=True, reason="No es la media").values["entity"], ENTITY)
+        self.assertIsNone(road_store.check_road_confirmed(outcome, carriageway=True))
+
+    def test_c_a_clean_road_has_nothing_to_confirm(self) -> None:
+        """RF-017-17, RF-017-22: sin media por encima de pm ni calzada fuera de su rasante no se pide nada, y confirmar de más no estorba."""
+        self.assertFalse(self.clean.mean_exceeded or self.clean.engraved.needs_confirmation)
+        self.assertIsNone(road_store.check_road_confirmed(self.clean))
+        self.assertIsNone(road_store.check_road_confirmed(self.clean, mean=True, carriageway=True))
+
+    def test_d_the_confirmation_is_recorded_with_who_and_when_in_the_settings(self) -> None:
+        """RF-017-17, RF-017-22: lo confirmado queda en los ajustes de la operación con quién (el que da, o quien tiene abierto el proyecto) y cuándo (UTC), la media y el límite, el motivo y el área y la
+        diferencia de la calzada, y se lee de vuelta tal cual; sin nada que confirmar, nada que registrar."""
+        project = SimpleNamespace(session=SimpleNamespace(user_host="IMGA\\ana@PC-01"), clock=SimpleNamespace(now=lambda: dt.datetime(2026, 11, 21, 9, 30, tzinfo=dt.UTC)))
+        found = road_store.road_confirmation(project, self.a15, mean=True, carriageway=True, reason="Opción A15 de la propiedad (N-15)", decided_by="Ana")
+        self.assertEqual((found.decided_by, found.decided_on), ("Ana", "2026-11-21T09:30:00.000Z"))
+        self.assertEqual((found.reason, found.mean_limit_pct, found.carriageway_m2), ("Opción A15 de la propiedad (N-15)", 10.0, None))
+        self.assertAlmostEqual(found.mean_pct, 10.5, delta=0.01)
+        settings = found.settings()
+        who = {"decided_by": "Ana", "decided_on": "2026-11-21T09:30:00.000Z"}
+        self.assertEqual(list(settings), ["mean_gradient"])
+        self.assertEqual({key: value for key, value in settings["mean_gradient"].items() if key != "mean_pct"},
+                         {"limit_pct": 10.0, "reason": "Opción A15 de la propiedad (N-15)", **who})
+        self.assertEqual(road_store.confirmed_of({road_store.CONFIRMED: settings}), found)
+        both = road_store.road_confirmation(project, self.carriageway, mean=True, carriageway=True, reason=None, decided_by=None)
+        groups = self.carriageway.off_level
+        self.assertEqual((both.decided_by, both.mean_pct, both.carriageway_m2), ("IMGA\\ana@PC-01", None, sum(group.area_m2 for group in groups)))
+        self.assertEqual(both.settings()["carriageway"], {"area_m2": both.carriageway_m2, "difference_m": round(max(group.max_m for group in groups), 3),
+                                                          "decided_by": "IMGA\\ana@PC-01", "decided_on": "2026-11-21T09:30:00.000Z"})
+        self.assertEqual(road_store.confirmed_of({road_store.CONFIRMED: both.settings()}), both)
+        self.assertIsNone(road_store.road_confirmation(project, self.clean, mean=True, carriageway=True, reason="x", decided_by="Ana"))
+        self.assertIsNone(road_store.confirmed_of({}))
+        with self.assertRaises(ValueError):
+            road_store.confirmed_of({road_store.CONFIRMED: {"mean_gradient": {"mean_pct": 10.5}}})  # sin quién ni cuándo
+
+
+class CarriagewayNoticesTest(unittest.TestCase):
+    """RF-017-22, RF-015-13: la restricción o la entidad que impide mover la calzada, con el área, la diferencia máxima y el lugar; lo que no se mueve junto a ella."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.outcome = last(road_store.road_compute_steps(restricted_job(), COMMON))
+
+    def notices(self, masks: Any, **given: Any) -> tuple[Any, ...]:
+        return road_store.carriageway_notices(self.outcome, masks, names=given.get("names", {}), declared=given.get("declared", {}))
+
+    def test_a_a_normal_restriction_is_named_with_its_code(self) -> None:
+        """RF-017-22: la zona «sin corte» de las máscaras que cubre la calzada del norte la nombra, con su nombre y su código, con el área, la diferencia máxima y el lugar de su grupo."""
+        (notice,) = self.notices(masks_of("sin_corte"), names={"sin_corte": "Sin corte"})
+        (group,) = self.outcome.off_level
+        self.assertEqual(notice.code, "des.road_carriageway_masks")
+        self.assertEqual((notice.values["blocker"], notice.values["area"]), ("Sin corte (sin_corte)", group.area_m2))
+        self.assertEqual((notice.values["difference"], notice.values["x"], notice.values["y"]), (round(group.max_m, 3), round(group.x, 2), round(group.y, 2)))
+        self.assertIn("Sin corte (sin_corte)", notice.text("es"))
+        self.assertEqual(self.notices(masks_of("sin_corte"))[0].values["blocker"], "sin_corte", "sin nombre, su código")
+
+    def test_b_the_entity_that_declares_the_restriction_is_named_by_its_name(self) -> None:
+        """RF-017-22, RF-015-10: si la zona la declara una entidad (``dec__btr_001``), el aviso es el de la entidad, con **su nombre** y no el código interno."""
+        (notice,) = self.notices(masks_of("dec__btr_001"), declared={"dec__btr_001": "Contrafuerte C1"})
+        self.assertEqual((notice.code, notice.values["blocker"]), ("des.road_carriageway_entity", "Contrafuerte C1"))
+        self.assertIn("«Contrafuerte C1»", notice.text("es"))
+        (fallback,) = self.notices(masks_of("dec__btr_001"))
+        self.assertEqual(fallback.values["blocker"], "BTR-001")
+
+    def test_c_what_no_zone_explains_says_the_masks_of_the_version_in_both_languages(self) -> None:
+        """RF-017-22: si ninguna zona lo explica (un límite, su banda…) o la zona no prohíbe lo que se le pide (aquí el corte; la de «sin relleno» no lo impide), el aviso lo dice con las máscaras de la
+        versión, en el idioma de quien lee."""
+        for masks in (masks_of(), masks_of("sin_relleno", "no_fill")):
+            with self.subTest(zones=sorted(masks.zones)):
+                (notice,) = self.notices(masks)
+                self.assertEqual(notice.code, "des.road_carriageway_masks")
+                self.assertIn("un límite de las máscaras de la versión", notice.text("es"))
+                self.assertIn("a limit of the masks of the version", notice.text("en"))
+                self.assertNotIn("{", notice.text("es") + notice.text("en"))
+
+    def test_d_the_zone_that_covers_most_of_the_group_is_the_one_named(self) -> None:
+        """RF-017-22: con dos zonas que impiden el corte, se nombra la que cubre más celdas del grupo."""
+        big, small = rd.in_box(h1.MASK_BOX, GRID), rd.in_box((180.0, 200.0, 190.0, 205.25), GRID)
+        masks = access.MaskSet(GRID, "v-mano", "op-mano", access.MaskState.CURRENT, (), np.zeros(GRID.shape, dtype=np.uint16),
+                               zones={"a_pequena": masks_zones.Runs.from_mask(small), "b_grande": masks_zones.Runs.from_mask(big)}, ctypes={"a_pequena": "no_cut", "b_grande": "no_cut"})
+        (notice,) = self.notices(masks)
+        self.assertEqual(notice.values["blocker"], "b_grande")
+
+    def test_e_a_carriageway_over_the_maximum_height_says_that_height(self) -> None:
+        """RF-017-22, RF-017-21: con la altura máxima de desmonte y terraplén de 0,5 m menor que la pendiente transversal, los grupos de la calzada que pasa de ella dicen esa altura
+        (``des.road_carriageway_height``) y no una restricción."""
+        origin, destination = (tuple(float(v) for v in rd.absolute([point], GRID)[0]) for point in (rd.RAMP_ORIGIN, rd.RAMP_DESTINATION))
+        job = rd.route_job(GRID, rd.ramp_terrain(GRID, cross_pct=rd.RAMP_CROSS_PCT), origin, destination, route=rd.route_with(max_cut_fill_m=0.5),
+                           profile=dataclasses.replace(h1.PD8, shoulder_m=1.5))
+        outcome = last(road_store.road_compute_steps(job, COMMON))
+        found = road_store.carriageway_notices(outcome, masks_of(), names={}, declared={})
+        self.assertGreaterEqual(len(found), 1)
+        self.assertEqual({notice.code for notice in found}, {"des.road_carriageway_height"})
+        self.assertEqual({notice.values["height"] for notice in found}, {0.5})
+        self.assertEqual(len(found), len(outcome.off_level))
+
+    def test_f_what_does_not_move_is_named_with_the_restriction_as_in_the_platform(self) -> None:
+        """RF-015-13: lo que la pista no mueve (las celdas de su sección que no se cortan o no se rellenan y las de su borde) lo dice ``preview.held_notices`` con la restricción: aquí la zona «sin corte» y
+        el área de esas celdas; sin celdas, nada."""
+        masks = masks_of("sin_corte")
+        found = road_store.road_held_notices(self.outcome, masks, names={"sin_corte": "Sin corte"}, declared={})
+        engraved = self.outcome.engraved
+        held = engraved.cut_denied | engraved.fill_denied | engraved.held
+        self.assertTrue(bool(held.any()))
+        (notice,) = found
+        self.assertEqual(notice.code, "des.entity_held_constraint")
+        self.assertEqual((notice.values["entity"], notice.values["constraint"], notice.values["area"]), (ENTITY, "Sin corte (sin_corte)", float(held.sum()) * GRID.cell_area))
+        clean = last(road_store.road_compute_steps(ramp_job(shoulder_m=0.0, cross_pct=0.0), COMMON))
+        self.assertEqual(road_store.road_held_notices(clean, masks, names={}, declared={}), ())
+
+
+class SummaryTest(unittest.TestCase):
+    """RF-017-23, RF-015-03, RF-017-12, RF-017-17, RF-017-22, H-10: el resumen de «Calcular» lleva las cifras, la holgura del pasillo, los avisos en su orden, lo que pide confirmar y lo que quedará
+    obsoleto."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.job = ramp_job()
+        cls.outcome = last(road_store.road_compute_steps(cls.job, COMMON))
+        cls.a15_job = a15_job()
+        cls.a15 = last(road_store.road_compute_steps(cls.a15_job, COMMON))
+
+    def test_a_the_summary_has_the_figures_the_headline_numbers_and_the_slack_of_the_corridor(self) -> None:
+        """RF-017-23, H-10: el resumen de la rampa de CE-017-01 dice la pista y su código, la versión, el modo y el perfil, las cifras tal cual, la longitud (200 m), las cotas (104 y 112 m), la pendiente
+        media y máxima (4 %, con su abscisa y su lugar), ningún radio (sin curvas), el corte y el relleno de la sección y del borde juntos y el neto, y **la holgura del pasillo** con su nota, la
+        primera (la ruta cambia con ella)."""
+        summary = road_store.summary_of(self.outcome, version="V01", profile=self.job.profile)
+        found = values_of(self.outcome)
+        self.assertIsInstance(summary, preview.RoadSummary)
+        self.assertEqual((summary.name, summary.code, summary.version, summary.mode, summary.profile), (ENTITY, "RDW-001", "V01", "trace", self.job.profile.code))
+        self.assertEqual(summary.figures, self.outcome.figures)
+        self.assertAlmostEqual(summary.length_m, 200.0, delta=TOL * 200.0)
+        self.assertAlmostEqual(summary.start_level_m, 104.0, delta=TOL * 104.0)
+        self.assertAlmostEqual(summary.end_level_m, 112.0, delta=TOL * 112.0)
+        self.assertAlmostEqual(summary.gradient_mean_pct, 4.0, delta=1e-9)
+        self.assertAlmostEqual(summary.gradient_max_pct, found["des.road_gradient_max_pct"], delta=1e-12)
+        self.assertEqual(summary.gradient_max_station_m, found["des.road_gradient_max_station_m"])
+        point = self.outcome.axis.points[int(np.argmax(np.abs(np.diff(self.outcome.levels)) / np.diff(self.outcome.axis.stations)))]
+        self.assertEqual((summary.gradient_max_x, summary.gradient_max_y), (float(point[0]), float(point[1])))
+        self.assertEqual((summary.radius_min_m, summary.curves), (None, 0))
+        cut = found["des.road_cut_m3"] + found["des.road_edge_cut_m3"]
+        fill = found["des.road_fill_m3"] + found["des.road_edge_fill_m3"]
+        self.assertEqual((summary.cut_m3, summary.fill_m3, summary.net_m3), (cut, fill, cut - fill))
+        route = self.outcome.route
+        self.assertEqual(summary.margin_m, route.margin_m)
+        note = summary.notices[0]
+        self.assertEqual((note.code, note.severity), ("des.road_route_margin", "note"))
+        self.assertEqual(dict(note.values), {"entity": ENTITY, "mesh": route.mesh_m, "margin": route.margin_m, "expanded": route.expanded, "budget": route.budget})
+        self.assertIn("holgura del pasillo de 60,0 m", note.text("es"))
+        self.assertIn("slack of 60.0 m", note.text("en"))
+        self.assertEqual(summary.obsolete, ())
+        self.assertFalse(summary.needs_mean_confirmation or summary.needs_carriageway_confirmation)
+
+    def test_a2_the_volumes_of_the_summary_add_the_section_and_the_edge(self) -> None:
+        """RF-017-23: con un escarpe de 20 m a lo largo del eje (100 m al oeste de x = 200 m y 120 m al este) la sección corta y rellena 10 m a cada lado y **el borde** mueve terreno también (corte 4.152 m³ y
+        terraplén 13.724 m³): el resumen suma las dos partes —el corte, el relleno y el neto son los totales de las cifras (sección más borde)—, no los de la sección sola."""
+        x, _y = rd.local_centers(GRID)
+        job = axis_job(((200.0, 100.0), (200.0, 300.0)), terrain=np.where(x < 200.0, 100.0, 120.0))
+        outcome = last(road_store.road_compute_steps(job, COMMON))
+        found = values_of(outcome)
+        self.assertTrue(found["des.road_edge_cut_m3"] > 1000.0 and found["des.road_edge_fill_m3"] > 1000.0)
+        summary = road_store.summary_of(outcome, version="V01", profile=job.profile)
+        self.assertEqual(summary.cut_m3, found["des.road_cut_m3"] + found["des.road_edge_cut_m3"])
+        self.assertEqual(summary.fill_m3, found["des.road_fill_m3"] + found["des.road_edge_fill_m3"])
+        self.assertGreater(summary.cut_m3, found["des.road_cut_m3"])
+        self.assertGreater(summary.fill_m3, found["des.road_fill_m3"])
+        self.assertEqual(summary.net_m3, summary.cut_m3 - summary.fill_m3)
+        self.assertAlmostEqual(summary.net_m3, found["des.road_net_m3"], delta=1e-9 * abs(summary.cut_m3))
+
+    def test_b_the_notices_go_in_order_the_axis_the_footprint_the_carriageway_what_is_held_and_what_goes_stale(self) -> None:
+        """RF-017-22, RF-015-13, RF-015-03: los avisos del cálculo, los de la calzada fuera de su rasante (los que piden confirmar), lo que no se mueve por una restricción y, al final, lo que quedará
+        obsoleto con su causa (la nota de la holgura, la primera, es de «trazar»: ``test_a``)."""
+        outcome = last(road_store.road_compute_steps(restricted_job(), COMMON))
+        masks, names = masks_of("sin_corte"), {"sin_corte": "Sin corte"}
+        carriageway = road_store.carriageway_notices(outcome, masks, names=names, declared={})
+        held = road_store.road_held_notices(outcome, masks, names=names, declared={})
+        stale = (preview.Obsolete(preview.ObsoleteKind.DEPENDENT, "Cubicación del relleno", "des.entity_layer", "uid-1"),)
+        summary = road_store.summary_of(outcome, version="V01", profile=restricted_job().profile, carriageway=carriageway, held=held, obsolete=stale)
+        codes = [notice.code for notice in summary.notices]
+        calculated = [notice.code for notice in outcome.notices]  # «sobre un eje»: sin ruta, así que sin la nota de la holgura
+        first = codes.index("des.road_carriageway_masks")
+        self.assertEqual(codes[:first], calculated, "los del cálculo, antes de los de la calzada")
+        self.assertEqual(codes[first:first + len(carriageway) + len(held)], [notice.code for notice in (*carriageway, *held)])
+        self.assertEqual(codes[-1], "des.entity_obsolete_dependents")
+        self.assertEqual(len(codes), first + len(carriageway) + len(held) + 1)
+        self.assertTrue(summary.needs_carriageway_confirmation)
+        self.assertEqual(summary.carriageway_area_m2, sum(group.area_m2 for group in outcome.off_level))
+        self.assertEqual(summary.obsolete, stale)
+        for language in ("es", "en"):
+            self.assertTrue(all("{" not in line for line in summary.lines(language)))
+        self.assertEqual(summary.warnings("es"), tuple(notice.text("es") for notice in summary.notices if notice.severity == "warning"))
+
+    def test_c_the_mean_over_pm_says_it_with_its_limit_and_asks_for_the_confirmation(self) -> None:
+        """RF-017-17, D-6: la pista de 10,5 % de media con pm = 10 % lo dice —la media, el límite y los tramos— y pide la confirmación; en «sobre un eje» no hay ruta, así que ni holgura ni su nota."""
+        summary = road_store.summary_of(self.a15, version="V01", profile=self.a15_job.profile)
+        self.assertTrue(summary.needs_mean_confirmation)
+        self.assertEqual(summary.mean_limit_pct, 10.0)
+        self.assertAlmostEqual(summary.gradient_mean_pct, 10.5, delta=1e-6)
+        self.assertIsNone(summary.margin_m)
+        self.assertNotIn("des.road_route_margin", [notice.code for notice in summary.notices])
+        self.assertIn("des.road_mean_gradient", [notice.code for notice in summary.notices])
+        self.assertFalse(summary.needs_carriageway_confirmation)
+
+    def test_e_the_notices_of_the_start_come_first(self) -> None:
+        """RF-017-05 (a): los avisos de la partida que arma la preparación («no llega al fondo» sobre la final restaurada) van **los primeros** del resumen, antes de la holgura del pasillo, y no impiden crearla."""
+        start = (preview.Notice("des.road_start_is_final", {"entity": ENTITY, "surface": "des_fin_cantera", "z_final": 136.5, "z_pit": 125.0}),)
+        summary = road_store.summary_of(self.outcome, version="V01", profile=self.job.profile, start_notices=start)
+        self.assertEqual([notice.code for notice in summary.notices[:2]], ["des.road_start_is_final", "des.road_route_margin"])
+        self.assertIn("136,5", summary.lines("es")[0])
+
+    def test_d_a_result_without_engraving_is_a_program_error(self) -> None:
+        """Un resultado sin el grabado (el de ``road_compute_steps`` siempre lo lleva) no tiene resumen: ``ValueError``."""
+        with self.assertRaises(ValueError):
+            road_store.summary_of(dataclasses.replace(self.outcome, engraved=None), version="V01", profile=self.job.profile)
+
+
+class PreviousTest(unittest.TestCase):
+    """RF-013-30, RF-015-13, D-25: con qué se compara el desmonte y el terraplén de una pista (la magnitud): lo de la misma entidad en la revisión congelada más reciente."""
+
+    @staticmethod
+    def database() -> sqlite3.Connection:
+        """Las operaciones y las cifras que lee ``road_previous``, a mano: ``RDW-001`` (100 + 50 de desmonte y 20 + 10 de relleno), ``RDW-002`` (le falta una cifra), una fallida, y, **más recientes** y con todas
+        las cifras, una plataforma y una pista fallida de igual código (que no cuentan)."""
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE gb_operation (fid INTEGER PRIMARY KEY, uid TEXT, revision_uid TEXT, op_type TEXT, status TEXT, settings TEXT)")
+        conn.execute("CREATE TABLE gb_figure (operation_uid TEXT, key TEXT, value REAL)")
+        for fid, uid, op_type, status, settings in ((1, "op-a", "des.road", "done", {"code": "RDW-001", "name": "Pista A"}), (2, "op-b", "des.road", "done", {"code": "RDW-002"}),
+                                                    (3, "op-c", "des.road", "failed", {"code": "RDW-003"}), (4, "op-d", "des.platform", "done", {"code": "RDW-001", "name": "Otra"}),
+                                                    (5, "op-e", "des.road", "failed", {"code": "RDW-001", "name": "Fallida"})):
+            conn.execute("INSERT INTO gb_operation VALUES (?, ?, 'rev-1', ?, ?, ?)", (fid, uid, op_type, status, json.dumps(settings)))
+        keys = {"des.road_cut_m3": 100.0, "des.road_edge_cut_m3": 50.0, "des.road_fill_m3": 20.0, "des.road_edge_fill_m3": 10.0}
+        conn.executemany("INSERT INTO gb_figure VALUES (?, ?, ?)", [("op-a", key, value) for key, value in keys.items()])
+        conn.executemany("INSERT INTO gb_figure VALUES (?, ?, ?)", [("op-b", key, value) for key, value in list(keys.items())[:3]])
+        conn.executemany("INSERT INTO gb_figure VALUES (?, ?, ?)", [("op-d", key, 999.0) for key in keys] + [("op-e", key, 777.0) for key in keys])  # lo de la plataforma y lo de la fallida, que no cuentan
+        return conn
+
+    def test_a_the_previous_is_the_sum_of_the_section_and_the_edge_of_the_same_entity_by_its_code(self) -> None:
+        """RF-013-30, D-25: de la entidad ``RDW-001`` en la revisión congelada ``V01.r3``: el desmonte (100 + 50) y el relleno (20 + 10) de la sección y del borde sumados, con el nombre de su operación; sin
+        las de otro tipo ni las fallidas; una cifra que falta, una entidad que no está o ninguna revisión congelada, ``None``."""
+        version = SimpleNamespace(uid="version-1", code="V01")
+        conn = self.database()
+        with mock.patch.object(road_store.versions_read, "last_frozen", return_value=SimpleNamespace(uid="rev-1", number=3)):
+            self.assertEqual(road_store.road_previous(conn, version, "RDW-001"), report.Previous("Pista A", "V01.r3", 150.0, 30.0))
+            self.assertIsNone(road_store.road_previous(conn, version, "RDW-002"), "le falta una cifra")
+            self.assertIsNone(road_store.road_previous(conn, version, "RDW-003"), "la fallida no cuenta")
+            self.assertIsNone(road_store.road_previous(conn, version, "RDW-009"))
+        with mock.patch.object(road_store.versions_read, "last_frozen", return_value=None):
+            self.assertIsNone(road_store.road_previous(conn, version, "RDW-001"), "sin ninguna revisión congelada")
+
+
+class ObsoleteTest(unittest.TestCase):
+    """RF-015-03, RF-015-16: lo que quedará obsoleto al crear la pista."""
+
+    @staticmethod
+    def project() -> Any:
+        """Un «proyecto» con el grafo de las operaciones a mano: la pista vieja ``op-road`` escribió ``ds-1``; ``op-vol`` (una cubicación) lo lee y escribe ``ds-2``, que lee ``op-plan``; ``op-old`` lo leía
+        pero ya está sustituida y ``op-other`` es de otra versión."""
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE gb_revision (uid TEXT, version_uid TEXT)")
+        conn.execute("CREATE TABLE gb_operation (fid INTEGER PRIMARY KEY, uid TEXT, revision_uid TEXT, op_type TEXT, settings TEXT, status TEXT, superseded_by TEXT)")
+        conn.execute("CREATE TABLE gb_operation_io (fid INTEGER PRIMARY KEY, operation_uid TEXT, direction TEXT, item_kind TEXT, item_uid TEXT)")
+        conn.executemany("INSERT INTO gb_revision VALUES (?, ?)", [("rev-1", "v-1"), ("rev-2", "v-2")])
+        for fid, uid, revision, op_type, name, replaced in ((1, "op-road", "rev-1", "des.road", "Pista vieja", None), (2, "op-vol", "rev-1", "des.volume", "Cubicación", None),
+                                                            (3, "op-plan", "rev-1", "des.plan", "Plano", None), (4, "op-old", "rev-1", "des.volume", "Vieja", "op-vol"),
+                                                            (5, "op-other", "rev-2", "des.volume", "De otra versión", None)):
+            conn.execute("INSERT INTO gb_operation VALUES (?, ?, ?, ?, ?, 'done', ?)", (fid, uid, revision, op_type, json.dumps({"name": name}), replaced))
+        for number, (uid, direction, item) in enumerate((("op-road", "out", "ds-1"), ("op-vol", "in", "ds-1"), ("op-vol", "out", "ds-2"), ("op-plan", "in", "ds-2"), ("op-old", "in", "ds-1"),
+                                                         ("op-other", "in", "ds-1")), start=1):
+            conn.execute("INSERT INTO gb_operation_io VALUES (?, ?, ?, 'dataset', ?)", (number, uid, direction, item))
+        return SimpleNamespace(read=lambda: contextlib.nullcontext(conn))
+
+    def test_a_a_new_road_makes_nothing_stale_and_a_replacing_one_makes_stale_what_depended_on_what_it_wrote(self) -> None:
+        """RF-015-03, RF-015-16: una pista nueva no deja nada obsoleto; la que sustituye una operación (``supersedes``) deja obsoleto, **en cascada y por orden de registro**, lo vigente de su versión que
+        dependía de lo que escribió (la cubicación y, por lo que ésta escribió, el plano), no lo sustituido ni lo de otra versión."""
+        prepared = SimpleNamespace(version=SimpleNamespace(uid="v-1"))
+        self.assertEqual(road_store.road_obsolete(self.project(), prepared), ())
+        kind = preview.ObsoleteKind.DEPENDENT
+        self.assertEqual(road_store.road_obsolete(self.project(), prepared, supersedes="op-road"),
+                         (preview.Obsolete(kind, "Cubicación", "des.volume", "op-vol"), preview.Obsolete(kind, "Plano", "des.plan", "op-plan")))
 
 
 if __name__ == "__main__":

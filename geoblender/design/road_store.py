@@ -5,8 +5,9 @@ plan 017 §5.1, §5.2.1 a §5.2.3, §5.3.1, §5.7 P-1, P-5 y P-14; D-3, D-13 y D
 El homólogo, para la pista (``des.road``: una entidad **con cadena**, ``RDW-001``: una red de pistas es una cadena y cada ramal parte de la superficie que deja la anterior, D-16),
 de ``design.entity_store.prepare_platform_units``: **solo lee**. Nada se escribe en el proyecto (RF-015-03) salvo las máscaras de la versión si no estaban al día (una operación
 propia, RF-013-04, y solo si no se dan cargadas). **Calcular por pasos** (:func:`road_compute_steps`, T20 (a): la orquestación por modos, las cifras de RF-017-23 y el ``RoadOutcome``, sin proyecto
-y sin escribir nada); la ``Calculation``, las dos confirmaciones y el resumen son de la T20b; crear, de la T21; recalcular, reproducir y traer, de la T22; los modos «sobre un eje» y «eje 3D» con su
-lectura y su contrato, de la T23.
+y sin escribir nada); **el resumen, las dos confirmaciones y con qué se compara** (T20b: :func:`road_summary` y :func:`summary_of`, :func:`carriageway_notices`, :func:`road_held_notices`,
+:func:`check_road_confirmed` y :class:`RoadConfirmed`, :func:`road_previous` y :func:`road_obsolete`; la ``Calculation`` es ``design.steps.road_run``); crear, de la T21; recalcular, reproducir y
+traer, de la T22; los modos «sobre un eje» y «eje 3D» con su lectura y su contrato, de la T23.
 
 - :func:`prepare_road_units` y :func:`prepare_road` (de una vez): la versión editable (RF-009-21), el código ``RDW-nnn`` y el nombre únicos, **la partida** (RF-017-05, D-3: la persona
   la elige; sin ella, :func:`default_start`: la de explotación de la cantera de la 014 de la versión y, si no, la última de la cadena de entidades) con la cadena (una pista por
@@ -24,7 +25,7 @@ lectura y su contrato, de la T23.
 - Los avisos de RF-017-05: (a) :func:`start_is_final_notice` —«no llega al fondo»: la cota mínima alcanzable desde el origen sobre la final restaurada y sobre la de explotación, con la
   pendiente de diseño y la calzada del perfil (T19-a)— se calcula al preparar, porque solo depende de la partida; (b) :func:`other_design_notices` —la partida difiere en más del espesor
   mínimo de la 012 de la de otro diseño de la versión que no parte de ella (:func:`other_designs`, T19-b) **en la huella de la pista**— necesita la huella, que sale del cálculo: lo
-  llama la T20 con ella.
+  llama :func:`road_compute_steps` con ella (T20).
 
 Python puro (nivel 8), con numpy. ``design.road_store`` es un módulo pesado de la 017: lo importan las órdenes al usarlo, no ``bl`` al registrarse
 (``tests/unit/architecture/test_lazy_registration.py``).
@@ -35,6 +36,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sqlite3
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -48,7 +50,9 @@ from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definiti
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
 from ..core.provenance import stale
-from ..core.provenance.operations import Use
+from ..core.provenance.operations import OperationStatus, Use
+from ..core.timeutil import format_utc
+from ..core.versions import read as versions_read
 from ..core.versions.model import Version
 from ..gis.grid import Grid
 from ..gis.masks import access
@@ -56,6 +60,7 @@ from ..gis.masks.combine import ClassBit
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
 from . import (
+    edges,
     entities,
     entity_store,
     pipeline,
@@ -73,6 +78,7 @@ from .compose import admitted_pair
 from .entities import EntityKind, EntityRegistry, EntityState
 from .entity_store import EntityParamRow
 from .messages import DesignError
+from .model import DECLARED_PREFIX
 from .params import (
     VERIFY_MIN_THICKNESS,
     WARNING_RATIO,
@@ -84,7 +90,7 @@ from .params import (
     road_profile_key,
 )
 from .platform import QuarryOrder, _project_number, _window_grid, magnitude_notices
-from .preview import Notice
+from .preview import _INNER, Named, Notice, Obsolete, ObsoleteKind, RoadSummary, _rule, held_notices, obsolete_notices
 from .report import Previous, _thickness
 from .road_model import (
     AccessJob,
@@ -109,14 +115,19 @@ from .zones import polygons_cells
 
 __all__ = [
     "COMPUTE_PHASE",
+    "CONFIRMED",
     "AxisReference",
     "DefaultStart",
     "EntityReference",
     "OtherReader",
     "PointReference",
     "PreparedRoad",
+    "RoadConfirmed",
     "avoid_weight",
     "axis_point_at",
+    "carriageway_notices",
+    "check_road_confirmed",
+    "confirmed_of",
     "default_start",
     "other_design_notices",
     "other_designs",
@@ -124,8 +135,14 @@ __all__ = [
     "prepare_road",
     "prepare_road_units",
     "road_compute_steps",
+    "road_confirmation",
+    "road_held_notices",
+    "road_obsolete",
+    "road_previous",
+    "road_summary",
     "road_values",
     "start_is_final_notice",
+    "summary_of",
     "untouchable_cells",
 ]
 
@@ -1205,8 +1222,9 @@ def road_compute_steps(job: RoadJob, common: Mapping[str, object], *, surface: s
     pista parte de una de las dos (RF-015-14); ``previous`` y ``operation``, los de la magnitud de RF-013-30 (como ``platform_outcome``). **Los otros diseños** (RF-017-05 (b): ``others`` son los
     nombres de los datos de :attr:`PreparedRoad.others` y ``read_other``, quien lee su superficie **en la ventana de trabajo**, una a una): si en la huella de la pista (la sección y lo que su borde
     alcanza) la partida difiere de alguno en más del espesor mínimo, el aviso de :func:`other_design_notices` y el nombre en ``RoadOutcome.other_designs`` (lo que la T21 registra como entrada de la
-    pista, con su hash: si cambia, la pista queda obsoleta con su causa); sin ninguno que difiera, no hay nada que registrar. **No** arma la confirmación de la media por encima de pm ni la de la calzada
-    fuera de su rasante, ni el resumen: son de la T20b (``RoadOutcome.mean_exceeded`` y ``RoadOutcome.off_level`` dan lo que decide)."""
+    pista, con su hash: si cambia, la pista queda obsoleta con su causa); sin ninguno que difiera, no hay nada que registrar. **La huella que la rejilla recorta** (RF-015-13, T20b: la sección que sale
+    de la rejilla, ``road_section.clipped_steps``) es un aviso más (``des.road_footprint_clipped``), tras los del eje. **No** arma la confirmación de la media por encima de pm ni la de la calzada fuera de
+    su rasante, ni el resumen: son de :func:`check_road_confirmed` y :func:`summary_of` (T20b; ``RoadOutcome.mean_exceeded`` y ``RoadOutcome.off_level`` dan lo que decide)."""
     if not isinstance(job, RoadJob):
         raise TypeError(f"el trabajo de una pista es RoadJob, no {job!r}")
     names = tuple(others)
@@ -1238,6 +1256,9 @@ def road_compute_steps(job: RoadJob, common: Mapping[str, object], *, surface: s
     if bool(empty.any()):
         rows, columns = np.nonzero(empty)
         raise _no_data_error(job, shown, rows + window[0].start, columns + window[1].start)
+    clipped = yield from pipeline.forward(pace_progress(
+        road_section.clipped_steps(axis, carriageway, profile.shoulder_m, profile.berm_m, job.start, grid), budget_s, phase=_SECTION_PHASE,
+        running=f"Comprobando lo que la rejilla recorta de la sección de «{name}»…", finished=f"Huella de «{name}» comprobada"))
     levels_by_cell = section.levels(axis.stations, levels)
     yield _stage(5, f"Grabando la pista «{name}»…")
     engraved = yield from pipeline.forward(road_engrave.engrave_steps(job, section, levels_by_cell, common, budget_s=budget_s, quarry=quarry))
@@ -1260,7 +1281,9 @@ def road_compute_steps(job: RoadJob, common: Mapping[str, object], *, surface: s
             yield _stage(6, f"Comparada la partida de «{name}» con «{other}»")
     yield _stage(7, f"Cifras de la pista «{name}»…")
     figures = _road_figures(job, axis, levels, engraved)
-    notices = (*found, *others_found, *engraved.notices, *magnitude_notices(engraved.cut_m3, engraved.fill_m3, previous, ratio, operation))
+    cut_off = (Notice("des.road_footprint_clipped", {"entity": name, "cells": clipped[0], "area": clipped[0] * grid.cell_area, "x": round(clipped[1], 2), "y": round(clipped[2], 2)}),) if clipped[0] else ()
+    # RF-015-13: lo que la rejilla recorta de la huella, tras los avisos del eje
+    notices = (*found, *cut_off, *others_found, *engraved.notices, *magnitude_notices(engraved.cut_m3, engraved.fill_m3, previous, ratio, operation))
     summary = None
     if route is not None and corridor is not None and arrival is not None:
         assert job.route is not None and route.cost is not None
@@ -1270,3 +1293,245 @@ def road_compute_steps(job: RoadJob, common: Mapping[str, object], *, surface: s
                           route=summary, other_designs=tuple(differing), mean_exceeded=exceeded)
     yield _stage(_STAGES, f"Pista «{name}» calculada")
     return outcome
+
+
+# --- Calcular: con qué se compara, la calzada fuera de su rasante, las dos confirmaciones y el resumen (spec 017, T20b; RF-017-17, 22, 12, 23; RF-015-03, 13; D-6; plan 017 §5.3.2, §5.8 H-10) -----------
+
+_MAGNITUDE_CUT = ("des.road_cut_m3", "des.road_edge_cut_m3")
+_MAGNITUDE_FILL = ("des.road_fill_m3", "des.road_edge_fill_m3")
+CONFIRMED = "road_confirmed"
+"""La clave de los ajustes de ``des.road`` donde queda **lo que la persona confirmó expresamente** al crearla (:class:`RoadConfirmed`): la pendiente media por encima de pm (``mean_gradient``: la media, el límite
+y **su motivo**) y la calzada que no queda en su rasante (``carriageway``: su área y su diferencia máxima), con quién lo confirmó y cuándo (RF-017-17, RF-017-22). No es de ``provenance.road_settings`` (que
+no la conoce: se confirma después de calcular): la añade la creación (T21) y la arrastra el recálculo (T22), como ``CONFIRMED`` de la retirada y ``COUNTERSLOPE_CONFIRMED`` de la plataforma."""
+
+
+def road_previous(conn: sqlite3.Connection, version: Version, code: str) -> Previous | None:
+    """Con qué se compara el desmonte y el terraplén de una pista (RF-015-13, RF-013-30, D-25; como :func:`~.entity_store.platform_previous`): la operación ``des.road`` de la entidad de código ``code`` de la
+    revisión **congelada** más reciente de la versión ``version`` y sus cifras de la sección y del borde sumadas (``des.road_cut_m3`` + ``des.road_edge_cut_m3`` y las del relleno), como
+    ``report.Previous`` (``operation``: su nombre; ``revision``: ``V01.r1``). Por el código y no por el nombre: es inmutable en la versión y sobrevive a renombrarla. ``None`` si la versión no tiene ninguna
+    congelada, ninguna operación de esa entidad o sin esas cifras. Solo lee."""
+    revision = versions_read.last_frozen(conn, version.uid)
+    if revision is None:
+        return None
+    rows = conn.execute(
+        "SELECT uid, settings FROM gb_operation WHERE revision_uid = ? AND op_type = ? AND status = ? ORDER BY fid DESC",
+        (revision.uid, provenance.ROAD, OperationStatus.DONE.value)).fetchall()
+    keys = (*_MAGNITUDE_CUT, *_MAGNITUDE_FILL)
+    for uid, settings in rows:
+        found = json.loads(settings) if settings else {}
+        if found.get("code") != code:
+            continue
+        figures = {str(key): float(value) for key, value in conn.execute(
+            f"SELECT key, value FROM gb_figure WHERE operation_uid = ? AND key IN ({', '.join('?' for _ in keys)})", (uid, *keys)) if value is not None}
+        if len(figures) < len(keys):
+            return None
+        name = found.get("name")
+        return Previous(str(name) if isinstance(name, str) and name else code, f"{version.code}.r{revision.number}", sum(figures[key] for key in _MAGNITUDE_CUT),
+                        sum(figures[key] for key in _MAGNITUDE_FILL))
+    return None
+
+
+def road_obsolete(project: StoreProject, prepared: PreparedRoad, *, supersedes: str | None = None) -> tuple[Obsolete, ...]:
+    """**Lo que quedará obsoleto al crear** la pista ``prepared`` (RF-015-03, RF-015-16): una pista nueva no deja obsoleto nada (lo que se apoye después en ella sale de su vigencia, no de su creación); la que
+    **sustituye** una operación (``supersedes``: un recálculo) deja obsoleto lo que dependía de lo que escribió, en cascada (``DEPENDENT``), como la retirada y el contrafuerte. Solo lee."""
+    if supersedes is None:
+        return ()
+    with project.read() as conn:
+        written = [str(row[0]) for row in conn.execute(
+            "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'out' AND item_kind = 'dataset' ORDER BY fid", (supersedes,))]
+        found = entity_store._dependents(conn, written, prepared.version.uid, exclude=(supersedes,))
+    return tuple(entity_store._consumer(ObsoleteKind.DEPENDENT, uid, op_type, name) for uid, op_type, name in found)
+
+
+def _blocking_zone(masks: Any, window: tuple[slice, slice], group: road_engrave.OffLevelGroup) -> str | None:
+    """El código de la zona de las máscaras que impide mover las celdas de ``group`` (un grupo de la calzada que no queda en su rasante, de la ventana ``window``): de las que prohíben **lo que se le pide**
+    (el corte si está por encima, el relleno si está por debajo: ``preview._rule``, la misma regla que el resumen de la plataforma), la que cubre más de sus celdas (a igual cobertura, la de código
+    menor); ``None`` si ninguna lo explica (un límite, su banda…)."""
+    cut = group.cause is road_engrave.EngraveCause.CUT_DENIED
+    rows, cols = np.divmod(group.index, window[1].stop - window[1].start)
+    rows, cols = rows + window[0].start, cols + window[1].start
+    top, bottom, left, right = int(rows.min()), int(rows.max()), int(cols.min()), int(cols.max()) + 1
+    cells = np.zeros((bottom - top + 1, right - left), dtype=bool)
+    cells[rows - top, cols - left] = True
+    best: str | None = None
+    most = 0
+    for code in sorted(masks.zones):
+        rule = _rule(masks, code)
+        if rule is None or not (rule[0] if cut else rule[1]):
+            continue
+        runs = masks.zones[code].between_rows(top, bottom)
+        if not len(runs):
+            continue
+        count = int(np.count_nonzero(runs.mask(cells.shape, (top, left)) & cells))
+        if count > most:
+            best, most = code, count
+    return best
+
+
+def carriageway_notices(outcome: RoadOutcome, masks: Any, *, names: Mapping[str, str], declared: Mapping[str, str]) -> tuple[Notice, ...]:
+    """Los avisos de RF-017-22 de la calzada que no queda en su rasante, **antes de crear** y con la confirmación expresa, uno por grupo de celdas (``outcome.off_level``, en su orden), con el área (m²), la
+    diferencia máxima (m) y el lugar **y la restricción o la entidad que lo impide**: si el grupo pasa de la altura máxima de desmonte y terraplén (``des.road_carriageway_height``), esa altura; si no, la zona
+    de las máscaras que cubre más de sus celdas y prohíbe lo que se le pide (:func:`_blocking_zone`): la que declara una entidad (``dec__…``, ``declared``: código → nombre de la entidad), **con su nombre**
+    (``des.road_carriageway_entity``), o una restricción normal con su nombre y su código (``names``: código → nombre; ``des.road_carriageway_masks``); y, si ninguna zona lo explica, el límite de las
+    máscaras (``des.road_blocker_masks``, en el idioma de quien lee). ``masks`` son las de la versión. Sin calzada fuera de su rasante, ninguno."""
+    engraved = outcome.engraved
+    if engraved is None:
+        return ()
+    found: list[Notice] = []
+    for group in engraved.off_level:
+        if group.cause is road_engrave.EngraveCause.MAX_HEIGHT:
+            found.append(road_engrave.carriageway_notice(group, outcome.name, height_m=engraved.max_height_m))
+            continue
+        code = _blocking_zone(masks, outcome.window, group)
+        if code is None:
+            found.append(road_engrave.carriageway_notice(group, outcome.name, blocker=(Named("des.road_blocker_masks"),)))
+            continue
+        base = code[:-len(_INNER)] if code.endswith(_INNER) else code
+        if base.startswith(DECLARED_PREFIX):
+            found.append(road_engrave.carriageway_notice(group, outcome.name, other_entity=declared.get(base, base[len(DECLARED_PREFIX):].upper().replace("_", "-"))))
+            continue
+        shown = names.get(base, "")
+        found.append(road_engrave.carriageway_notice(group, outcome.name, blocker=f"{shown} ({base})" if shown and shown != base else base))
+    return tuple(found)
+
+
+def road_held_notices(outcome: RoadOutcome, masks: Any, *, names: Mapping[str, str], declared: Mapping[str, str]) -> tuple[Notice, ...]:
+    """**Lo que la pista no mueve por una restricción** (RF-015-13): las celdas de su sección que las máscaras no dejan cortar ni rellenar (``Engraved.cut_denied`` y ``fill_denied``) y las de su borde que no
+    dejan mover (``Engraved.held``), con la restricción que lo impide —la que declara otra entidad, con **su nombre**, o una restricción normal con su nombre y su código— y su área y su lugar
+    (:func:`~.preview.held_notices`, la misma cuenta que el resumen de la plataforma). Sin celdas que no se muevan, ninguno."""
+    engraved = outcome.engraved
+    if engraved is None:
+        return ()
+    return held_notices(outcome.name, masks, outcome.window, cut=engraved.cut_denied, fill=engraved.fill_denied, edge=engraved.held, names=names, declared=declared)
+
+
+def summary_of(outcome: RoadOutcome, *, version: str, profile: road_profiles.RoadProfile, start_notices: Sequence[Notice] = (), carriageway: Sequence[Notice] = (), held: Sequence[Notice] = (),
+               obsolete: Sequence[Obsolete] = ()) -> RoadSummary:
+    """El resumen de «Calcular» la pista de ``outcome`` (RF-015-03, RF-017-23, RF-017-12, RF-017-17, RF-017-22; H-10; **puro**: sin proyecto) como :class:`~.preview.RoadSummary`: las cifras que se registrarán,
+    la longitud, las cotas de inicio y de fin, la pendiente media y la máxima (con su abscisa y su lugar), el radio mínimo y las curvas, el corte y el relleno de la sección y del borde juntos y el neto,
+    **la holgura del pasillo** (``margin_m``: la ruta cambia con ella, H-10) y si pide confirmar la media (``needs_mean_confirmation``, con el límite ``mean_limit_pct`` del perfil ``profile``) o la
+    calzada (``needs_carriageway_confirmation``, con su área), y los avisos **en el orden en que se enseñan**: los de la partida (``start_notices``: RF-017-05 (a), «no llega al fondo», que ``prepare_road``
+    calcula al preparar), la nota de la ruta (solo «trazar»), los del cálculo (los tramos del salto creado, de diez en diez como en la plataforma: ``edges.summary_notices``), los de la calzada que no queda
+    en su rasante (``carriageway``), lo que no se mueve por una restricción (``held``) y, al final, lo que quedará obsoleto (``obsolete``) con su causa. ``version`` es el código de la versión. ``ValueError`` si ``outcome`` no lleva el eje, la rasante y el grabado (el de :func:`road_compute_steps` siempre los lleva)."""
+    engraved, axis, levels = outcome.engraved, outcome.axis, outcome.levels
+    if engraved is None or axis is None or levels is None:
+        raise ValueError("el resumen de una pista pide su eje, su rasante y su grabado: son los del resultado de road_compute_steps")
+    found = {figure.key: figure.value for figure in outcome.figures}
+    top = int(np.argmax(np.abs(np.diff(levels)) / np.diff(axis.stations)))
+    cut = found["des.road_cut_m3"] + found["des.road_edge_cut_m3"]
+    fill = found["des.road_fill_m3"] + found["des.road_edge_fill_m3"]
+    route = outcome.route
+    kept = tuple(obsolete)
+    notes: list[Notice] = []
+    if route is not None:
+        notes.append(Notice("des.road_route_margin", {"entity": outcome.name, "mesh": route.mesh_m, "margin": route.margin_m, "expanded": route.expanded, "budget": route.budget}))
+    notices = (*start_notices, *notes, *edges.summary_notices(outcome.notices), *carriageway, *held, *obsolete_notices(outcome.name, version, kept))
+    return RoadSummary(
+        outcome.name, outcome.code, version, outcome.mode.value, profile.code, outcome.figures, axis.length_m, float(levels[0]), float(levels[-1]), found["des.road_gradient_mean_pct"],
+        found["des.road_gradient_max_pct"], found["des.road_gradient_max_station_m"], float(axis.points[top, 0]), float(axis.points[top, 1]), axis.min_radius_m, axis.curve_count, cut, fill,
+        cut - fill, None if route is None else route.margin_m, bool(outcome.mean_exceeded), float(profile.max_mean_gradient_pct), engraved.needs_confirmation,
+        sum(group.area_m2 for group in engraved.off_level), notices, kept)
+
+
+def road_summary(project: StoreProject, version: Version, prepared: PreparedRoad, outcome: RoadOutcome, masks: Any, *, supersedes: str | None = None) -> RoadSummary:
+    """El resumen de «Calcular» la pista ``prepared`` en ``version`` (RF-015-03, RF-017-23, RF-017-22, RF-015-13): :func:`summary_of` con la restricción o la entidad que impide mover la calzada
+    (:func:`carriageway_notices`), los avisos de la partida (``prepared.notices``: RF-017-05 (a)) y lo que la pista no mueve por una restricción (:func:`road_held_notices`; las restricciones y las
+    entidades que las declaran se leen del proyecto **solo si hay algo que nombrar**) y lo que quedará obsoleto al crearla (:func:`road_obsolete`; ``supersedes``: la operación que sustituye). ``masks`` son las de la versión. **Solo lee.**"""
+    engraved = outcome.engraved
+    carriageway: tuple[Notice, ...] = ()
+    held: tuple[Notice, ...] = ()
+    if engraved is not None and (engraved.off_level or bool((engraved.cut_denied | engraved.fill_denied | engraved.held).any())):
+        names, declared = entity_store._restrictions(project, version)
+        carriageway = carriageway_notices(outcome, masks, names=names, declared=declared)
+        held = road_held_notices(outcome, masks, names=names, declared=declared)
+    return summary_of(outcome, version=version.code, profile=prepared.profile, start_notices=prepared.notices, carriageway=carriageway, held=held,
+                      obsolete=road_obsolete(project, prepared, supersedes=supersedes))
+
+
+@dataclass(frozen=True, slots=True)
+class RoadConfirmed:
+    """Lo que la persona confirmó **expresamente** al crear la pista (RF-017-17, RF-017-22): quién (``decided_by``) y cuándo (``decided_on``, UTC); de la pendiente media por encima de pm, la media
+    (``mean_pct``), el límite del perfil (``mean_limit_pct``) y **su motivo** (``reason``; ``None``: nada que confirmar); de la calzada que no queda en su rasante, el área (``carriageway_m2``) y la diferencia
+    máxima (``carriageway_difference_m``; ``None``: nada que confirmar). Es lo que :meth:`settings` anota en los ajustes de la operación (:data:`CONFIRMED`) y lo que :func:`confirmed_of` lee de vuelta."""
+
+    decided_by: str
+    decided_on: str
+    mean_pct: float | None = None
+    mean_limit_pct: float | None = None
+    reason: str | None = None
+    carriageway_m2: float | None = None
+    carriageway_difference_m: float | None = None
+
+    def settings(self) -> dict[str, Any]:
+        """Lo que se anota en los ajustes de la operación (JSON): ``mean_gradient`` (la media, el límite y el motivo) y ``carriageway`` (el área y la diferencia máxima), cada uno si se confirmó, con su
+        decisor y su fecha."""
+        found: dict[str, Any] = {}
+        who = {"decided_by": self.decided_by, "decided_on": self.decided_on}
+        if self.mean_pct is not None:
+            found["mean_gradient"] = {"mean_pct": self.mean_pct, "limit_pct": self.mean_limit_pct, "reason": self.reason, **who}
+        if self.carriageway_m2 is not None:
+            found["carriageway"] = {"area_m2": self.carriageway_m2, "difference_m": self.carriageway_difference_m, **who}
+        return found
+
+
+def confirmed_of(settings: Mapping[str, Any]) -> RoadConfirmed | None:
+    """Lo confirmado que guardan los ajustes ``settings`` de una operación ``des.road`` (:data:`CONFIRMED`), o ``None`` si no lo llevan (no hubo nada que confirmar). ``ValueError`` si lo llevan y no es una
+    confirmación (nombrando el campo): sin quién ni cuándo, o no es un diccionario."""
+    found = settings.get(CONFIRMED) if isinstance(settings, Mapping) else None
+    if found is None:
+        return None
+    if not isinstance(found, Mapping):
+        raise ValueError(f"los ajustes de una pista, «{CONFIRMED}», son un diccionario, no {found!r}")
+    mean, carriageway = found.get("mean_gradient"), found.get("carriageway")
+    kept = [item for item in (mean, carriageway) if isinstance(item, Mapping)]
+    if not kept:
+        return None
+    who, when = kept[0].get("decided_by"), kept[0].get("decided_on")
+    if not isinstance(who, str) or not isinstance(when, str):
+        raise ValueError(f"los ajustes de una pista, «{CONFIRMED}», no dicen quién confirmó ni cuándo")
+    reason = mean.get("reason") if isinstance(mean, Mapping) else None
+    return RoadConfirmed(
+        who, when, float(mean["mean_pct"]) if isinstance(mean, Mapping) else None, float(mean["limit_pct"]) if isinstance(mean, Mapping) else None, reason if isinstance(reason, str) else None,
+        float(carriageway["area_m2"]) if isinstance(carriageway, Mapping) else None, float(carriageway["difference_m"]) if isinstance(carriageway, Mapping) else None)
+
+
+def _mean_notice(outcome: RoadOutcome) -> Notice:
+    """El aviso de la pendiente media por encima de pm del resultado (``des.road_mean_gradient``: la media y el límite); error del programa si el resultado dice que la pasa y no lo lleva."""
+    for notice in outcome.notices:
+        if notice.code == "des.road_mean_gradient":
+            return notice
+    raise ValueError("el resultado dice que la pendiente media pasa de pm y no lleva su aviso (des.road_mean_gradient)")
+
+
+def check_road_confirmed(outcome: RoadOutcome, *, mean: bool = False, carriageway: bool = False, reason: str | None = None) -> None:
+    """**No se crea la pista sin la confirmación expresa** (RF-017-17, RF-017-22, D-6; como la contrapendiente de RF-015-23): con la pendiente media por encima de pm (``outcome.mean_exceeded``) y sin
+    ``mean``, ``des.road_mean_unconfirmed`` con la media y el límite; con ``mean`` y **sin un motivo** (``reason`` ausente, vacío o en blanco), ``des.road_mean_reason`` (el motivo queda registrado y **no
+    bloquea**: con él se crea); con alguna celda de la calzada fuera de su rasante (``outcome.off_level``) y sin ``carriageway``, ``des.road_carriageway_unconfirmed`` con el área y la diferencia máxima. Sin
+    nada que confirmar no pide nada, y confirmar de más no estorba. No escribe: la confirmación, su decisor, su fecha y el motivo los registra la creación (:func:`road_confirmation`, T21)."""
+    obj = f"Pista «{outcome.name}»"
+    if outcome.mean_exceeded:
+        notice = _mean_notice(outcome)
+        values = {"entity": outcome.name, "mean": round(float(notice.values["mean"]), 2), "limit": float(notice.values["limit"])}
+        if not mean:
+            raise DesignError("des.road_mean_unconfirmed", obj=obj, field="confirmación", value=False, **values)
+        if reason is None or not reason.strip():
+            raise DesignError("des.road_mean_reason", obj=obj, field="motivo", value=reason, **values)
+    groups = outcome.off_level
+    if groups and not carriageway:
+        raise DesignError("des.road_carriageway_unconfirmed", obj=obj, field="confirmación", value=False, entity=outcome.name, area=sum(group.area_m2 for group in groups),
+                          difference=round(max(group.max_m for group in groups), 3))
+
+
+def road_confirmation(project: Any, outcome: RoadOutcome, *, mean: bool, carriageway: bool, reason: str | None, decided_by: str | None) -> RoadConfirmed | None:
+    """Lo que se confirma al crear (con ``mean`` y ``carriageway``, de lo que haya que confirmar en ``outcome``): quién (``decided_by``; por defecto, quien tiene abierto el proyecto), cuándo (ahora, UTC),
+    la media, el límite y el motivo, y el área y la diferencia máxima de la calzada; ``None`` si no había nada que confirmar. ``project`` es el ``StoreProject`` (su sesión y su reloj)."""
+    asked_mean = bool(outcome.mean_exceeded) and mean
+    groups = outcome.off_level
+    asked_carriageway = bool(groups) and carriageway
+    if not asked_mean and not asked_carriageway:
+        return None
+    notice = _mean_notice(outcome) if asked_mean else None
+    return RoadConfirmed(
+        decided_by or project.session.user_host, format_utc(project.clock.now()), None if notice is None else float(notice.values["mean"]), None if notice is None else float(notice.values["limit"]),
+        ((reason or "").strip() or None) if asked_mean else None, sum(group.area_m2 for group in groups) if asked_carriageway else None,
+        round(max(group.max_m for group in groups), 3) if asked_carriageway else None)

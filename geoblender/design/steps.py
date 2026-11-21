@@ -51,6 +51,11 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   repetirla) y **nada en el proyecto**. Crearla (T17b; RF-015-02, RNF-017-10) es :meth:`Calculation.create` o, por pasos, :meth:`Calculation.create_steps`: la rejilla de lo
   alcanzable y las tablas se preparan en su temporal y **una** transacción registra los parámetros de la entidad, la operación, los datos y las cifras
   (:func:`~.access_store.create_access_steps`).
+- :func:`road_run` (spec 017, T20b; RF-017-17, RF-017-22, RF-017-12, RF-017-23, RF-015-03, RF-015-29): «Calcular» una pista (``des.road``, de una versión, con cadena y huella) del mismo modo: deja el
+  **resultado** (``design.road_model.RoadOutcome``: el eje, la rasante, la sección, el grabado y las veintitrés cifras) y el **resumen** (:class:`~.preview.RoadSummary`: las cifras, la holgura del pasillo,
+  los avisos con su lugar, la calzada que no queda en su rasante con la restricción o la entidad que lo impide y lo que quedará obsoleto) y **nada en el proyecto**: ni la base de datos, ni los ficheros, ni
+  siquiera un temporal (la superficie entera la escribe «Crear», T21). Pide **dos confirmaciones expresas** antes de crearla: la **pendiente media por encima de pm** con un motivo (RF-017-17, que no bloquea)
+  y la **calzada que no queda en su rasante** (RF-017-22): :attr:`Calculation.needs_mean_confirmation`, :attr:`~Calculation.needs_carriageway_confirmation` y :meth:`Calculation.confirm_road`.
 - :func:`removal_run` (spec 016, T20; RF-016-11 a 15, RF-015-03, RF-015-29): «Calcular» la retirada de un acopio
   (``des.stockpile_removal``) del mismo modo: deja la superficie (``des_psf_``) en un temporal, el **resumen**
   (:class:`~.preview.RemovalSummary`: las cifras, **la lista de lo que se le apoyaba**, la pared y lo que pide confirmar) y
@@ -92,6 +97,8 @@ from __future__ import annotations
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from types import MappingProxyType, TracebackType
 
+import numpy as np
+
 from ..core.datasets.model import DatasetSpec
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.project.model import Progress
@@ -112,6 +119,7 @@ from . import (
     quarry,
     refit,
     removal,
+    road_store,
     stockpile_store,
     stockpiles,
     store,
@@ -133,8 +141,9 @@ from .model import (
 )
 from .params import ANTHROPIC_PRESENCE
 from .preview import Notice
-from .road_model import AccessOutcome, AccessRequest
+from .road_model import AccessOutcome, AccessRequest, RoadOutcome, RoadRequest
 from .seeds import SeedPlan, SeedSet, pace_progress
+from .surfaces import project_frame, read_surface_window
 
 __all__ = [
     "Calculation",
@@ -152,6 +161,7 @@ __all__ = [
     "refit_run",
     "removal_run",
     "resolve_values",
+    "road_run",
     "stockpile_run",
 ]
 
@@ -164,6 +174,7 @@ _REMOVAL_SUMMARY_PHASE = "removal_summary"  # el resumen de la retirada de un ac
 _BODY_SUMMARY_PHASE = "body_summary"  # el resumen de un cuerpo apoyado (016, T25)
 _BUTTRESS_SUMMARY_PHASE = "buttress_summary"  # el resumen de un contrafuerte (016, T27)
 _ACCESS_SUMMARY_PHASE = "access_summary"  # el resumen de una accesibilidad (017, T17)
+_ROAD_SUMMARY_PHASE = "road_summary"  # el resumen de una pista (017, T20b)
 _OUTSIDE_PHASE = "seeds_outside"  # la cantera parada por sus semillas fuera (T43; RF-014-03)
 _READY, _CREATED, _DISCARDED = "ready", "created", "discarded"
 
@@ -210,7 +221,8 @@ class Calculation:
     lo que anotará la operación) y ``summary`` (el :class:`~.preview.PlatformSummary`); **crearla** (T13) es
     :meth:`create`, que escribe además los parámetros de su entidad. De una **detección de acopios** (spec 016, T12) lleva
     en ``entity`` la :class:`~.stockpile_store.PreparedDetection` y en ``summary`` el :class:`~.preview.StockpileSummary`;
-    crearla es :meth:`create` o :meth:`create_steps` (T13). Mientras esté abierta
+    crearla es :meth:`create` o :meth:`create_steps` (T13). **De una pista** (spec 017, T20b) lleva en ``entity`` la :class:`~.road_store.PreparedRoad` y en ``summary`` el :class:`~.preview.RoadSummary`, con
+    sus dos confirmaciones (:meth:`confirm_road`): la pendiente media por encima de pm, con un motivo, y la calzada que no queda en su rasante. Mientras esté abierta
     (:attr:`open`), sus rejillas esperan en temporales junto a su destino: hay que crearla o
     descartarla."""
 
@@ -219,15 +231,15 @@ class Calculation:
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
                  | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome
                  | platform.PlatformOutcome | stockpiles.StockpileOutcome | removal.RemovalOutcome
-                 | thickness.BodyOutcome | buttress.ButtressOutcome | AccessOutcome,
+                 | thickness.BodyOutcome | buttress.ButtressOutcome | AccessOutcome | RoadOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object],
                  entity: entity_store.PreparedPlatform | stockpile_store.PreparedDetection
                  | supported_store.PreparedRemoval | supported_store.PreparedBody | supported_store.PreparedButtress
-                 | access_store.PreparedAccess | None = None,
+                 | access_store.PreparedAccess | road_store.PreparedRoad | None = None,
                  summary: preview.PlatformSummary | preview.StockpileSummary | preview.RemovalSummary
-                 | preview.BodySummary | preview.ButtressSummary | access_store.AccessSummary | None = None) -> None:
+                 | preview.BodySummary | preview.ButtressSummary | access_store.AccessSummary | preview.RoadSummary | None = None) -> None:
         self._project = project
         self._writer = writer
         self._start = start
@@ -242,6 +254,7 @@ class Calculation:
         self.entity = entity
         self.summary = summary
         self._removal_confirmed = (False, False)
+        self._road_confirmed: tuple[bool, bool, str | None] = (False, False, None)
 
     def __repr__(self) -> str:
         return f"<Calculation {self.op_type} «{self.name}» {self.version} {self._state}>"
@@ -322,6 +335,42 @@ class Calculation:
             raise TypeError(f"solo una retirada de un acopio tiene algo que confirmar, no «{self.op_type}»")
         self._removal_confirmed = (bool(resting), bool(wall))
 
+    @property
+    def needs_mean_confirmation(self) -> bool:
+        """Si es una pista cuya pendiente media pasa de la pendiente media máxima de su perfil (RF-017-17) y la persona aún no la ha confirmado: no se podrá crear sin la confirmación expresa y un motivo
+        (que queda registrado y no la bloquea, D-6). Falso en cualquier otra."""
+        found = self.outcome
+        return isinstance(found, RoadOutcome) and found.mean_exceeded and not self._road_confirmed[0]
+
+    @property
+    def needs_carriageway_confirmation(self) -> bool:
+        """Si es una pista con alguna celda de la calzada que no queda en su rasante (RF-017-22) y la persona aún no lo ha confirmado: no se podrá crear. Falso en cualquier otra."""
+        found = self.outcome
+        return isinstance(found, RoadOutcome) and bool(found.off_level) and not self._road_confirmed[1]
+
+    @property
+    def road_confirmed(self) -> tuple[bool, bool, str | None]:
+        """Lo que la persona ha confirmado de una pista (:meth:`confirm_road`): la pendiente media, la calzada y el motivo de la media."""
+        return self._road_confirmed
+
+    def confirm_road(self, *, mean: bool = False, carriageway: bool = False, reason: str | None = None) -> None:
+        """La confirmación expresa de una pista (RF-017-17, RF-017-22): la de la **pendiente media por encima de pm** (``mean``, con su motivo ``reason``, que queda registrado con quién y cuándo y no
+        bloquea) y la de la **calzada que no queda en su rasante** (``carriageway``); queda dicha para la creación (T21, que la registra con su decisor y su fecha) sin recalcular. Sustituye a la anterior.
+        ``TypeError`` si no es una pista."""
+        if not isinstance(self.entity, road_store.PreparedRoad):
+            raise TypeError(f"solo una pista tiene una pendiente media o una calzada que confirmar, no «{self.op_type}»")
+        self._road_confirmed = (bool(mean), bool(carriageway), reason)
+
+    def ensure_road_creatable(self) -> None:
+        """**No se crea la pista sin la confirmación expresa** (RF-017-17, RF-017-22; :func:`~.road_store.check_road_confirmed`): con la pendiente media por encima de pm y sin confirmar,
+        ``des.road_mean_unconfirmed``; confirmada sin motivo, ``des.road_mean_reason``; con la calzada fuera de su rasante sin confirmar, ``des.road_carriageway_unconfirmed``. **Antes de escribir nada y
+        sin cerrar el cálculo**: se confirma y se vuelve a crear. ``TypeError`` si no es una pista."""
+        found = self.outcome
+        if not isinstance(found, RoadOutcome):
+            raise TypeError(f"el cálculo «{self.name}» no es el de una pista, sino «{self.op_type}»")
+        mean, carriageway, reason = self._road_confirmed
+        road_store.check_road_confirmed(found, mean=mean, carriageway=carriageway, reason=reason)
+
     def lines(self, language: str = "es") -> tuple[str, ...]:
         """Los avisos y notas del resumen, línea a línea, en ``language`` (``"es"`` o ``"en"``)."""
         return tuple(notice.text(language) for notice in self.notices)
@@ -365,6 +414,8 @@ class Calculation:
             return stored
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
+        if isinstance(self.entity, road_store.PreparedRoad):
+            return self._create_road(self.entity, decided_by)
         if isinstance(self.entity, supported_store.PreparedRemoval):
             return self._create_removal(self.entity, decided_by)
         if isinstance(self.entity, supported_store.PreparedBody):
@@ -411,6 +462,14 @@ class Calculation:
             raise
         self._state = _CREATED
         return stored
+
+    def _create_road(self, found: road_store.PreparedRoad, decided_by: str | None) -> store.Stored:
+        """**«Crear» una pista** (spec 017, T20b y T21; RF-017-17, RF-017-22, RF-015-02): sin la confirmación expresa de la pendiente media (con su motivo) o de la calzada que no queda en su rasante
+        (:meth:`confirm_road`), se rechaza (``des.road_mean_unconfirmed``, ``des.road_mean_reason``, ``des.road_carriageway_unconfirmed``) **antes de escribir nada y sin cerrar el cálculo**: se confirma y
+        se vuelve a crear. **Escribir la pista** (la superficie entera, la huella, el eje, el informe, las cifras, la operación con sus entradas y ajustes —entre ellos lo confirmado, con quién y cuándo:
+        ``road_store.road_confirmation``— y sus dependencias) es de la T21: hasta entonces, ``NotImplementedError``."""
+        self.ensure_road_creatable()
+        raise NotImplementedError(f"crear la pista «{found.job.request.name}» (la operación, los datos, la huella y sus dependencias: RF-017-01, RF-015-01, RF-015-02) es de la T21 de la spec 017")
 
     def _create_body(self, found: supported_store.PreparedBody, decided_by: str | None) -> store.Stored:
         """**«Crear» un cuerpo apoyado** (spec 016, T25; RF-016-20, RF-015-02): lo registra :func:`~.supported_store.create_body` en una
@@ -690,6 +749,22 @@ def access_run(project: StoreProject, request: AccessRequest, *, version: str | 
     parámetros sin valor, la superficie y su rejilla, las bermas, ningún punto de entrada o uno sin dato: RF-017-04). Cerrar el generador a mitad (Esc) o un fallo después de calcular
     no dejan nada (RF-015-29). **Crear** la accesibilidad es :meth:`Calculation.create` o :meth:`Calculation.create_steps` (T17b)."""
     return _access_steps(project, request, version, masks, code, supersedes, budget_s)
+
+
+def road_run(project: StoreProject, request: RoadRequest, *, version: str | None, masks: MaskSet | None = None, code: str | None = None, supersedes: str | None = None,
+             budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**«Calcular»** la pista ``request`` en la versión ``version`` (uid o código) por pasos de ``budget_s`` como mucho (spec 017, T20b; RF-017-17, RF-017-22, RF-017-12, RF-017-23, RF-015-03, RF-015-29,
+    RF-017-30; RNF-017-06 y RNF-017-07; «Pista…»): el último ``Progress`` lleva la :class:`Calculation` de ``des.road``, con su resultado (``Calculation.outcome``: ``design.road_model.RoadOutcome``, con el eje,
+    la rasante, la sección, el grabado y las veintitrés cifras), su resumen (``Calculation.summary``: :class:`~.preview.RoadSummary`: las cifras, la holgura del pasillo, los avisos con su lugar, la calzada
+    que no queda en su rasante con la restricción o la entidad que lo impide, lo que la pista no mueve por una restricción y lo que quedará obsoleto al crearla) y **nada registrado ni escrito en el
+    proyecto**: ni la base de datos, ni las operaciones, los datos, los parámetros o los ficheros (ni un temporal: la superficie entera la escribe «Crear»). ``masks``, como en :func:`envelope_run`. ``code`` y
+    ``supersedes``, los de ``road_store.prepare_road_units`` (recalcular una pista que ya está en la versión y sustituir su operación).
+
+    Los rechazos salen **al avanzar**, antes de escribir nada y con la capa, la pista, el campo y el valor: los de la preparación (sin versión activa o no editable, la geometría, el perfil, la partida, la
+    falta de dato, los parámetros sin valor, un sector con la búsqueda pendiente: RF-017-04, RF-015-06 a RF-015-09) y los del cálculo (**sin ruta**, por sus tres causas —la red 2D, el pasillo y el presupuesto de
+    estados agotado—, RF-017-12; el radio que cabe menor que Rmín, RF-017-14; el desnivel que no cabe en el eje, RF-017-16; la falta de dato bajo la sección, RF-015-09). Cerrar el generador a mitad (Esc) o un fallo
+    no dejan nada (RF-015-29). Crearla es :meth:`Calculation.create` (T21), con :meth:`Calculation.confirm_road` si pide confirmar la pendiente media o la calzada (RF-017-17, RF-017-22)."""
+    return _road_steps(project, request, version, masks, code, supersedes, budget_s)
 
 
 def removal_run(project: StoreProject, request: RemovalRequest, *, version: str | None,
@@ -972,6 +1047,36 @@ def _access_steps(project: StoreProject, request: AccessRequest, version: str | 
         yield Progress(_ACCESS_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
         summary = access_store.prepared_summary(project, prepared, outcome, supersedes=supersedes)
         calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices, seeds=None, values={},
+                                  entity=prepared, summary=summary)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda nada
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _road_steps(project: StoreProject, request: RoadRequest, version: str | None, masks: MaskSet | None, code: str | None, supersedes: str | None,
+                budget_s: float) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.ROAD)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: road_store.PreparedRoad = yield from _prepare_steps(
+        road_store.prepare_road_units(project, request, found, loaded, code=code, supersedes=supersedes), budget_s)
+    with project.read() as conn:  # con qué se compara la magnitud (RF-013-30)
+        previous = road_store.road_previous(conn, found, prepared.code)
+    order = entity_store.quarry_order(project, found, prepared)  # RF-015-14: el orden con la otra superficie de la cantera
+    frame = project_frame(project)
+
+    def read_other(name: str, window: tuple[slice, slice]) -> np.ndarray:
+        """La superficie de otro diseño de la versión en la ventana de trabajo de la pista (RF-017-05 (b)): solo las celdas de la ventana."""
+        return read_surface_window(project, name, window, version_uid=found.uid, expect=frame, role="superficie de otro diseño de la versión").values
+
+    writer = store.DesignWriter(project, provenance.ROAD, request.name, version=found.uid, supersedes=supersedes)
+    try:
+        outcome: RoadOutcome = yield from road_store.road_compute_steps(
+            prepared.job, prepared.common, surface=prepared.start_surface, others=prepared.others, read_other=read_other, quarry=order, previous=previous, operation=request.name,
+            budget_s=budget_s)
+        yield Progress(_ROAD_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
+        summary = road_store.road_summary(project, found, prepared, outcome, loaded, supersedes=supersedes)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices, seeds=None, values=prepared.common,
                                   entity=prepared, summary=summary)
     except BaseException as error:  # un fallo o cerrar el generador: no queda nada
         writer.close(error)

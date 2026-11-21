@@ -3349,6 +3349,62 @@ CATALOG: tuple[Message, ...] = (
         "tolerancia de cara ({tolerance}°); es de {max}°, en x = {x} m, y = {y} m: {at_reach} en el límite del alcance ({reach} m), {at_masks} junto a lo "
         "que las máscaras no dejan mover y {other} por la propia pista. Amplíe el alcance o revise la ladera; una pared así solo se admite en esos límites.",
     ),
+    # RF-015-13 (último inciso: lo que la rejilla recorta de la huella de toda entidad): la sección de la pista que sale de la rejilla del proyecto.
+    Message(
+        "des.road_footprint_clipped",
+        "Haul road «{entity}»: the project grid cuts its footprint: {area} m² of its section ({cells} cells) fall outside the grid, the first at x = {x} m, "
+        "y = {y} m; only the part inside is calculated; enlarge the working window of the project or move the haul road; it can still be created.",
+        "Pista «{entity}»: la rejilla del proyecto recorta su huella: {area} m² de su sección ({cells} celdas) quedan fuera de la rejilla, la primera en "
+        "x = {x} m, y = {y} m; solo se calcula la parte de dentro; amplíe la ventana de trabajo del proyecto o mueva la pista; se puede crear igualmente.",
+        "warning",
+        count="cells",
+        one_msgid="Haul road «{entity}»: the project grid cuts its footprint: {area} m² of its section ({cells} cell) fall outside the grid, at x = {x} m, "
+        "y = {y} m; only the part inside is calculated; enlarge the working window of the project or move the haul road; it can still be created.",
+        one_es="Pista «{entity}»: la rejilla del proyecto recorta su huella: {area} m² de su sección ({cells} celda) quedan fuera de la rejilla, en "
+        "x = {x} m, y = {y} m; solo se calcula la parte de dentro; amplíe la ventana de trabajo del proyecto o mueva la pista; se puede crear igualmente.",
+    ),
+    # H-10: la ruta cambia con la holgura del pasillo (en un barranco, un 10 % de coste entre 2 m y 60 m): el resumen la anota.
+    Message(
+        "des.road_route_margin",
+        "Haul road «{entity}»: the route was searched on a mesh of {mesh} m with a corridor slack of {margin} m (the route changes with the slack: a narrower "
+        "corridor is faster but can give a worse route); {expanded} states were expanded out of a budget of {budget}.",
+        "Pista «{entity}»: la ruta se buscó en una malla de {mesh} m con una holgura del pasillo de {margin} m (la ruta cambia con la holgura: un pasillo más "
+        "estrecho es más rápido, pero puede dar una ruta peor); se expandieron {expanded} estados de un presupuesto de {budget}.",
+        "note",
+    ),
+    # RF-017-17 y RF-017-22: la pista no se crea sin la confirmación expresa de la pendiente media por encima de pm (y su motivo) ni de la calzada que no
+    # queda en su rasante; el rechazo sale antes de escribir nada y sin cerrar el cálculo (se confirma y se vuelve a crear).
+    Message(
+        "des.road_mean_unconfirmed",
+        "Haul road «{entity}» is not created: its mean gradient ({mean} %) is more than the maximum mean gradient of its profile ({limit} %) and it is not "
+        "created without your express confirmation and a reason that stays recorded; confirm it with its reason, or change the route, the levels or the "
+        "profile; nothing is created.",
+        "La pista «{entity}» no se crea: su pendiente media ({mean} %) pasa de la pendiente media máxima de su perfil ({limit} %) y no se crea sin su "
+        "confirmación expresa y un motivo, que queda registrado; confírmela con su motivo, o cambie la ruta, las cotas o el perfil; no se crea nada.",
+    ),
+    Message(
+        "des.road_mean_reason",
+        "Haul road «{entity}»: its mean gradient ({mean} %) is more than the maximum mean gradient of its profile ({limit} %) and confirming it needs a "
+        "reason that stays recorded, and none was given; nothing is created.",
+        "Pista «{entity}»: su pendiente media ({mean} %) pasa de la pendiente media máxima de su perfil ({limit} %) y confirmarla pide un motivo, que queda "
+        "registrado, y no se ha dado ninguno; no se crea nada.",
+    ),
+    Message(
+        "des.road_carriageway_unconfirmed",
+        "Haul road «{entity}» is not created: {area} m² of its carriageway do not end up on the level profile of the haul road, the largest difference "
+        "being {difference} m, and it is not created without your express confirmation: a carriageway with steps or gaps is not a haul road; confirm it, "
+        "or change the masks, the restrictions of other entities, the route or the profile; nothing is created.",
+        "La pista «{entity}» no se crea: {area} m² de su calzada no quedan en su rasante (el perfil de cotas de la pista), con una diferencia máxima de "
+        "{difference} m, y no se crea sin su confirmación expresa: una calzada con escalones o huecos no es una pista; confírmela, o cambie las máscaras, "
+        "las restricciones de otras entidades, la ruta o el perfil; no se crea nada.",
+    ),
+    # Lo que impide mover la calzada cuando ninguna zona de las máscaras lo explica (``preview.Named`` en el valor ``blocker`` de los avisos de arriba).
+    Message(
+        "des.road_blocker_masks",
+        "a limit of the masks of the version or the band of one",
+        "un límite de las máscaras de la versión o la banda de uno",
+        "note",
+    ),
     # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase): la pista y la accesibilidad no declaran restricción
     # alguna (D-15), así que no se usa; existe, como el de la detección de acopios.
     Message(

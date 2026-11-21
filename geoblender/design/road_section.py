@@ -50,6 +50,7 @@ __all__ = [
     "RIGHT",
     "Section",
     "SectionClass",
+    "clipped_steps",
     "sample_terrain",
     "section_cells",
     "section_steps",
@@ -295,6 +296,53 @@ def section_steps(axis: Axis, carriageway_m: float, shoulder_m: float, berm_m: f
     return Section(
         window=box, cells=_frozen(cells), kind=_frozen(kind), side=_frozen(side), sigma=_frozen(sigma), lateral=_frozen(lateral), carriageway_m=carriageway,
         shoulder_m=shoulder, berm_m=berm, length_m=high - low if high >= low else 0.0, axis_length_m=axis.length_m, cell_area_m2=grid.cell_area)
+
+
+def clipped_steps(axis: Axis, carriageway_m: float, shoulder_m: float, berm_m: float, terrain: np.ndarray, grid: Grid) -> Generator[None, None, tuple[int, float | None, float | None]]:
+    """**Lo que la rejilla recorta de la huella** de la sección (RF-015-13, último inciso: el aviso que toda entidad da; spec 017, T20b), **por unidades** (cada ``yield``, una): las celdas de la sección que
+    caen **fuera de ``grid``**, de norte a sur y de oeste a este, como ``(celdas, x, y)`` con el centro absoluto (float64) de la primera, o ``(0, None, None)`` si la sección cabe en la rejilla (lo normal:
+    **no cuesta nada** más que comparar la caja del eje denso, ampliada en la semianchura máxima, con la de la rejilla).
+
+    Si no cabe, mide la misma sección (:func:`section_steps`, la misma regla de los lados: **sin dato fuera**, el caballón va a la derecha) sobre una rejilla ampliada en la semianchura máxima más una celda
+    por cada lado (``terrain`` con ``NaN`` en el margen) y **solo en las franjas del margen que la caja alcanza** (la del oeste y la del este de toda la altura, la del norte y la del sur entre ellas), no en
+    la caja entera. Lo de dentro de la rejilla es lo de :func:`section_steps` sobre ``grid``: no se cuenta dos veces. No modifica sus entradas."""
+    carriageway, shoulder, berm = _checked(axis, carriageway_m, shoulder_m, berm_m, grid)
+    ground = _ground(terrain, grid)
+    reach = carriageway / 2.0 + max(shoulder, berm)
+    points, _ = _dense(axis)
+    low, high = points.min(axis=0) - reach, points.max(axis=0) + reach
+    east, south = grid.west + grid.ncols * grid.dx, grid.north - grid.nrows * grid.dy
+    west_out, east_out, north_out, south_out = bool(low[0] < grid.west), bool(high[0] > east), bool(high[1] > grid.north), bool(low[1] < south)
+    if not (west_out or east_out or north_out or south_out):
+        return (0, None, None)
+    yield
+    pad = math.ceil(reach / min(grid.dx, grid.dy)) + 1
+    rows, cols = grid.nrows + 2 * pad, grid.ncols + 2 * pad
+    wide = Grid(west=grid.west - pad * grid.dx, north=grid.north + pad * grid.dy, dx=grid.dx, dy=grid.dy, ncols=cols, nrows=rows)
+    padded = np.pad(ground, pad, constant_values=np.nan)
+    yield
+    strips: list[tuple[slice, slice]] = []
+    if west_out:
+        strips.append((slice(0, rows), slice(0, pad)))
+    if east_out:
+        strips.append((slice(0, rows), slice(pad + grid.ncols, cols)))
+    if north_out:
+        strips.append((slice(0, pad), slice(pad, pad + grid.ncols)))
+    if south_out:
+        strips.append((slice(pad + grid.nrows, rows), slice(pad, pad + grid.ncols)))
+    count = 0
+    first: tuple[int, int] | None = None
+    for strip in strips:
+        found = yield from section_steps(axis, carriageway, shoulder, berm, padded, wide, strip)
+        here = np.nonzero(found.cells)
+        if here[0].size:
+            count += int(here[0].size)
+            cell = (int(here[0][0]) + strip[0].start, int(here[1][0]) + strip[1].start)  # la primera por filas: la de más al norte y, en ella, la de más al oeste
+            first = cell if first is None or cell < first else first
+        yield
+    if first is None:
+        return (0, None, None)
+    return (count, float(wide.west + (first[1] + 0.5) * wide.dx), float(wide.north - (first[0] + 0.5) * wide.dy))
 
 
 def section_cells(axis: Axis, carriageway_m: float, shoulder_m: float, berm_m: float, terrain: np.ndarray, grid: Grid,

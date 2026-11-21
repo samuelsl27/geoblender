@@ -51,6 +51,7 @@ import math
 from collections.abc import Generator, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 import numpy as np
 
@@ -387,10 +388,11 @@ def _group_units(chosen: np.ndarray, rows: np.ndarray, cols: np.ndarray, depth: 
     return tuple(found)
 
 
-def carriageway_notice(group: OffLevelGroup, entity: str, *, blocker: str | None = None, other_entity: str | None = None, height_m: float | None = None) -> Notice:
+def carriageway_notice(group: OffLevelGroup, entity: str, *, blocker: str | tuple[Any, ...] | None = None, other_entity: str | None = None, height_m: float | None = None) -> Notice:
     """El aviso de RF-017-22 del grupo ``group`` de celdas de la calzada de la pista ``entity`` que no quedan en su rasante, antes de crear y con la confirmación expresa:
     ``des.road_carriageway_masks`` (con lo que lo impide, ``blocker``: la restricción de las máscaras), ``des.road_carriageway_entity`` (``other_entity``: la entidad cuya
-    restricción no deja mover el terreno) o ``des.road_carriageway_height`` (``height_m``: la altura máxima de desmonte y terraplén que pasa el eje). Lleva el área (m²), la
+    restricción no deja mover el terreno) o ``des.road_carriageway_height`` (``height_m``: la altura máxima de desmonte y terraplén que pasa el eje). ``blocker`` es un texto o, para que se lea en el idioma de quien lo lee, una tupla de ``preview.Named`` (spec 017, T20b:
+    «un límite de las máscaras…» cuando ninguna zona lo explica). Lleva el área (m²), la
     diferencia máxima (m, al mm) y el lugar (m, al cm). ``ValueError`` (error del programa) si falta el dato que pide la causa del grupo: ``blocker`` o ``other_entity`` en
     las de las máscaras y ``height_m`` en la de la altura."""
     base = {"entity": entity, "area": group.area_m2, "difference": round(group.max_m, 3), "x": round(group.x, 2), "y": round(group.y, 2)}
