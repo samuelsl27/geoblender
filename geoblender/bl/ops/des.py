@@ -364,8 +364,17 @@ Lo pedido es una ``design.road_model.AccessRequest`` (su :meth:`~GEOBLENDER_OT_d
 avisos y lo que quedará obsoleto) y **las listas** de tramos de berma, plataformas y zonas «requiere acceso», **comunicados o no** (los que no, primero y en alerta), cada fila con su cota o su distancia, su
 lugar y su **«Ir a»** (``geoblender.core_go_to_place``; ``des_panels.access_sections`` y ``draw_access_lists``; el lugar, de ``design.access_store.access_places``); lo que no se comunica va también al
 informe de la orden. **Tras crear, encadena** ``entity_store.after_entity_change``: la accesibilidad no declara restricciones, pero la capa de entidades se pone al día con su fila. Calcular, Crear,
-Cancelar y Esc son los de :class:`_CalculateAndCreate` (el avance y el registro simétrico completos son de la T32). Disponible con el proyecto en escritura y la versión activa editable y, si no,
-desactivada con su motivo (RF-017-29, RF-015-28: :class:`DesignCommandAware`).
+Cancelar y Esc son los de :class:`_CalculateAndCreate`. Disponible con el proyecto en escritura y la versión activa editable y, si no, desactivada con su motivo (RF-017-29, RF-015-28:
+:class:`DesignCommandAware`).
+
+**El avance, Esc y «Crear» por pasos de la pista y la accesibilidad** (spec 017, T32; HU-017-1, HU-017-3; RF-017-30, RF-015-29, RNF-017-06; comprobación manual M9): desde la interfaz, «Calcular» y **«Crear»
+son del modal de pasos** (:class:`_CreatesInSteps`, el patrón de la detección de acopios de la 016, T44): cada evento del temporizador, una llamada de ≤ 0,2 s —las de ``design.steps.road_run`` y
+``access_run``, las de ``Calculation.create_steps`` (cada tabla y cada rejilla, montada y escrita en su temporal) y, **en el mismo modal**, las de lo que sigue a crear (``entity_store.after_entity_change``: la
+declaración, las máscaras, la capa de entidades y la de ejes de pistas)—, con la transacción final como único paso que no se trocea (el R4 de la 012). **Esc en cualquier evento responde en ≤ 2 s**: entre los
+pasos de calcular o de crear **no deja nada** (ni operación, ni dato, ni parámetro, ni cifra, ni temporal; el cálculo se descarta y su resumen y sus listas se vacían: hay que volver a calcular) y, **ya creada**, deja la
+entidad creada y lo que sigue sin hacer (cada etapa es una operación y una transacción propias: la que Esc cierra queda cancelada y sin salidas; las máscaras, con su causa, y las capas se ponen al día con la orden de
+entidades siguiente o «Recalcular lo obsoleto»). Desde un guion (sin ventana), «Crear» es de una vez, con el mismo resultado bit a bit; desactivar Geoblender cancela el modal como Esc
+(:func:`bl.ops.core.cancel_running`) y ``register()`` y ``unregister()`` quitan todo lo de la 017, también lo de las ventanas, las listas y los ajustes de «Cambiar parámetro…».
 
 **El menú «Entidad ▾» e insertar antes o después** (spec 015, T31; HU-015-2, HU-015-3; RF-015-28, RF-015-05, RF-015-15; D-11,
 D-14; plan 015 §5.3.3 y §5.5; comprobación manual M5): el menú contextual de las entidades
@@ -6330,6 +6339,69 @@ class _ChainsEntityLayer:
             ui_provenance.redraw()
 
 
+class _CreatesInSteps:
+    """«Crear» **por pasos** desde la interfaz, de las órdenes de la 017 cuyo cálculo sabe crearse así (la pista y la accesibilidad: ``Calculation.create_steps``; spec 017, T32; RF-017-30, RF-015-29,
+    RNF-017-06; el patrón de ``GEOBLENDER_OT_des_detect_stockpiles._creation_steps``, T44 de la 016): escribir la superficie entera de una pista o la rejilla de lo alcanzable de una accesibilidad de una
+    vez era una sola llamada larga del hilo de Blender. Con ventana (:attr:`in_steps`), :meth:`_create_in_steps` empieza el modal de pasos —cada evento, una llamada de ≤ 0,2 s— con la transacción final
+    como último paso, y **en cuanto lo guardado llega, lo que sigue en el mismo modal** (:meth:`_registered`, :meth:`_after_registered` y los pasos de ``entity_store.after_entity_change``: la
+    declaración, las máscaras, la capa de entidades y la de ejes de pistas). Esc entre los pasos de crear, un fallo o cerrar el proyecto no dejan nada (``create_steps`` descarta el cálculo y borra sus
+    temporales); Esc **ya creada** (en lo que sigue) deja la entidad creada (``_ChainsEntityLayer``). Desde un guion (sin ventana), de una vez, como las demás órdenes: el resultado es el mismo, bit a bit.
+    Se pone **antes** de :class:`_ChainsEntityLayer`; cada orden da su ``_create`` (que llama a :meth:`_create_in_steps`) y los textos de crear en su ``_status_text``, ``_cancelled_text`` y
+    :attr:`_creating`."""
+
+    _creating = False
+    """Si los pasos que corren son los de crear el cálculo (y no los de calcularlo ni los de lo que sigue a crearlo)."""
+
+    def _create_in_steps(self, context: Any, opened: Calculation | None) -> set[str] | None:
+        """Empieza el modal de pasos de crear ``opened`` si hay ventana (la interfaz) y devuelve ``{"RUNNING_MODAL"}``; desde un guion, o sin cálculo abierto, ``None``: crea de una vez."""
+        if opened is None or not self.in_steps or getattr(context, "window", None) is None:  # type: ignore[attr-defined]
+            return None
+        project = SESSION.project
+        self._project, self._name, self._creating = project, opened.name, True  # type: ignore[attr-defined]
+        self._start(context, self._creation_steps(project, opened))  # type: ignore[attr-defined]
+        return {"RUNNING_MODAL"}
+
+    def _after_registered(self) -> None:
+        """Lo que hace la orden en cuanto lo guardado llega, además de :meth:`_CalculateAndCreate._registered` (por defecto, nada)."""
+
+    def _creation_steps(self, project: Any, opened: Calculation) -> Iterator[Progress]:
+        """Los pasos de «Crear» ``opened`` en el modal (T32): los de ``Calculation.create_steps`` (cada tabla y cada rejilla, montada y escrita en su temporal por pasos; la transacción final, el
+        último) y, en cuanto lo guardado llega, **lo que sigue a crearla en el mismo modal**: lo registrado, lo que dice :meth:`_after_registered` y los pasos de
+        ``entity_store.after_entity_change``. Cerrar los pasos antes (Esc) o un fallo no dejan nada: ``create_steps`` descarta el cálculo y borra sus temporales."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        created = None
+        creating = opened.create_steps(budget_s=self.STEP_BUDGET_S)  # type: ignore[attr-defined]
+        try:
+            for step in creating:
+                if step.result is not None:
+                    created = step
+                    break
+                yield step
+        finally:
+            creating.close()
+        assert created is not None  # los pasos acaban siempre con lo guardado
+        self._registered(opened)  # type: ignore[attr-defined]
+        self._after_registered()
+        self._creating, self._chain = False, True  # type: ignore[attr-defined]
+        yield from entity_store.after_entity_change(project, opened.version, budget_s=self.STEP_BUDGET_S)  # type: ignore[attr-defined]
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        """Como las demás órdenes; al **crearlo**, con el proyecto cerrado se para sin dejar nada y lo dice con sus palabras (no se calculaba: se guardaba)."""
+        if self._creating and project_session.current() is not getattr(self, "_project", None):
+            return self._fail(context, tr("The project was closed while «{name}» was being saved: nothing has been left half-done",  # type: ignore[attr-defined]
+                                          name=getattr(self, "_name", "")))
+        return _CalculateAndCreate._result(self, context, step)  # type: ignore[arg-type]
+
+    def _after_stop(self, context: Any) -> None:
+        """Tras cancelar (Esc) o fallar **al crearlo**: ``create_steps`` ya descartó el cálculo y borró sus temporales; aquí se suelta (ya no está abierto) y se vacía su resumen. Tras cancelar lo
+        que sigue a crearlo, nada: la entidad está creada."""
+        if self._creating:
+            self._creating = False
+            discard_calculation()
+            des_panels.show_summary(None)
+
+
 class GEOBLENDER_OT_des_remove_stockpile(_ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator,
                                          _StepsModal, bpy.types.Operator):
     """Remove a stockpile detected in the active version: its footprint goes down to its base, joined with the ground by a transition, and what rests on it is listed before calculating"""
@@ -8197,7 +8269,7 @@ def _road_points(self: Any) -> dict[str, Any]:
     return found
 
 
-class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
+class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
                                     bpy.types.Operator):
     """Haul road of the active version: its axis, its level profile and its section engraved on its start surface, from an origin to a destination, over an axis or over a 3D axis"""
 
@@ -8618,27 +8690,38 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _ChainsEntityLayer, _C
                     _ask_confirmation(context, idname=self.COMMAND)  # el cálculo sigue abierto: se vuelve a pedir, con su motivo
                 return {"CANCELLED"}
             opened.confirm_road(mean=self.confirm_mean, carriageway=self.confirm_carriageway, reason=reason)
+            started = self._create_in_steps(context, opened)
+            if started is not None:  # desde la interfaz, por pasos (T32): lo que sigue va en el mismo modal
+                return started
         created = _CalculateAndCreate._create(self, context)
         if opened is None or "FINISHED" not in created:
             return created
         _entity_preview_off()  # la pista ya existe: ya no se prepara (RF-017-26)
         return self._update_declared(context, opened)
 
+    def _after_registered(self) -> None:
+        """En cuanto lo guardado llega (:class:`_CreatesInSteps`), quita la vista previa: la pista ya existe, ya no se prepara (RF-017-26)."""
+        _entity_preview_off()
+
     def _created_text(self, opened: Calculation) -> str:
         return tr("Road «{name}» created in {version}", name=opened.name, version=opened.version)
 
     def _status_text(self, step: Progress) -> str:
-        """El avance en la barra de estado: «Calculando la pista… 40 % · Esc: cancelar» o, tras crearla, «Poniendo al día las restricciones declaradas… 40 % · Esc:
-        cancelar»."""
+        """El avance en la barra de estado: «Calculando la pista… 40 % · Esc: cancelar», «Guardando la pista… 40 % · Esc: cancelar» o, tras crearla, «Poniendo al día las restricciones
+        declaradas… 40 % · Esc: cancelar»."""
         percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
         if self._chain:
             return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel", percent=percent)
+        if self._creating:
+            return tr("Saving the road… {percent} % · Esc: cancel", percent=percent)
         return tr("Computing the road… {percent} % · Esc: cancel", percent=percent)
 
     def _cancelled_text(self) -> str:
         if self._chain:
             return tr("Cancelled: the road is created; the declared constraints and the masks are brought up to date before the next operation that uses them, "
                       "and the entity layer and the layer of axes with the next entity order or «Recompute the stale results»")
+        if self._creating:
+            return tr("Creation cancelled: the road has not been created and the calculation has been discarded; nothing has been left half-done")
         return _CalculateAndCreate._cancelled_text(self)
 
     def _error_text(self, exc: GeoblenderError) -> str:
@@ -8668,7 +8751,7 @@ def _access_text(param: str) -> str:
     return _entity_param_text("access", param)
 
 
-class GEOBLENDER_OT_des_road_access(_ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal, bpy.types.Operator):
+class GEOBLENDER_OT_des_road_access(_CreatesInSteps, _ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal, bpy.types.Operator):
     """Accessibility of the haul roads on a surface of the project or of the active version: what can be reached on foot from the entry points, the reachable elevations and which berm stretches, platforms and zones that require access are communicated"""
 
     bl_idname = ROAD_ACCESS_COMMAND
@@ -8840,6 +8923,9 @@ class GEOBLENDER_OT_des_road_access(_ChainsEntityLayer, _CalculateAndCreate, Des
         """«Crear» (RF-017-24, RF-015-02): como las demás. **Ya creada**, encadena lo que sigue (:meth:`_update_declared`: la capa de entidades, la declaración y las máscaras, como operaciones aparte): la
         accesibilidad no declara ninguna restricción."""
         opened = calculation()
+        started = self._create_in_steps(context, opened)
+        if started is not None:  # desde la interfaz, por pasos (T32): lo que sigue va en el mismo modal
+            return started
         created = _CalculateAndCreate._create(self, context)
         if opened is None or "FINISHED" not in created:
             return created
@@ -8849,16 +8935,21 @@ class GEOBLENDER_OT_des_road_access(_ChainsEntityLayer, _CalculateAndCreate, Des
         return tr("Accessibility «{name}» created in {version}", name=opened.name, version=opened.version)
 
     def _status_text(self, step: Progress) -> str:
-        """El avance en la barra de estado: «Calculando la accesibilidad… 40 % · Esc: cancelar» o, tras crearla, «Poniendo al día las restricciones declaradas… 40 % · Esc: cancelar»."""
+        """El avance en la barra de estado: «Calculando la accesibilidad… 40 % · Esc: cancelar», «Guardando la accesibilidad… 40 % · Esc: cancelar» o, tras crearla, «Poniendo al día las
+        restricciones declaradas… 40 % · Esc: cancelar»."""
         percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
         if self._chain:
             return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel", percent=percent)
+        if self._creating:
+            return tr("Saving the accessibility… {percent} % · Esc: cancel", percent=percent)
         return tr("Computing the accessibility… {percent} % · Esc: cancel", percent=percent)
 
     def _cancelled_text(self) -> str:
         if self._chain:
             return tr("Cancelled: the accessibility is created; the declared constraints and the masks are brought up to date before the next operation that uses them, "
                       "and the entity layer with the next entity order or «Recompute the stale results»")
+        if self._creating:
+            return tr("Creation cancelled: the accessibility has not been created and the calculation has been discarded; nothing has been left half-done")
         return _CalculateAndCreate._cancelled_text(self)
 
     def _error_text(self, exc: GeoblenderError) -> str:

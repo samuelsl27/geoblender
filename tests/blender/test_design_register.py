@@ -135,6 +135,11 @@ PREVIEW_NAME = "Preview of seeds, domains and constraints"
 PREVIEW_ABOUT = "Show the seeds, domains and constraints before computing"
 GROUP = "GEOBLENDER_PG_des_panels"
 ENTITY_PANEL = "GEOBLENDER_PT_des_entity"
+CLASSES_017 = ("GEOBLENDER_OT_des_edit_road_profile", "GEOBLENDER_OT_des_save_road_profile", "GEOBLENDER_OT_des_create_road", "GEOBLENDER_OT_des_road_access")
+"""Las cuatro órdenes de la 017 que tienen su clase real (T29, T29b y T30: «Perfil de pista…» y la interna que lo guarda, «Pista…» y «Accesibilidad de las pistas…»; «Proponer el trazado…» y «Exportar pista…» son
+de la T33)."""
+CLASSES_017_UI = ("GEOBLENDER_PG_des_road_profile", "GEOBLENDER_UL_des_road_profiles", "GEOBLENDER_PT_des_road_profiles")
+"""El grupo de propiedades, la lista y la ventana de los perfiles de pista (T29). Un grupo de propiedades no es un atributo de ``bpy.types``: se mira por su clase."""
 STATUS_MSGID = "Recomputing «{name}»… {percent} %"
 STATUS = "Recalculando «{name}»… {percent} %"
 DROPPED = "cancelada durante la operación: se desactivó Geoblender antes de empezar"
@@ -338,8 +343,12 @@ class DesignRegisteredTest(unittest.TestCase):
         checks, afters = core_prov._PARAMETER_CHECKS, core_prov._PARAMETER_AFTERS  # noqa: SLF001
         after_recompute = core_prov._RECOMPUTE_AFTERS  # noqa: SLF001
         self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)  # el gancho de la declaración (T38)
+        adjusts, road_prefix = core_prov._PARAMETER_ADJUSTS, m.des_ops.ROAD_PARAMETER_PREFIX  # noqa: SLF001
         self.assertIs(checks.get(m.des_ops.PARAMETER_PREFIX), m.des_ops._check_entity_parameter)  # noqa: SLF001  (T39)
         self.assertIs(afters.get(m.des_ops.PARAMETER_PREFIX), m.des_ops._after_entity_parameter)  # noqa: SLF001  (T43)
+        self.assertIs(adjusts.get(road_prefix), m.des_ops._adjust_entity_parameter)  # noqa: SLF001  (017, T29c: la cota que da la persona)
+        for prefix in m.des_ops.PARAMETER_PREFIXES:  # los de cada tipo de entidad, también los de la pista y la accesibilidad (017)
+            self.assertIs(checks.get(prefix), m.des_ops._check_entity_parameter, prefix)  # noqa: SLF001
         self.assertIn(m.des_ops._layers_after_recompute, after_recompute)  # noqa: SLF001  (T43)
         for _ in range(2):
             m.des_ops.unregister()
@@ -347,6 +356,10 @@ class DesignRegisteredTest(unittest.TestCase):
             self.assertIsNone(declaring.current())
             self.assertNotIn(m.des_ops.PARAMETER_PREFIX, checks, "desregistrar quita la comprobación de «Cambiar…» (T39)")
             self.assertNotIn(m.des_ops.PARAMETER_PREFIX, afters, "…y lo que sigue a cambiarlo (T43)")
+            self.assertNotIn(road_prefix, adjusts, "…y el ajuste de la cota de una pista (017, T29c; T32)")
+            for prefix in m.des_ops.PARAMETER_PREFIXES:
+                self.assertNotIn(prefix, checks, prefix)
+                self.assertNotIn(prefix, afters, prefix)
             self.assertNotIn(m.des_ops._layers_after_recompute, after_recompute,  # noqa: SLF001
                              "…y lo que sigue a «Recalcular lo obsoleto» (T43)")
         for _ in range(2):
@@ -355,7 +368,10 @@ class DesignRegisteredTest(unittest.TestCase):
             self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)
             self.assertIs(checks.get(m.des_ops.PARAMETER_PREFIX), m.des_ops._check_entity_parameter)  # noqa: SLF001
             self.assertIs(afters.get(m.des_ops.PARAMETER_PREFIX), m.des_ops._after_entity_parameter)  # noqa: SLF001
+            self.assertIs(adjusts.get(road_prefix), m.des_ops._adjust_entity_parameter)  # noqa: SLF001
             self.assertEqual(after_recompute.count(m.des_ops._layers_after_recompute), 1)  # noqa: SLF001
+            for prefix in m.des_ops.PARAMETER_PREFIXES:
+                self.assertIs(checks.get(prefix), m.des_ops._check_entity_parameter, prefix)  # noqa: SLF001
 
         m.des_ops.unregister()
         others.extend(self.register_others())
@@ -750,6 +766,20 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertTrue(preview.is_skip_save)
         self.assertIs(getattr(bpy.context.window_manager, PREVIEW_PROPERTY), False)
         self.assertEqual({name: len(keys) for name, keys in m.ours().items()}, COUNTS)
+        # Lo de la 017 (T29 a T31c; T32: registrar y desregistrar simétricos): las órdenes del perfil, de la pista y de la accesibilidad, la lista y la ventana de los perfiles de pista, su grupo de propiedades
+        # y las de la vista (la lista, el elegido y el último resultado), el cargador de lo alcanzable, el ajuste de las cotas de una pista y la propiedad que anota los datos compañeros de un objeto.
+        design_group = bpy.types.WindowManager.bl_rna.properties[WM_PROPERTY].fixed_type.properties
+        object_property = _module("bl.props.core").OBJECT_PROPERTY
+        classes_017 = {found.__name__: found for module in ("bl.ops.des", "bl.props.des", "bl.ui.des_panels") for found in _module(module).classes if found.__name__ in (*CLASSES_017, *CLASSES_017_UI)}
+        self.assertEqual(sorted(classes_017), sorted((*CLASSES_017, *CLASSES_017_UI)), "las clases de la 017 (T29 a T31c), en las listas de sus módulos")
+        for found, cls in classes_017.items():
+            self.assertTrue(cls.is_registered, found)
+        self.assertTrue({"road_profiles", "road_profile_index", "road_profile_report"} <= set(design_group.keys()))
+        object_group = bpy.types.Object.bl_rna.properties[object_property].fixed_type.properties
+        self.assertIn("companions", object_group.keys(), "el objeto anota sus datos compañeros (T31c)")
+        self.assertIsNotNone(views.loader_for("des_acc_pozo_1"), "lo alcanzable de una accesibilidad tiene su cargador (T31)")
+        self.assertIn(_module("bl.ops.des").ROAD_PARAMETER_PREFIX, _module("bl.ops.core_provenance")._PARAMETER_ADJUSTS)  # noqa: SLF001
+        self.assertTrue(set(CLASSES_017) <= {cls.__name__ for cls in m.des_ops.classes}, "las clases de las tres órdenes, en las de ``bl/ops/des.py``")
         closed: list[str] = []
         cancelled: list[str] = []
 
@@ -787,6 +817,11 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertFalse(hasattr(bpy.types.WindowManager, WM_PROPERTY))
         self.assertFalse(hasattr(bpy.types.WindowManager, PREVIEW_PROPERTY))
         self.assertIsNone(getattr(bpy.types, ENTITY_PANEL, None))
+        self.assertEqual([found for found, cls in classes_017.items() if cls.is_registered or getattr(bpy.types, found, None) is not None], [], "las clases de la 017, quitadas (T32)")
+        self.assertFalse(hasattr(bpy.types.Object, object_property), "…y la propiedad del objeto, con su ``companions`` (T31c)")
+        self.assertIsNone(views.loader_for("des_acc_pozo_1"), "…y el cargador de lo alcanzable (T31)")
+        self.assertNotIn(_module("bl.ops.des").ROAD_PARAMETER_PREFIX, _module("bl.ops.core_provenance")._PARAMETER_ADJUSTS)  # noqa: SLF001
+        self.assertEqual(_module("bl.ui.des_panels").access_sections(), [], "…y las listas de la accesibilidad, vaciadas")
         self.assertIsNone(views.loader_for("des_epr_carga"))
         self.assertNotIn("DESIGN_ENTITY", view_panels._OBJECT_LINES)  # noqa: SLF001
         self.assertEqual(m.ours(), {name: [] for name in COUNTS})

@@ -10900,6 +10900,15 @@ es = "Pista «{name}» creada en {version}"
 ["Computing the road… {percent} % · Esc: cancel"]
 es = "Calculando la pista… {percent} % · Esc: cancelar"
 
+["Saving the road… {percent} % · Esc: cancel"]
+es = "Guardando la pista… {percent} % · Esc: cancelar"
+
+["Creation cancelled: the road has not been created and the calculation has been discarded; nothing has been left half-done"]
+es = "Creación cancelada: la pista no se ha creado y el cálculo se ha descartado; no queda nada a medias"
+
+["The project was closed while «{name}» was being saved: nothing has been left half-done"]
+es = "Se cerró el proyecto mientras se guardaba «{name}»: no queda nada a medias"
+
 ["Mesh of the route (m)"]
 es = "Malla de la ruta (m)"
 
@@ -11274,6 +11283,12 @@ es = "Accesibilidad «{name}» creada en {version}"
 
 ["Computing the accessibility… {percent} % · Esc: cancel"]
 es = "Calculando la accesibilidad… {percent} % · Esc: cancelar"
+
+["Saving the accessibility… {percent} % · Esc: cancel"]
+es = "Guardando la accesibilidad… {percent} % · Esc: cancelar"
+
+["Creation cancelled: the accessibility has not been created and the calculation has been discarded; nothing has been left half-done"]
+es = "Creación cancelada: la accesibilidad no se ha creado y el cálculo se ha descartado; no queda nada a medias"
 
 ["Cancelled: the accessibility is created; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»"]
 es = "Cancelado: la accesibilidad está creada; las restricciones declaradas y las máscaras se ponen al día antes de la próxima operación que las use, y la capa de entidades con la próxima orden de entidades o «Recalcular lo obsoleto»"
