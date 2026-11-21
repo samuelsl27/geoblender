@@ -316,6 +316,12 @@ el mismo ``bl.draw.entity`` dibuja, antes de calcular y sin escribir nada, las *
 contrafuerte** (``EntityPlan(buttress=<ButtressRequest>)``: el botón «Vista previa» de :class:`GEOBLENDER_OT_des_add_buttress`, que se
 redibuja al cambiar sus campos, :func:`_refresh_buttress_preview`). Se quitan al cancelar, al Esc a mitad, al crear y al conmutar.
 
+**La vista previa de una pista** (spec 017, T28; HU-017-1; RF-017-26, RF-015-26; RNF-017-08; comprobación manual M5): el mismo ``bl.draw.entity`` dibuja, sin escribir nada, **antes de calcular** el
+origen, el destino y el pasillo de la ruta de una pista que se prepara (``EntityPlan(road=<design.preview.RoadAsk>)``: **el diálogo de «Pista…» (T29) lo activa** con su botón «Vista previa», con
+:func:`_draw_entity_preview_button`, y la quita con :class:`_ClearsEntityPreview`; tras «Calcular» le da el resultado, ``RoadAsk(request, prepared, outcome)``, y dibuja el eje con su flecha, las pendientes
+por tramos según pd y pm y la anchura de la sección) y, con :class:`GEOBLENDER_OT_des_entity_preview`, **una pista de la versión** por su código o seleccionada (``RoadAsk(code=…)``: su eje
+guardado y lo que se le apoya). Se quita al cancelar, al Esc a mitad, al crearla y al conmutar a la interfaz de Blender.
+
 **El menú «Entidad ▾» e insertar antes o después** (spec 015, T31; HU-015-2, HU-015-3; RF-015-28, RF-015-05, RF-015-15; D-11,
 D-14; plan 015 §5.3.3 y §5.5; comprobación manual M5): el menú contextual de las entidades
 (``GEOBLENDER_MT_des_context_entity``, ``contexts.toml``, entrada «015») lleva las órdenes reales:
@@ -5419,7 +5425,7 @@ def _entity_or_selected(given: str, context: Any) -> str:
 
 
 class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
-    """Show, before calculating, the footprint of a platform, its axis with its sense, the levels at its ends, what rests on it and the constraints it will declare; the marks of a detection of stockpiles; the crown zone of a buttress"""
+    """Show, before calculating, the footprint of a platform, its axis with its sense, the levels at its ends, what rests on it and the constraints it will declare; the marks of a detection of stockpiles; the crown zone of a buttress; the origin, the destination and the corridor of a road, or its axis with its gradients"""
 
     bl_idname = ENTITY_PREVIEW
     bl_label = "Preview of the entity"
@@ -5446,15 +5452,18 @@ class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperat
         que recalcularía: ``design.provenance.stockpile_request`` y ``buttress_request``). Una retirada y un cuerpo apoyado no tienen vista
         previa (RF-016-23 solo pide las marcas y la zona de coronación). :class:`ValueError` si no la tiene o la entidad no está calculada."""
         from ...design import entities, entity_store  # al usarlo: habilitar no carga el cálculo
+        from ...design.preview import RoadAsk
 
         preview = _entity_preview()
         record = entry.record
         if record.kind == entities.EntityKind.PLATFORM:
             return preview.EntityPlan(code=record.code)
+        if record.kind == entities.EntityKind.ROAD:  # su eje guardado, con la rasante por tramos y lo que se le apoya (spec 017, T28; RF-017-26); sin calcular, lo dice la vista previa
+            return preview.EntityPlan(road=RoadAsk(code=record.code))
         label = entities.entity_type(record.kind).params.label
         if record.kind not in (entities.EntityKind.STOCKPILE, entities.EntityKind.BUTTRESS):
-            raise ValueError(tr("«{name}» ({kind}) has no preview: only a platform, a detection of stockpiles (its marks) and a buttress "
-                                "(its crown zone) have one", name=record.name, kind=label))
+            raise ValueError(tr("«{name}» ({kind}) has no preview: only a platform, a detection of stockpiles (its marks), a buttress "
+                                "(its crown zone) and a road (its axis) have one", name=record.name, kind=label))
         if entry.operation_uid is None:
             raise ValueError(tr("«{name}» ({kind}) is not calculated: there is nothing to preview", name=record.name, kind=label))
         with project.read() as conn:

@@ -27,6 +27,14 @@ y su margen junto a cada una) y la **zona de coronación de un contrafuerte** (`
 protege y ha elegido el resguardo, **la zona que declarará «sin corte»** con él, :data:`ZONE`), cada una con su leyenda y su
 resumen; lo que rechazaría «Calcular» de la capa, de los campos o de la geometría es el aviso en lugar del dibujo.
 
+Con la **017** (spec 017, T28; HU-017-1; RF-017-26, RF-015-26; RNF-017-08; plan 017 §5.5; comprobación manual M5) dibuja también **una pista** (:class:`EntityPlan` con ``road``, una
+``design.preview.RoadAsk``): **antes de calcular**, sin escribir nada, **el origen y el destino** (una cruz en cada uno con su cota: :data:`ORIGIN` y :data:`DESTINATION`; la zona de la cota de destino
+de una rampa, :data:`TARGET`) y **el pasillo de la ruta** (:data:`CORRIDOR`: el contorno de los nodos de la red 2D en el pasillo, RF-017-09) o, en «sobre un eje» y «eje 3D», la línea que sigue
+(:data:`LINE`); y **tras calcular** (lo que dejó «Calcular», o una pista de la versión por su código: ``geoblender.des_entity_preview``) **el eje con sus curvas y la flecha de su sentido**
+(:data:`AXIS` y :data:`ARROW`), **las cotas y las pendientes de la rasante por tramos coloreados según pd y pm** (:data:`GRADIENT_WITHIN`, :data:`GRADIENT_MEAN` y :data:`GRADIENT_DESIGN`, con la cota
+y la pendiente de cada tramo junto a él), **la anchura de la sección** (:data:`SECTION`: sus dos bordes) y **lo que se le apoya** (:data:`RESTING`), con su leyenda. Los lotes los arma
+:func:`_build_road` sin ``gpu``, como los de la plataforma.
+
 Aquí **no se calcula nada de minería**: lo dice ``design.preview.entity_preview_steps`` (que solo lee: ni compila
 las máscaras) y este módulo lo dibuja. Lo que se dibuja se construye sin ``gpu`` y se prueba en sus lotes
 (``docs/trampas.md`` §3: sin GPU en ``blender -b``), **por pasos** de :data:`STEP_BUDGET_S` s con el temporizador
@@ -56,7 +64,7 @@ import numpy as np
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, tr
 from ...design import preview as design_preview
-from ...design.preview import EntityPreview
+from ...design.preview import EntityPreview, GradientStatus
 from ..scene import project_session
 from ..scene import versions as scene_versions
 from ..scene.constraint_views import declared_text
@@ -65,10 +73,13 @@ from .constraints import Batch, Label
 from .dh_overlay import LegendRow
 
 __all__ = [
-    "ARROW", "ARROW_COLOR", "AXIS", "AXIS_COLOR", "CROWN", "CROWN_COLOR", "EntityPlan", "FOOTPRINT", "FOOTPRINT_COLOR",
-    "MARGIN", "MARGIN_COLOR", "MARKS", "MARK_COLOR", "RESTING", "RESTING_COLOR", "Request", "ZONE", "arrow_segments",
-    "build_steps", "building", "built", "disable", "drawing", "enable", "enabled", "on_project_changed", "on_project_read",
-    "on_version_changed", "plan", "preview", "rebuild", "register", "replace", "stamp", "tick", "unregister",
+    "ARROW", "ARROW_COLOR", "AXIS", "AXIS_COLOR", "CORRIDOR", "CORRIDOR_COLOR", "CROWN", "CROWN_COLOR", "DESTINATION",
+    "DESTINATION_COLOR", "EntityPlan", "FOOTPRINT", "FOOTPRINT_COLOR", "GRADIENT_COLORS", "GRADIENT_DESIGN",
+    "GRADIENT_MEAN", "GRADIENT_WITHIN", "LINE", "LINE_COLOR", "MARGIN", "MARGIN_COLOR", "MARKS", "MARK_COLOR", "ORIGIN",
+    "ORIGIN_COLOR", "RESTING", "RESTING_COLOR", "Request", "SECTION", "SECTION_COLOR", "TARGET", "ZONE", "arrow_segments",
+    "build_steps", "building", "built", "cross_segments", "disable", "drawing", "enable", "enabled", "on_project_changed",
+    "on_project_read", "on_version_changed", "plan", "preview", "rebuild", "register", "replace", "stamp", "tick",
+    "unregister",
 ]
 
 LOGGER = logging.getLogger("geoblender.bl.draw")
@@ -87,6 +98,19 @@ CROWN = "buttress_crown"
 """Las claves (con el papel ``constraints.OUTLINE``) de los lotes de la vista previa de la 016: las marcas de una detección de acopios,
 las marcas ampliadas por su margen y la zona de coronación de un contrafuerte (la zona con su resguardo es :data:`ZONE`)."""
 
+ORIGIN = "road_origin"
+DESTINATION = "road_destination"
+TARGET = "road_target"
+CORRIDOR = "road_corridor"
+LINE = "road_line"
+SECTION = "road_section"
+GRADIENT_WITHIN = "road_gradient_within"
+GRADIENT_MEAN = "road_gradient_mean"
+GRADIENT_DESIGN = "road_gradient_design"
+"""Las claves (con el papel ``constraints.OUTLINE``) de los lotes de la vista previa de una pista (spec 017, T28): el origen y el destino (una cruz cada uno), la zona de la cota de destino de una rampa,
+el pasillo de la ruta, la línea que sigue «sobre un eje» o «eje 3D», los bordes de la sección y los tramos de la rasante por su estado (dentro de los límites, por encima de pm y por encima de pd); el
+eje y su flecha son :data:`AXIS` y :data:`ARROW` y lo que se le apoya, :data:`RESTING`."""
+
 STEP_BUDGET_S = constraints.STEP_BUDGET_S
 """Lo que dura como mucho cada paso de la construcción (ninguna llamada de más de 0,2 s)."""
 TICK_BUDGET_S = constraints.TICK_BUDGET_S
@@ -104,6 +128,18 @@ MARGIN_COLOR: constraints.Color = (1.0, 0.45, 0.05, 1.0)
 CROWN_COLOR: constraints.Color = FOOTPRINT_COLOR
 """El color de las marcas (amarillo), de la marca ampliada por su margen (naranja oscuro, distinto del de lo que se apoya) y de la zona de
 coronación de un contrafuerte (verde azulado, el de la huella: es la huella que se le da). Son de dibujo, no un dato minero."""
+ORIGIN_COLOR: constraints.Color = (0.20, 0.95, 0.45, 1.0)
+DESTINATION_COLOR: constraints.Color = (0.95, 0.30, 0.85, 1.0)
+CORRIDOR_COLOR: constraints.Color = (0.45, 0.62, 1.0, 1.0)
+LINE_COLOR: constraints.Color = (0.85, 0.85, 0.85, 1.0)
+SECTION_COLOR: constraints.Color = (0.75, 0.80, 0.95, 1.0)
+GRADIENT_COLORS: dict[str, constraints.Color] = {
+    GRADIENT_WITHIN: (0.55, 0.85, 0.25, 1.0),
+    GRADIENT_MEAN: (1.0, 0.75, 0.10, 1.0),
+    GRADIENT_DESIGN: (0.95, 0.20, 0.20, 1.0),
+}
+"""Los colores de la pista (spec 017, T28; de dibujo, no un dato minero): el origen (verde), el destino y la zona de su cota (magenta), el pasillo (azul), la línea que sigue un eje (gris claro), los bordes de
+la sección (azul grisáceo) y los tramos de la rasante: dentro de los límites del perfil (verde amarillento), con la media por encima de pm (ámbar) y con un paso por encima de pd (rojo)."""
 FOOTPRINT_PX = 3.0
 AXIS_PX = 2.5
 RESTING_PX = 2.5
@@ -111,7 +147,14 @@ ZONE_PX = constraints.OUTLINE_PX
 MARK_PX = 3.0
 MARGIN_PX = 2.0
 CROWN_PX = 3.0
+POINT_PX = 3.0
+CORRIDOR_PX = 1.5
+LINE_PX = 1.5
+SECTION_PX = 1.5
+GRADIENT_PX = 4.0
 """El trazo (px) de cada pieza."""
+POINT_ARM_CELLS = 3.0
+"""El brazo de la cruz del origen y del destino de una pista: :data:`bl.draw.constraints.POINT_ARM_M` m o, si es más, esta cantidad de celdas (de dibujo, no un dato minero)."""
 ARROW_HALF_ANGLE_DEG = 25.0
 """El ángulo entre cada lado de la punta de la flecha y el eje (° ; es de dibujo, no un dato minero)."""
 ARROW_HEAD_FRACTION = 0.10
@@ -128,34 +171,38 @@ class EntityPlan:
     """Lo que se previsualiza: la plataforma **que se prepara** (``request``, la ``design.model.PlatformRequest`` del
     diálogo de «Plataforma…»: una entidad nueva), **una que ya está en la versión** (``code``: su código o su
     nombre, con sus parámetros vigentes), las **marcas de una detección de acopios** que se prepara (``stockpile``, la
-    ``design.model.StockpileRequest``; spec 016, T32) o **la zona de coronación de un contrafuerte** que se prepara
-    (``buttress``, la ``design.model.ButtressRequest``). Uno de los cuatro, no más. ``insert_before`` (T31; RF-015-05): si la
-    plataforma que se prepara se **inserta** antes de otra entidad de la versión, el código de esa entidad (la que pasaría a partir
-    de la nueva); solo con ``request``."""
+    ``design.model.StockpileRequest``; spec 016, T32), **la zona de coronación de un contrafuerte** que se prepara
+    (``buttress``, la ``design.model.ButtressRequest``) o **una pista** (``road``, la ``design.preview.RoadAsk``: la que se prepara,
+    con lo que ya hizo «Calcular», o una de la versión por su código; spec 017, T28). Uno de los cinco, no más. ``insert_before``
+    (T31; RF-015-05): si la plataforma que se prepara se **inserta** antes de otra entidad de la versión, el código de esa entidad
+    (la que pasaría a partir de la nueva); solo con ``request``."""
 
     request: Any = None
     code: str | None = None
     insert_before: str | None = None
     stockpile: Any = None
     buttress: Any = None
+    road: Any = None
 
     def __post_init__(self) -> None:
-        asked = [name for name in ("request", "code", "stockpile", "buttress") if getattr(self, name) is not None]
+        asked = [name for name in ("request", "code", "stockpile", "buttress", "road") if getattr(self, name) is not None]
         if len(asked) != 1:
             raise ValueError("la vista previa de una entidad es de una sola cosa: la plataforma que se prepara (su petición), una "
-                             "entidad de la versión (su código), las marcas de una detección de acopios o la zona de coronación "
-                             "de un contrafuerte, no de dos ni de ninguna")
+                             "entidad de la versión (su código), las marcas de una detección de acopios, la zona de coronación "
+                             "de un contrafuerte o una pista, no de dos ni de ninguna")
         if self.insert_before is not None and self.request is None:
             raise ValueError("una inserción se previsualiza con la plataforma que se prepara (su petición), no con una "
                              "entidad que ya está en la versión")
 
     @property
     def kind(self) -> str:
-        """Qué se previsualiza: ``"platform"`` (la que se prepara), ``"entity"`` (una de la versión), ``"stockpile"`` o ``"buttress"``."""
+        """Qué se previsualiza: ``"platform"`` (la que se prepara), ``"entity"`` (una de la versión), ``"stockpile"``, ``"buttress"`` o ``"road"``."""
         if self.stockpile is not None:
             return "stockpile"
         if self.buttress is not None:
             return "buttress"
+        if self.road is not None:
+            return "road"
         return "platform" if self.request is not None else "entity"
 
 
@@ -302,13 +349,15 @@ def _without_version(request: Request) -> tuple[design_draw.Built, None]:
 def _build(request: Request, budget_s: float) -> Generator[None, None, tuple[design_draw.Built, Any]]:
     """Los pasos que construyen lo que dibuja la vista previa para ``request`` según lo que se previsualiza
     (:attr:`EntityPlan.kind`): la plataforma (:func:`_build_platform`), las marcas de una detección de acopios
-    (:func:`_build_stockpile`) o la zona de coronación de un contrafuerte (:func:`_build_buttress`). El resultado es el
+    (:func:`_build_stockpile`), la zona de coronación de un contrafuerte (:func:`_build_buttress`) o una pista (:func:`_build_road`). El resultado es el
     ``StopIteration.value``: lo que se dibuja (un :class:`bl.draw.design.Built`) y la preparación (``None`` sin versión activa)."""
     kind = request.plan.kind
     if kind == "stockpile":
         return (yield from _build_stockpile(request, budget_s))
     if kind == "buttress":
         return (yield from _build_buttress(request, budget_s))
+    if kind == "road":
+        return (yield from _build_road(request, budget_s))
     return (yield from _build_platform(request, budget_s))
 
 
@@ -523,6 +572,144 @@ def _build_buttress(request: Request, budget_s: float) -> Generator[None, None, 
                       for (text, _place, color), (x, y, z) in zip(named, spots.tolist(), strict=True))
     lines = constraints.Built(version_uid, request.version_code, "", "" if ground is None else ground.name, tuple(batches),
                               tuple(labels), _buttress_legend(request, found, ground, drawn), request.stamp)
+    return design_draw.Built(lines, None, (), found.lines(shown)), found
+
+
+# --- La pista (spec 017, T28; RF-017-26) ----------------------------------------------------------
+
+_GRADIENT_KEYS: dict[GradientStatus, str] = {
+    GradientStatus.WITHIN: GRADIENT_WITHIN,
+    GradientStatus.ABOVE_MEAN: GRADIENT_MEAN,
+    GradientStatus.ABOVE_DESIGN: GRADIENT_DESIGN,
+}
+"""El lote de cada estado de un tramo de la rasante (:class:`design.preview.GradientStatus`)."""
+ROAD_AXIS_PX = 1.5
+"""El trazo del eje de una pista: una línea fina blanca sobre los tramos coloreados (:data:`GRADIENT_PX`)."""
+
+
+def cross_segments(points: Sequence[tuple[float, float]], arm_m: float) -> np.ndarray:
+    """Las dos rayas de la cruz de cada punto absoluto ``(x, y)`` de ``points``, de ``arm_m`` m de brazo hacia el este y el norte (y hacia el oeste y el sur): segmentos ``(2k, 2, 2)`` absolutos (float64);
+    sin puntos, ``(0, 2, 2)``. Es lo que dibuja el origen y el destino de una pista."""
+    found = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    if not len(found):
+        return np.empty((0, 2, 2), dtype=np.float64)
+    east, north = np.array([arm_m, 0.0]), np.array([0.0, arm_m])
+    return np.concatenate([np.stack([found - east, found + east], axis=1), np.stack([found - north, found + north], axis=1)])
+
+
+def _stretch_pieces(found: Any) -> dict[str, list[np.ndarray]]:
+    """Los segmentos del eje de cada tramo de la rasante, agrupados por el lote de su estado: ``{clave: [(k, 2, 2), …]}`` con solo los estados que hay."""
+    pieces: dict[str, list[np.ndarray]] = {}
+    axis = found.axis
+    for item in found.stretches:
+        pieces.setdefault(_GRADIENT_KEYS[item.status], []).append(np.stack([axis[item.first:item.last], axis[item.first + 1:item.last + 1]], axis=1))
+    return pieces
+
+
+def _point_text(point: Any) -> str:
+    """El nombre del origen o del destino junto a su cruz, con la cota de la rasante ahí si se conoce."""
+    if point.which == "origin":
+        return tr("Origin") if point.level_m is None else tr("Origin · level {level} m", level=_level(point.level_m))
+    return tr("Destination") if point.level_m is None else tr("Destination · level {level} m", level=_level(point.level_m))
+
+
+def _road_legend(request: Request, found: Any, ground: Any, drawn: set[str]) -> tuple[LegendRow, ...]:
+    """La leyenda de la pista: el título con la pista y su versión, una fila por pieza dibujada (con su color: los tramos de la rasante con los límites del perfil, pd y pm) y la superficie."""
+    version = request.version_code or tr("No version")
+    rows = [LegendRow(tr("Preview of «{name}» ({code}) · {version}", name=found.name, code=found.code, version=version) if found.code
+                      else tr("Preview of «{name}» · {version}", name=found.name, version=version))]
+    if CORRIDOR in drawn:
+        rows.append(LegendRow(tr("Corridor of the route ({nodes} nodes, margin {margin} m)", nodes=found.corridor_nodes, margin=format_number(found.margin_m or 0.0, 1)),
+                              _hex(CORRIDOR_COLOR)))
+    if LINE in drawn:
+        rows.append(LegendRow(tr("Line the axis follows"), _hex(LINE_COLOR)))
+    if ORIGIN in drawn:
+        rows.append(LegendRow(tr("Origin"), _hex(ORIGIN_COLOR)))
+    if DESTINATION in drawn:
+        rows.append(LegendRow(tr("Destination"), _hex(DESTINATION_COLOR)))
+    if TARGET in drawn:
+        rows.append(LegendRow(tr("Destination zone: level {level} m, tolerance {tolerance} m", level=format_number(found.target_level_m or 0.0, 2),
+                                 tolerance=format_number(found.target_tolerance_m or 0.0, 2)), _hex(DESTINATION_COLOR)))
+    if AXIS in drawn:
+        rows.append(LegendRow(tr("Axis with its curves ({length} m): the arrow shows its sense; the abscissa 0 is at the origin", length=format_number(found.length_m, 1)),
+                              _hex(AXIS_COLOR)))
+    if GRADIENT_WITHIN in drawn:
+        rows.append(LegendRow(tr("Stretch within the limits of the profile (mean up to {mean} %)", mean=format_number(found.max_mean_gradient_pct or 0.0, 1)),
+                              _hex(GRADIENT_COLORS[GRADIENT_WITHIN])))
+    if GRADIENT_MEAN in drawn:
+        rows.append(LegendRow(tr("Stretch with a mean gradient above the mean limit pm ({mean} %)", mean=format_number(found.max_mean_gradient_pct or 0.0, 1)), _hex(GRADIENT_COLORS[GRADIENT_MEAN])))
+    if GRADIENT_DESIGN in drawn:
+        rows.append(LegendRow(tr("Stretch with a step above the design gradient pd ({design} %)", design=format_number(found.max_gradient_pct or 0.0, 1)),
+                              _hex(GRADIENT_COLORS[GRADIENT_DESIGN])))
+    if SECTION in drawn:
+        rows.append(LegendRow(tr("Edges of the section: {section} m wide (carriageway {carriageway} m)", section=format_number(found.section_m, 1),
+                                 carriageway=format_number(found.carriageway_m, 1)), _hex(SECTION_COLOR)))
+    if RESTING in drawn:
+        rows.append(LegendRow(tr("Rests on it or starts from it ({count})", count=len(found.resting)), _hex(RESTING_COLOR)))
+    elif found.resting:
+        rows.append(LegendRow(tr("Rests on it or starts from it ({count}), without a footprint of its own", count=len(found.resting))))
+    if found.drawable:
+        rows.append(LegendRow(tr("At the elevation of the GeoOrigin") if ground is None else tr("On the surface «{name}»", name=ground.name)))
+    return tuple(rows)
+
+
+def _build_road(request: Request, budget_s: float) -> Generator[None, None, tuple[design_draw.Built, Any]]:
+    """Los pasos que construyen lo que dibuja la vista previa de una pista (spec 017, T28; RF-017-26): la preparación (``design.preview.road_preview_steps``: solo lee, y con ``RoadAsk.outcome`` solo
+    convierte lo que dejó «Calcular»), la superficie de partida sobre la que se dibuja y los lotes —**antes de calcular**, el pasillo de la ruta, la zona de la cota de destino o la línea que sigue, y
+    el origen y el destino en cruz; **tras calcular** (o de una pista de la versión), los tramos de la rasante por su estado, el eje fino encima, su flecha, los bordes de la sección y lo que se le apoya—,
+    el nombre de cada punto y de cada tramo con su cota y su pendiente, la leyenda y el resumen. Como :func:`_build_platform`: lo que rechazaría «Calcular» (o las máscaras sin compilar) sale en el
+    resumen, en lugar del dibujo; sin versión activa, solo lo dice. Cada paso dura como mucho ``budget_s`` s; cerrarlo a mitad no deja nada."""
+    project, version_uid, shown = request.project, request.version_uid, request.language
+    origin = project.origin
+    found = None
+    if version_uid:
+        steps = design_preview.road_preview_steps(project, request.plan.road, version_uid, budget_s=budget_s)
+        found = yield from _run_preview(steps)
+    if found is None:
+        return _without_version(request)
+    ground = None
+    batches: list[Batch] = []
+    labels: list[Label] = []
+    drawn: set[str] = set()
+    if found.drawable:
+        ground = yield from constraints.ground_steps(project, found.start_surface, version_uid, budget_s=budget_s)
+        arm = max(constraints.POINT_ARM_M, POINT_ARM_CELLS * found.cell_m)
+        axis = found.axis
+        by_status = _stretch_pieces(found)
+        crosses = {which: [(point.x, point.y) for point in found.points if point.which == which] for which in ("origin", "destination")}
+        pieces: list[tuple[str, constraints.Color, float, list[np.ndarray]]] = [
+            (CORRIDOR, CORRIDOR_COLOR, CORRIDOR_PX, [design_draw.ring_segments(found.corridor)]),
+            (TARGET, DESTINATION_COLOR, ZONE_PX, [design_draw.ring_segments(found.zone)]),
+            (RESTING, RESTING_COLOR, RESTING_PX, [design_draw.ring_segments(item.rings) for item in found.resting if item.rings]),
+            (SECTION, SECTION_COLOR, SECTION_PX, [] if found.edges is None else [_axis_segments(edge) for edge in found.edges]),
+            (LINE, LINE_COLOR, LINE_PX, [] if found.line is None else [_axis_segments(found.line)]),
+            *((key, GRADIENT_COLORS[key], GRADIENT_PX, by_status.get(key, [])) for key in (GRADIENT_WITHIN, GRADIENT_MEAN, GRADIENT_DESIGN)),
+            (AXIS, AXIS_COLOR, ROAD_AXIS_PX, [] if axis is None else [_axis_segments(axis)]),
+            (ARROW, ARROW_COLOR, AXIS_PX, [] if axis is None else [arrow_segments(axis, _head_m(found.length_m, found.cell_m))]),
+            (ORIGIN, ORIGIN_COLOR, POINT_PX, [cross_segments(crosses["origin"], arm)]),
+            (DESTINATION, DESTINATION_COLOR, POINT_PX, [cross_segments(crosses["destination"], arm)])]
+        for key, color, width, parts in pieces:
+            batch = yield from _drape(parts, key, color, width, ground, origin, budget_s)
+            if batch is not None:
+                batches.append(batch)
+                drawn.add(key)
+        named: list[tuple[str, tuple[float, float], constraints.Color]] = [
+            (_point_text(point), (point.x, point.y), ORIGIN_COLOR if point.which == "origin" else DESTINATION_COLOR) for point in found.points]
+        for item in found.stretches:
+            middle = axis[(item.first + item.last) // 2]
+            named.append((tr("{gradient} % · level {start} → {end} m", gradient=format_number(item.gradient_pct, 1), start=_level(item.start_level_m), end=_level(item.end_level_m)),
+                          (float(middle[0]), float(middle[1])), GRADIENT_COLORS[_GRADIENT_KEYS[item.status]]))
+        for item in found.resting:
+            place = design_draw.ring_center(item.rings)
+            if place is not None:
+                text = (tr("«{name}» · {volume} m³ rest on it", name=item.name, volume=format_number(item.volume_m3, 0)) if item.volume_m3 is not None
+                        else tr("«{name}» starts from its surface", name=item.name))
+                named.append((text, place, RESTING_COLOR))
+        places = np.array([place for _text, place, _color in named], dtype=np.float64).reshape(-1, 2)
+        spots = yield from constraints.drape_points_steps(places, ground, origin, budget_s=budget_s)
+        labels.extend(Label(text, (float(x), float(y), float(z)), color) for (text, _place, color), (x, y, z) in zip(named, spots.tolist(), strict=True))
+    lines = constraints.Built(version_uid, request.version_code, found.masks.value, "" if ground is None else ground.name, tuple(batches), tuple(labels),
+                              _road_legend(request, found, ground, drawn), request.stamp)
     return design_draw.Built(lines, None, (), found.lines(shown)), found
 
 

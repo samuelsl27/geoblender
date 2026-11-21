@@ -9328,6 +9328,47 @@ es = "Vista previa de la entidad quitada"
 ["Choose the entity to preview: select its object in the 3D view or give its code"]
 es = "Elija la entidad de la que ver la vista previa: seleccione su objeto en la Vista 3D o dé su código"
 
+# La vista previa de una pista (spec 017, T28; RF-017-26): el origen, el destino, el pasillo de la ruta, el eje con su rasante por tramos y la anchura de la sección ------
+
+["Origin"]
+es = "Origen"
+
+["Destination"]
+es = "Destino"
+
+["Origin · level {level} m"]
+es = "Origen · rasante {level} m"
+
+["Destination · level {level} m"]
+es = "Destino · rasante {level} m"
+
+["{gradient} % · level {start} → {end} m"]
+es = "{gradient} % · rasante de {start} a {end} m"
+
+["Corridor of the route ({nodes} nodes, margin {margin} m)"]
+es = "Pasillo de la ruta ({nodes} nodos, holgura de {margin} m)"
+
+["Line the axis follows"]
+es = "Línea que sigue el eje"
+
+["Destination zone: level {level} m, tolerance {tolerance} m"]
+es = "Zona del destino: cota {level} m, tolerancia {tolerance} m"
+
+["Axis with its curves ({length} m): the arrow shows its sense; the abscissa 0 is at the origin"]
+es = "Eje con sus curvas ({length} m): la flecha muestra su sentido; la abscisa 0 está en el origen"
+
+["Stretch within the limits of the profile (mean up to {mean} %)"]
+es = "Tramo dentro de los límites del perfil (media hasta el {mean} %)"
+
+["Stretch with a mean gradient above the mean limit pm ({mean} %)"]
+es = "Tramo con la pendiente media por encima de la media máxima pm ({mean} %)"
+
+["Stretch with a step above the design gradient pd ({design} %)"]
+es = "Tramo con un paso por encima de la pendiente de diseño pd ({design} %)"
+
+["Edges of the section: {section} m wide (carriageway {carriageway} m)"]
+es = "Bordes de la sección: {section} m de ancho (calzada de {carriageway} m)"
+
 ["The selected entity is not of the active version: make its version the active one first"]
 es = "La entidad seleccionada no es de la versión activa: active antes su versión"
 
@@ -10333,8 +10374,8 @@ es = "Cancelado: la detección está creada; las restricciones declaradas y las 
 ["Decision recorded on the candidate «{candidate}» of «{name}»: the detection is out of date until it is recomputed"]
 es = "Decisión anotada sobre el candidato «{candidate}» de «{name}»: la detección queda obsoleta hasta que se recalcule"
 
-["«{name}» ({kind}) has no preview: only a platform, a detection of stockpiles (its marks) and a buttress (its crown zone) have one"]
-es = "«{name}» ({kind}) no tiene vista previa: solo la tienen una plataforma, una detección de acopios (sus marcas) y un contrafuerte (su zona de coronación)"
+["«{name}» ({kind}) has no preview: only a platform, a detection of stockpiles (its marks), a buttress (its crown zone) and a road (its axis) have one"]
+es = "«{name}» ({kind}) no tiene vista previa: solo la tienen una plataforma, una detección de acopios (sus marcas), un contrafuerte (su zona de coronación) y una pista (su eje)"
 
 ["«{name}» ({kind}) is not calculated: there is nothing to preview"]
 es = "«{name}» ({kind}) no está calculada: no hay nada que previsualizar"

@@ -50,6 +50,14 @@ superficie ni las máscaras (la detección de una versión las compilaría, y la
 proyecto; lo que de la capa rechazaría «Calcular» (campos, márgenes, marcas solapadas, la geometría que no está…) es el aviso en
 lugar del dibujo, con el mismo texto.
 
+Y para la **017** (spec 017, T28; RF-017-26, RF-015-26; plan 017 §5.5), :func:`road_preview_steps` prepara, también por pasos y solo leyendo, el :class:`RoadPreview` de una pista: **antes de
+calcular**, su origen y su destino, **el pasillo de la ruta** (RF-017-09: los nodos de la red 2D de ``road_net`` cuya longitud mínima desde el origen más la que les queda hasta el destino no pasa
+de la más corta más la holgura, con la malla de la ruta; ``design.road_store.preview_road_units``) y, en un destino por cota, su zona o, en «sobre un eje» y «eje 3D», la línea que sigue; **tras
+calcular** (lo que dejó «Calcular»: :class:`RoadAsk` con su resultado) o de **una pista de la versión** (su eje por estaciones guardado), el eje con la flecha de su sentido, la rasante partida en
+**tramos** (:func:`gradient_stretches`: cada uno con su pendiente media y su mayor paso, **coloreados según pd y pm**, :class:`GradientStatus`), los bordes de la sección (:func:`section_edges`) y lo que se
+le apoya. Un rechazo de la preparación (el mismo que daría «Calcular») es el aviso en lugar del dibujo, como en la plataforma. Los nombres de las cifras de la rasante dicen ``gradient`` y no la palabra
+inglesa de la ley del mineral (glosario §14); los textos siguen diciendo «rasante» y «pendiente».
+
 Lo que dice son avisos y notas con código (:class:`Notice`, de ``design.messages``): el texto en
 cada idioma sale de :meth:`Notice.text` y de :meth:`PreviewSummary.lines`, con la coma decimal y el
 espacio fino de miles del español o el punto y la coma del inglés.
@@ -95,6 +103,8 @@ __all__ = [
     "CandidateLine",
     "EntityEnd",
     "EntityPreview",
+    "GradientStatus",
+    "GradientStretch",
     "MarkPreview",
     "Named",
     "Notice",
@@ -107,6 +117,9 @@ __all__ = [
     "RemovalSummary",
     "RestingItem",
     "RestingLine",
+    "RoadAsk",
+    "RoadPoint",
+    "RoadPreview",
     "RoadSummary",
     "SectorStatus",
     "StockpileLine",
@@ -114,11 +127,14 @@ __all__ = [
     "StockpileSummary",
     "buttress_preview_steps",
     "entity_preview_steps",
+    "gradient_stretches",
     "guard_zone_units",
     "held_notices",
     "obsolete_names",
     "obsolete_notices",
     "quarry_summarize_steps",
+    "road_preview_steps",
+    "section_edges",
     "seed_notices",
     "stockpile_obsolete_notices",
     "stockpile_preview_steps",
@@ -149,6 +165,9 @@ _CODE_DECIMALS: Mapping[str, Mapping[str, int]] = MappingProxyType({
     "des.road_axis3d_radius": MappingProxyType({"radius": 2, "minimum": 2}),
     "des.road_start_level_followed": MappingProxyType({"old": 2, "new": 2}),
     "des.road_end_level_followed": MappingProxyType({"old": 2, "new": 2}),
+    "des.preview_road_calculated": MappingProxyType({"limit": 2}),
+    "des.preview_road_stored": MappingProxyType({"limit": 2}),
+    "des.preview_road_level_destination": MappingProxyType({"level": 2, "tolerance": 2}),
 })
 """Los decimales de los números de **un mensaje concreto** (spec 016, T12), que mandan sobre :data:`_DECIMALS`: los avisos de
 los acopios dicen una inclinación de 4,04° frente a un límite de 4° (``fitted``, ``limit``) y un umbral de huella de 0,25 m
@@ -1509,3 +1528,224 @@ def buttress_preview_steps(project: StoreProject, request: Any, version_uid: str
     return pace_progress(supported_store.preview_buttress_units(project, request, version_uid), budget_s,
                          phase=_BUTTRESS_PHASE, running="Preparando la vista previa de la zona de coronación…",
                          finished="Vista previa de la zona de coronación lista", total=10)
+
+
+# --- La vista previa de una pista (spec 017, T28; RF-017-26, RF-015-26, RF-017-09, RF-017-15, RF-017-17) -----------------------
+
+_ROAD_PHASE = "preview_road"
+_GRADIENT_TOLERANCE_PCT = 1e-9
+"""Lo que puede pasar una pendiente (%) de un límite y seguir dentro de él (el margen de la rasante, ``road_gradient._GRADIENT_TOLERANCE``, en %)."""
+STRETCH_MIN_M = 50.0
+STRETCHES_MAX = 40
+"""Cómo se parte la rasante para dibujarla: tramos de unos :data:`STRETCH_MIN_M` m y no más de :data:`STRETCHES_MAX` (con 5 km a 1 m, 40 tramos de 125 m: los que se leen en pantalla). Son **de dibujo**, no
+una cifra minera: la rasante y su cálculo no cambian con ellas."""
+
+
+class GradientStatus(StrEnum):
+    """El estado de un tramo de la rasante frente a los límites del perfil (RF-017-26): ``WITHIN`` (su pendiente media no pasa de la media máxima pm y ningún paso pasa de la de diseño pd),
+    ``ABOVE_MEAN`` (su media pasa de pm) y ``ABOVE_DESIGN`` (algún paso pasa de pd: lo que la rasante de «trazar» y «sobre un eje» nunca hace y el modo «eje 3D» avisa)."""
+
+    WITHIN = "within"
+    ABOVE_MEAN = "above_mean"
+    ABOVE_DESIGN = "above_design"
+
+
+@dataclass(frozen=True, slots=True)
+class GradientStretch:
+    """Un tramo de la rasante de una pista (RF-017-26): de la estación ``first`` a la ``last`` (índices de las estaciones, las dos incluidas; un tramo acaba en la estación en que empieza el siguiente), de la
+    abscisa ``start_m`` a la ``end_m`` (m) y de la cota ``start_level_m`` a la ``end_level_m`` (m), su pendiente media ``gradient_pct`` (%, en valor absoluto: ``Σ|Δcota| / S``, D-7, la misma que la de la
+    pista entera), su mayor paso entre estaciones ``max_gradient_pct`` (%) y su ``status`` frente a pd y pm."""
+
+    first: int
+    last: int
+    start_m: float
+    end_m: float
+    start_level_m: float
+    end_level_m: float
+    gradient_pct: float
+    max_gradient_pct: float
+    status: GradientStatus
+
+    @property
+    def length_m(self) -> float:
+        """La longitud del tramo (m)."""
+        return self.end_m - self.start_m
+
+
+def _check_positive(value: float, what: str) -> float:
+    number = float(value)
+    if not np.isfinite(number) or number <= 0.0:
+        raise ValueError(f"{what} es un número positivo, no {value!r}")
+    return number
+
+
+def gradient_stretches(stations: Any, levels: Any, pd_pct: float, pm_pct: float, *, min_length_m: float = STRETCH_MIN_M,
+                       max_count: int = STRETCHES_MAX) -> tuple[GradientStretch, ...]:
+    """La rasante ``levels`` (m) en las estaciones ``stations`` (m desde el origen, estrictamente crecientes) partida en tramos de unos ``min_length_m`` m (como mucho ``max_count``; un eje más corto es uno solo) y
+    cada uno con su estado frente a pd (``pd_pct``, %: la pendiente de diseño, que manda **sobre cada paso**) y pm (``pm_pct``, %: la media máxima, que manda **sobre la media del tramo**): ``ABOVE_DESIGN`` si
+    algún paso del tramo pasa de pd, si no ``ABOVE_MEAN`` si su media pasa de pm, si no ``WITHIN``; un límite no se pasa por el ruido de la última cifra (10⁻⁹ %). Los tramos cubren el eje sin huecos: el
+    primero empieza en la primera estación, el último acaba en la última y cada uno empieza donde acaba el anterior. La pendiente media es la de D-7 (``road_gradient.mean_gradient``). Solo dibuja: **no
+    cambia ninguna cifra**. ``ValueError`` (error del programa) si las estaciones no crecen, la rasante no es de su forma o un límite no es positivo."""
+    from .road_gradient import mean_gradient  # al usarlo: road_gradient importa Notice de aquí y es un módulo pesado
+
+    s = np.asarray(stations, dtype=np.float64)
+    z = np.asarray(levels, dtype=np.float64)
+    if s.ndim != 1 or s.shape != z.shape or s.size < 2:
+        raise ValueError(f"la rasante son dos vectores de la misma forma, de al menos dos estaciones: {s.shape} y {z.shape}")
+    if not bool(np.isfinite(s).all() and np.isfinite(z).all()) or not bool((np.diff(s) > 0.0).all()):
+        raise ValueError("las estaciones son números finitos estrictamente crecientes y la rasante, números finitos")
+    pd = _check_positive(pd_pct, "la pendiente de diseño pd")
+    pm = _check_positive(pm_pct, "la pendiente media máxima pm")
+    shortest = _check_positive(min_length_m, "la longitud mínima de un tramo")
+    if isinstance(max_count, bool) or int(max_count) != max_count or max_count < 1:
+        raise ValueError(f"el número máximo de tramos es un entero de 1 en adelante, no {max_count!r}")
+    count = int(min(max(1, round(float(s[-1] - s[0]) / shortest)), int(max_count), s.size - 1))
+    bounds = np.unique(np.rint(np.linspace(0, s.size - 1, count + 1)).astype(np.int64))
+    found: list[GradientStretch] = []
+    for first, last in zip(bounds[:-1].tolist(), bounds[1:].tolist(), strict=True):
+        piece, rise = s[first:last + 1], z[first:last + 1]
+        steepest = float((np.abs(np.diff(rise)) / np.diff(piece)).max()) * 100.0
+        mean = mean_gradient(piece, rise) * 100.0
+        if steepest > pd + _GRADIENT_TOLERANCE_PCT:
+            status = GradientStatus.ABOVE_DESIGN
+        elif mean > pm + _GRADIENT_TOLERANCE_PCT:
+            status = GradientStatus.ABOVE_MEAN
+        else:
+            status = GradientStatus.WITHIN
+        found.append(GradientStretch(int(first), int(last), float(piece[0]), float(piece[-1]), float(rise[0]), float(rise[-1]), mean, steepest, status))
+    return tuple(found)
+
+
+def section_edges(points: Any, half_width_m: float) -> tuple[np.ndarray, np.ndarray]:
+    """Los dos bordes de la sección de un eje de puntos ``points`` (``(n, 2)`` absolutos, float64, en el sentido de la marcha): el **izquierdo** y el **derecho** (``(n, 2)`` cada uno), a ``half_width_m`` m
+    (la semianchura de la sección) de cada punto, en la perpendicular a la dirección del eje ahí (la cuerda entre sus dos vecinos: en un arco es la tangente exacta; en los extremos, la del primer o último
+    tramo; con puntos repetidos, la del más cercano que sí tiene dirección). Es la anchura de la sección **como se dibuja** (RF-017-26): la huella grabada en celdas es la de ``des_epr_``. ``ValueError`` si
+    no hay dos puntos, no son (n, 2), la semianchura no es positiva o todos los puntos son el mismo."""
+    p = np.asarray(points, dtype=np.float64)
+    if p.ndim != 2 or p.shape[1] != 2 or p.shape[0] < 2:
+        raise ValueError(f"un eje son al menos dos puntos (n, 2), no de forma {p.shape}")
+    half = _check_positive(half_width_m, "la semianchura de la sección")
+    tangent = np.empty_like(p)
+    tangent[1:-1] = p[2:] - p[:-2]
+    tangent[0] = p[1] - p[0]
+    tangent[-1] = p[-1] - p[-2]
+    length = np.hypot(tangent[:, 0], tangent[:, 1])
+    good = length > 0.0
+    if not bool(good.any()):
+        raise ValueError("los puntos del eje son todos el mismo: no tiene dirección")
+    index = np.arange(len(p))
+    nearest = np.maximum.accumulate(np.where(good, index, -1))  # el último con dirección antes de cada punto (y el primero, para los del principio)
+    nearest = np.where(nearest < 0, int(np.argmax(good)), nearest)
+    tangent, length = tangent[nearest], length[nearest]
+    normal = np.column_stack([-tangent[:, 1], tangent[:, 0]]) / length[:, None]  # a la izquierda del sentido de la marcha
+    return p + half * normal, p - half * normal
+
+
+@dataclass(frozen=True, slots=True)
+class RoadPoint:
+    """El origen o el destino de una pista en la vista previa (RF-017-26): ``which`` (``"origin"`` o ``"destination"``), su lugar absoluto (``x`` e ``y``, m, float64) y la cota de la rasante ahí
+    (``level_m``; ``None`` si aún no se conoce: el destino de una rampa a una cota, que lo alcanza la ruta)."""
+
+    which: str
+    x: float
+    y: float
+    level_m: float | None = None
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RoadAsk:
+    """De qué pista se pide la vista previa (RF-017-26; una sola cosa): la que **se prepara** (``request``, la ``design.road_model.RoadRequest`` del diálogo de «Pista…»; una pista nueva con el código que
+    tendría) o **una de la versión** (``code``, su código: su eje guardado con los parámetros vigentes de su perfil). Con ``request`` puede traer lo que ya hizo «Calcular»: la preparación (``prepared``, la
+    ``design.road_store.PreparedRoad``: con ella no se repite) y el resultado (``outcome``, la ``design.road_model.RoadOutcome``: con él la vista previa es la de **tras calcular**; sin él, la de antes).
+    Ni el resultado sin su petición ni las dos peticiones a la vez: ``ValueError``."""
+
+    request: Any = None
+    code: str | None = None
+    prepared: Any = None
+    outcome: Any = None
+
+    def __post_init__(self) -> None:
+        if (self.request is None) == (self.code is None):
+            raise ValueError("la vista previa de una pista es de la que se prepara (su petición) o de una de la versión (su código), no de las dos ni de ninguna")
+        if self.code is not None and (self.prepared is not None or self.outcome is not None):
+            raise ValueError("lo que ya hizo «Calcular» (la preparación y el resultado) es de la pista que se prepara, no de una de la versión")
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RoadPreview:
+    """Lo que enseña la vista previa de una pista (RF-017-26): su ``name`` y su ``code`` (``RDW-001``; el que tendría), la ``version`` (su código) y el estado de sus máscaras (``masks``), el ``mode``
+    (``trace``, ``on_axis`` o ``axis_3d``), la superficie de partida (``start_surface``, el nombre de su dato: sobre la que se dibuja), el nombre de su ``profile`` y el lado de las celdas (``cell_m``).
+
+    **Antes de calcular**: el origen y el destino (``points``; el destino de una rampa a una cota no es un punto: lo alcanza la ruta), la línea que sigue (``line``: «sobre un eje» y «eje 3D»; ``(k, 2)``
+    absolutos), la zona del destino por cota (``zone``: sus anillos; ``target_level_m`` y ``target_tolerance_m``), y **el pasillo** de la ruta (``corridor``: los anillos de los nodos de la red 2D en el
+    pasillo, ``corridor_nodes``, con la malla ``mesh_m``, la holgura ``margin_m``, la cota inferior de la longitud ``lower_bound_m`` y si el origen es alcanzable, ``reachable``: ``None`` fuera de «trazar»).
+
+    **Tras calcular** (``calculated``; lo que dejó «Calcular» o el eje guardado de una pista de la versión): el eje (``axis``: sus estaciones ``(n, 2)`` absolutas, con las curvas, en el sentido de la marcha,
+    la abscisa 0 en el primero), ``stations`` y la rasante (``levels``), los dos bordes de la sección (``edges``: el izquierdo y el derecho), la longitud (``length_m``), el número de curvas y el radio mínimo
+    (``curves`` y ``min_radius_m``; ``None`` si no se conocen), la pendiente media (``gradient_mean_pct``), la calzada y la sección (``carriageway_m`` y ``section_m``), pd y pm del perfil
+    (``max_gradient_pct`` y ``max_mean_gradient_pct``) y los ``stretches`` (:func:`gradient_stretches`), y lo que se le apoya (``resting``: **solo** si la pista ya está en la versión).
+
+    Con **máscaras que no están al día**, **sin resultado** (una pista sin calcular) o con el **rechazo** de la preparación (``refusal``: lo que rechazaría «Calcular», RF-015-08 y RF-017-04) no hay dibujo:
+    solo el aviso (``notices`` y ``refusal``). :meth:`lines` es todo lo que dice, línea a línea."""
+
+    name: str
+    code: str
+    version: str
+    masks: MaskState
+    mode: str = ""
+    start_surface: str = ""
+    profile: str = ""
+    cell_m: float = 0.0
+    points: tuple[RoadPoint, ...] = ()
+    line: np.ndarray | None = None
+    zone: tuple[np.ndarray, ...] = ()
+    target_level_m: float | None = None
+    target_tolerance_m: float | None = None
+    mesh_m: float | None = None
+    margin_m: float | None = None
+    corridor: tuple[np.ndarray, ...] = ()
+    corridor_nodes: int = 0
+    lower_bound_m: float | None = None
+    reachable: bool | None = None
+    calculated: bool = False
+    axis: np.ndarray | None = None
+    stations: np.ndarray | None = None
+    levels: np.ndarray | None = None
+    edges: tuple[np.ndarray, np.ndarray] | None = None
+    length_m: float = 0.0
+    curves: int | None = None
+    min_radius_m: float | None = None
+    gradient_mean_pct: float | None = None
+    carriageway_m: float = 0.0
+    section_m: float = 0.0
+    max_gradient_pct: float | None = None
+    max_mean_gradient_pct: float | None = None
+    stretches: tuple[GradientStretch, ...] = ()
+    resting: tuple[RestingItem, ...] = ()
+    notices: tuple[Notice, ...] = ()
+    refusal: GeoblenderError | None = None
+
+    @property
+    def drawable(self) -> bool:
+        """Si hay algo que dibujar (el origen o el destino, la línea o el eje): sin máscaras al día, sin resultado o rechazada, no."""
+        return bool(self.points) or self.line is not None or self.axis is not None
+
+    def lines(self, language: str = "es") -> tuple[tuple[str, bool], ...]:
+        """Todo lo que dice la vista previa en ``language``, línea a línea con si va en alerta (como la de una plataforma): el rechazo de «Calcular», con los mismos mensajes (en alerta), y los avisos y
+        notas en su orden."""
+        return _preview_lines(self.refusal, self.notices, language)
+
+
+def road_preview_steps(project: StoreProject, ask: RoadAsk, version_uid: str, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """El :class:`RoadPreview` de ``ask`` (:class:`RoadAsk`) para la versión ``version_uid`` (su uid), por pasos de ``budget_s`` como mucho: el último ``Progress`` lleva el resumen. **Solo lee**: la
+    preparación entera de la pista (``design.road_store.prepare_road_units``: la capa de origen, la superficie de partida, las máscaras de la versión **al día** —no las compila: si faltan o están
+    obsoletas lo dice— y los parámetros), la red 2D desde el destino y desde el origen y el pasillo (RF-017-09), o, tras calcular, lo que dejó «Calcular»; no calcula la ruta ni la rasante ni escribe
+    nada (ni los parámetros, ni la operación, ni los datos). Un rechazo de la preparación (RF-015-08, RF-017-04: la capa, la geometría, el perfil, la partida, los parámetros…) no es un error: es
+    ``RoadPreview.refusal``, con el mismo mensaje que «Calcular». Otros errores (una versión que no existe, una entidad que no es una pista de la versión: ``ValueError``) sí se lanzan al avanzar. Cerrar
+    los pasos a mitad no deja nada."""
+    if not isinstance(ask, RoadAsk):
+        raise TypeError(f"la vista previa de una pista se pide con RoadAsk, no con {ask!r}")
+    from . import road_store  # al usarlo: road_store importa Notice de aquí y es un módulo pesado
+
+    return pace_progress(road_store.preview_road_units(project, ask, version_uid, budget_s=budget_s), budget_s, phase=_ROAD_PHASE, running="Preparando la vista previa de la pista…",
+                         finished="Vista previa de la pista lista", total=10)

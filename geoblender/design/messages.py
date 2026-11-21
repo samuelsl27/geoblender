@@ -2196,6 +2196,60 @@ CATALOG: tuple[Message, ...] = (
         "zona de coronación, así que no se dibuja nada.",
         "warning",
     ),
+    # La vista previa de una pista (spec 017, T28; RF-017-26, RF-017-09): lo que dice antes de calcular (el origen, el destino y el pasillo de la ruta o la línea que sigue) y tras calcular
+    # o de una pista de la versión (el eje y su rasante). Con la familia ``des.preview_*``: ``des.road_*`` es una familia cerrada.
+    Message(
+        "des.preview_road_trace",
+        "Preview of «{entity}» ({code}) in {version}: the route will be searched from the origin to the destination on «{surface}» with the profile {profile} (section of {section} m, "
+        "carriageway of {carriageway} m); nothing is calculated or written.",
+        "Vista previa de «{entity}» ({code}) en {version}: la ruta se buscará del origen al destino sobre «{surface}» con el perfil {profile} (sección de {section} m, calzada de "
+        "{carriageway} m); no se calcula ni se escribe nada.",
+        "note",
+    ),
+    Message(
+        "des.preview_road_corridor",
+        "Corridor of the route: the nodes of the 2D network of {mesh} m that lie on a way at most {margin} m longer than the shortest one (corridor nodes: {nodes}); the route is searched "
+        "inside it and cannot be shorter than {bound} m (the margin is slack, not a width).",
+        "Pasillo de la ruta: los nodos de la red 2D de {mesh} m por los que pasa un camino que mide como mucho {margin} m más que el más corto (nodos del pasillo: {nodes}); la ruta se busca "
+        "dentro de él y no puede ser más corta de {bound} m (la holgura no es un ancho).",
+        "note",
+    ),
+    Message(
+        "des.preview_road_unreachable",
+        "The 2D network does not reach the origin from the destination with the design gradient of the profile and the heights admitted: «Calculate» would find no route, so no corridor is drawn.",
+        "La red 2D no llega al origen desde el destino con la pendiente de diseño del perfil y las alturas admitidas: «Calcular» no encontraría ruta, así que no se dibuja ningún pasillo.",
+        "warning",
+    ),
+    Message(
+        "des.preview_road_level_destination",
+        "The destination is a level: the route ends at the first node of the drawn zone whose ground differs from {level} m by less than {tolerance} m.",
+        "El destino es una cota: la ruta acaba en el primer nodo de la zona dibujada cuyo terreno difiere de {level} m en menos de {tolerance} m.",
+        "note",
+    ),
+    Message(
+        "des.preview_road_line",
+        "Preview of «{entity}» ({code}) in {version}: it follows the line «{feature}» of the layer «{layer}» on «{surface}» with the profile {profile} (section of {section} m, "
+        "carriageway of {carriageway} m); no route is searched, so there is no corridor; the axis with its curves and the levels are drawn once calculated.",
+        "Vista previa de «{entity}» ({code}) en {version}: sigue la línea «{feature}» de la capa «{layer}» sobre «{surface}» con el perfil {profile} (sección de {section} m, calzada de "
+        "{carriageway} m); no se busca ninguna ruta, así que no hay pasillo; el eje con sus curvas y las cotas se dibujan una vez calculado.",
+        "note",
+    ),
+    Message(
+        "des.preview_road_calculated",
+        "Preview of «{entity}» ({code}) in {version}: axis of {length} m (curves: {curves}) from the level {start_level} m at the origin to {end_level} m at its end, mean gradient {gradient} % "
+        "(mean limit of the profile, {limit} %); section of {section} m (carriageway of {carriageway} m). It is what «Calculate» left: nothing is written until it is created.",
+        "Vista previa de «{entity}» ({code}) en {version}: eje de {length} m (curvas: {curves}), de la cota {start_level} m en el origen a {end_level} m al final, pendiente media del {gradient} % "
+        "(la media máxima del perfil, {limit} %); sección de {section} m (calzada de {carriageway} m). Es lo que dejó «Calcular»: no se escribe nada hasta crearla.",
+        "note",
+    ),
+    Message(
+        "des.preview_road_stored",
+        "Preview of «{entity}» ({code}) in {version}: axis of {length} m stored in the version, from the level {start_level} m at the origin to {end_level} m at its end, mean gradient {gradient} % "
+        "(mean limit of the profile, {limit} %); section of {section} m (carriageway of {carriageway} m).",
+        "Vista previa de «{entity}» ({code}) en {version}: eje de {length} m guardado en la versión, de la cota {start_level} m en el origen a {end_level} m al final, pendiente media del {gradient} % "
+        "(la media máxima del perfil, {limit} %); sección de {section} m (calzada de {carriageway} m).",
+        "note",
+    ),
     # Los cuatro tipos de entidad de la 016 (T03; plan 016 §5.1 y §5.5; RF-016-04 a 07, 12 a 15, 18 a 22). La detección de
     # acopios: el acopio que se rechaza (se informa en el resumen y no se registra) nombra su marca, el caso y su lugar.
     Message(
