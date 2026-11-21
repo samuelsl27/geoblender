@@ -321,6 +321,12 @@ class _Frozen:
         with _open(Path(item.files["main"])) as conn:
             return read_features(conn, str(item.settings["layer"]))
 
+    def lines_3d(self, name: str) -> road_store.Lines3D:
+        """La capa de líneas con Z congelada ``name`` (una línea de rotura o la capa propuesta: su planta, sus campos y la Z de cada línea; spec 017, T23)."""
+        item = self.named(name)
+        with _open(Path(item.files["main"])) as conn:
+            return road_store.read_lines_3d(conn, str(item.settings["layer"]))
+
     def cells_named(self, name: str) -> np.ndarray:
         """Las celdas de la capa de polígonos congelada ``name``, con el papel que sea."""
         item = self.named(name)
@@ -1131,10 +1137,10 @@ def reproduce_road(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
     de la ruta) y de su perfil (``des.roadprofile.{p}.*``) y del proyecto (el espesor mínimo, la tolerancia de cara, el umbral de magnitud y el salto creado), con los ajustes de su operación (el nombre, el
     código y el campo de los nombres de la capa), **sin el proyecto**: el mismo cálculo (``road_store.road_compute_steps`` sobre el mismo ``RoadJob``). La geometría de origen y el ``fid`` salen de lo
     **congelado** (:func:`~.road_store.frozen_geometry`): la capa, **el eje por estaciones de la pista en cuyo eje está el origen** (la entrada de papel ``road_axis``), la huella de la entidad de destino
-    (``support_footprint``) y la capa de la zona de un destino por cota. Los otros diseños de la versión que difieren en la huella son las entradas ``other_design``: con ellos se repite el aviso del informe.
+    (``support_footprint``) y la capa de la zona de un destino por cota; en «eje 3D», la capa de líneas con Z congelada (T23). Los otros diseños de la versión que difieren en la huella son las entradas ``other_design``: con ellos se repite el aviso del informe.
     Sus pasos y, el último, el ``ReproducedResult`` con la superficie entera (``des_psf_``), la huella (``des_epr_``), el eje por estaciones (``des_rdx_``), el informe (``des_prp_``) y las cifras (con
     ``des.supported_m3`` de lo que apoya). Lo confirmado por la persona no se reproduce (es una decisión suya, de los ajustes). Lo que no es una ``ReproduceRequest`` es ``TypeError``; una de otro tipo,
-    ``ValueError``; el modo «eje 3D», ``NotImplementedError`` (T23)."""
+    ``ValueError``."""
     return _reproduce_road(_check(request, provenance.ROAD), budget_s)
 
 
@@ -1169,13 +1175,14 @@ def _reproduce_road(request: ReproduceRequest, budget_s: float) -> Iterator[Prog
     masks = replace(frozen.masks(), weights=MappingProxyType(frozen.weights()))
     start_item = frozen.item(provenance.SURFACE_ROLE)
     start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida").values
-    layer = frozen.features(asked.layer)
+    lines = frozen.lines_3d(asked.layer) if asked.mode is RoadMode.AXIS_3D else None  # «eje 3D»: la Z de su línea sale de la capa de líneas congelada (T23)
+    layer = frozen.features(asked.layer) if lines is None else lines.layer
     zone = frozen.features(str(asked.dest_zone).partition(":")[0].strip()) if asked.destination is None and asked.dest_zone is not None else None
     origin_ref = road_store.parse_reference(asked.origin) if asked.origin is not None else None
     destination_ref = road_store.parse_reference(asked.destination) if asked.destination is not None else None
     footprint = _frozen_footprint(request, frozen.grid.ncols, destination_ref.code) if isinstance(destination_ref, road_store.EntityReference) else None
     axis = _frozen_axis(request) if isinstance(origin_ref, road_store.AxisReference) else None
-    geometry, fid = road_store.frozen_geometry(asked, code, frozen.grid, layer, zone_layer=zone, axis=axis, footprint=footprint)
+    geometry, fid = road_store.frozen_geometry(asked, code, frozen.grid, layer, zone_layer=zone, axis=axis, footprint=footprint, lines=lines)
     whole = (slice(0, frozen.grid.nrows), slice(0, frozen.grid.ncols))
     cut, fill = admitted(masks, BenchSense.CUT)[whole], admitted(masks, BenchSense.FILL)[whole]
     job = RoadJob(asked, code, road_store.frozen_profile(frozen.values, asked.profile), frozen.grid, start, cut, fill, road_store.untouchable_cells(masks), geometry,

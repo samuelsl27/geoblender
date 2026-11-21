@@ -9,8 +9,9 @@ y sin escribir nada); **el resumen, las dos confirmaciones y con qué se compara
 :func:`check_road_confirmed` y :class:`RoadConfirmed`, :func:`road_previous` y :func:`road_obsolete`; la ``Calculation`` es ``design.steps.road_run``); **crear** (T21: :func:`create_road_steps` y :func:`create_road`, con lo que guarda —:func:`road_entity_rows`, :func:`road_axis_rows`,
 :func:`road_report_rows` y :func:`road_geometry_sha256`, funciones puras del resultado— y lo que anota la operación, :func:`road_operation_start`); **recalcular** (T22: :func:`run_road` y
 :func:`recompute_road`, con lo confirmado que arrastra y los otros diseños que anota al completarla) y **reproducir** (T22: lo que lee de lo congelado, :func:`frozen_profile` y
-:func:`frozen_geometry`; la función de reproducir es ``design.reproduce.reproduce_road``); traer a otra versión y «Cambiar parámetro…», de la T22b; los modos «sobre un eje» y «eje 3D» con su
-lectura y su contrato, de la T23.
+:func:`frozen_geometry`; la función de reproducir es ``design.reproduce.reproduce_road``); traer a otra versión y «Cambiar parámetro…», de la T22b; los modos «sobre un eje» y «eje 3D», de la T23: la línea con su Z de una línea de rotura o de la capa propuesta
+(:class:`Lines3D`, :func:`read_layer_3d`, :func:`read_lines_3d` y :func:`line_3d`), la Z de cada estación en la abscisa de la línea y el radio de su planta medido en las estaciones
+(``road_axis.plan_of_line``, ``road_gradient.check_axis_3d``).
 
 - :func:`prepare_road_units` y :func:`prepare_road` (de una vez): la versión editable (RF-009-21), el código ``RDW-nnn`` y el nombre únicos, **la partida** (RF-017-05, D-3: la persona
   la elige; sin ella, :func:`default_start`: la de explotación de la cantera de la 014 de la versión y, si no, la última de la cadena de entidades) con la cadena (una pista por
@@ -49,6 +50,7 @@ import numpy as np
 
 from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import DatasetStatus
+from ..core.gpkg.wkb import decode_geometry
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
@@ -61,9 +63,13 @@ from ..core.versions.model import Version
 from ..gis.grid import Grid
 from ..gis.masks import access
 from ..gis.masks.combine import ClassBit
+from ..gis.messages import GisError
+from ..gis.provenance import BREAKLINES as _BREAKLINES
+from ..gis.provenance import FAMILIES_BY_CODE as _GIS_FAMILIES
+from ..gis.provenance import FEATURES as _FEATURES
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features
-from ..gis.vector import FeatureLayer
+from ..gis.vector import FeatureLayer, FieldColumn, column_type, feature_parts
 from . import (
     edges,
     entities,
@@ -124,6 +130,7 @@ __all__ = [
     "AxisReference",
     "DefaultStart",
     "EntityReference",
+    "Lines3D",
     "OtherReader",
     "PointReference",
     "PreparedRoad",
@@ -138,12 +145,15 @@ __all__ = [
     "default_start",
     "frozen_geometry",
     "frozen_profile",
+    "line_3d",
     "other_design_notices",
     "other_designs",
     "other_reader",
     "parse_reference",
     "prepare_road",
     "prepare_road_units",
+    "read_layer_3d",
+    "read_lines_3d",
     "recompute_road",
     "road_axis_rows",
     "road_compute_steps",
@@ -178,6 +188,12 @@ _LIVE_STATES = (EntityState.CURRENT, EntityState.STALE, EntityState.SUPPORT_REMO
 _MISSING_SUPPORT = "no existe en la versión, no está calculada o se descartó"
 _SECTION_COLUMNS = "station_m, x, y, terrain_m, level_m"
 _AXIS_REFERENCE = entities.AXIS_REFERENCE
+_FEATURE_PREFIX = _GIS_FAMILIES[_FEATURES].prefix
+"""El comienzo del nombre de una capa de entidades del proyecto (``gis_fea_``: guarda solo X e Y)."""
+_LINES_3D_PREFIXES = (_GIS_FAMILIES[_BREAKLINES].prefix, provenance.FAMILIES_BY_CODE[provenance.ROUTE_LAYER_TABLE].prefix)
+"""Las capas que dan la Z de una línea en el modo «eje 3D» (T23-a): las líneas de rotura (``gis_brk_``) y la capa propuesta de «Proponer el trazado…» (``des_rpl_``)."""
+_LINE_NAME_FIELD = "line_id"
+"""El campo del nombre de una línea de rotura (``gis_brk_``): lo que identifica una línea en su capa si la persona no elige otro campo."""
 _ROUTE_PARAMS = (RoadParam.MESH, RoadParam.LEVEL_STEP, RoadParam.MAX_CUT_FILL, RoadParam.LAMBDA, RoadParam.TURN, RoadParam.MARGIN, RoadParam.SIMPLIFY, RoadParam.ARRIVAL_TOL,
                  RoadParam.SEARCH_BUDGET)
 """Los parámetros de la ruta (solo los lee el modo «trazar», P-14)."""
@@ -374,7 +390,13 @@ def _names(layer: FeatureLayer, request: RoadRequest, code: str) -> tuple[str | 
     ``None`` donde no lo tiene."""
     wanted = request.fields.name_field
     if wanted is None:
-        return entity_store._names(layer)
+        found = entity_store._names(layer)
+        if any(name is not None for name in found):
+            return found
+        for column in layer.columns:  # una línea de rotura (``gis_brk_``) no tiene «nombre»: su identificador es ``line_id``
+            if column.sql_type == "TEXT" and column.field.casefold() == _LINE_NAME_FIELD:
+                return tuple(None if value is None else str(value).strip() for value in layer.values[column.column])
+        return found
     fit = [column for column in layer.columns if column.sql_type not in _NUMERIC]
     for column in fit:
         if wanted in (column.field, column.column):
@@ -478,6 +500,91 @@ def _check_line_cells(grid: Grid, surface: np.ndarray, line: np.ndarray, name: s
         if not math.isfinite(float(surface[row[vertex], column[vertex]])):
             raise _reject("des.road_point_no_data", request, code, RoadParam.FEATURE, name, surface=surface_name, x=round(float(line[vertex, 0]), 2),
                           y=round(float(line[vertex, 1]), 2))
+
+
+# --- La capa de líneas con Z del modo «eje 3D» (T23-a; RF-017-02, RF-017-04, RF-017-18) ---------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Lines3D:
+    """Una capa de líneas con Z leída **tal como está guardada** (T23-a): su ``layer`` en planta (los números de sus filas, sus campos y sus partes en X e Y absolutas, float64: una
+    ``FeatureLayer``, así que la elección por número o por nombre y los rechazos de la planta son los de «sobre un eje») y, de cada línea, sus vértices ``xyz`` ``(k, 3)`` —la Z de la línea, que
+    una capa de entidades no guarda— o ``(k, 2)`` si la geometría no la lleva, y ``None`` si la línea es de varias partes (la planta la rechaza antes). Es lo que lee la preparación del proyecto
+    (:func:`read_layer_3d`) y la reproducción de lo congelado (:func:`read_lines_3d`)."""
+
+    layer: FeatureLayer
+    xyz: tuple[np.ndarray | None, ...]
+
+
+def _stored_xyz(geometry: Any) -> np.ndarray | None:
+    """Los vértices de una geometría de líneas tal como están guardados, ``(k, 2)`` o ``(k, 3)``, float64 y de solo lectura; ``None`` si es de varias partes."""
+    coords = geometry.coords
+    if geometry.geometry_type == "MULTILINESTRING":
+        if len(coords) != 1:
+            return None
+        coords = coords[0]
+    found = np.array(coords, dtype=np.float64)
+    found.flags.writeable = False
+    return found
+
+
+def read_lines_3d(conn: sqlite3.Connection, table: str) -> Lines3D:
+    """Las líneas de la tabla ``table`` de la conexión ``conn`` (la del proyecto o una copia congelada: una línea de rotura ``gis_brk_`` o la capa propuesta ``des_rpl_``, de ``LINESTRING``
+    con Z) como :class:`Lines3D`, en el orden de su ``fid``: la planta y los campos de una capa de entidades —de cada columna, su tipo (``BOOLEAN`` es entero, como en el proyecto)— y, aparte, la
+    geometría tal como está guardada con su Z. **Solo lee** (principio 7). ``read_features`` no vale: una línea de rotura lleva una columna ``hard`` ``BOOLEAN`` que una capa de entidades
+    no admite. ``ValueError`` si no es una tabla o su geometría no es de líneas."""
+    info = conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+    if not info:
+        raise ValueError(f"«{table}» no es una tabla del proyecto")
+    typed = [(str(row[1]), column_type(str(row[2]))) for row in info if str(row[1]).lower() not in ("fid", "geom")]
+    columns = tuple(FieldColumn(name, name, kind) for name, kind in typed if kind is not None)
+    selected = ", ".join(f'"{name}"' for name in ("fid", "geom", *(column.column for column in columns)))
+    rows = conn.execute(f'SELECT {selected} FROM "{table}" ORDER BY fid').fetchall()
+    parts: list[tuple[tuple[np.ndarray, ...], ...]] = []
+    found: list[np.ndarray | None] = []
+    for row in rows:
+        geometry = decode_geometry(row[1])
+        if geometry.geometry_type not in ("LINESTRING", "MULTILINESTRING"):
+            raise ValueError(f"«{table}» no es una tabla de líneas: tiene una geometría {geometry.geometry_type}")
+        parts.append(feature_parts(geometry.geometry_type, geometry.coords))
+        found.append(_stored_xyz(geometry))
+    values = {column.column: tuple(row[index + 2] for row in rows) for index, column in enumerate(columns)}
+    layer = FeatureLayer("line", tuple(int(row[0]) for row in rows), tuple(parts), columns, values)
+    return Lines3D(layer, tuple(found))
+
+
+def read_layer_3d(project: StoreProject, request: RoadRequest, code: str) -> Lines3D:
+    """La capa de líneas con Z ``request.layer`` del proyecto para el modo «eje 3D» (T23-a, decisión de la sesión principal): una **línea de rotura** (``gis_brk_``) o la **capa propuesta**
+    (``des_rpl_``). Una capa de **entidades** (``gis_fea_``) guarda solo X e Y (``docs/trampas.md`` §6) y se rechaza con ``des.road_line_no_z`` (nombrando la capa, la pista, el campo y el valor);
+    un dato que no existe, ``gis.dataset_unknown``; cualquier otra capa es un error del programa (``ValueError``: el diálogo solo ofrece las anteriores). **Solo lee.**"""
+    name = request.layer
+    if name.startswith(_FEATURE_PREFIX):
+        raise _reject("des.road_line_no_z", request, code, RoadParam.FEATURE, str(request.feature))
+    if not name.startswith(_LINES_3D_PREFIXES):
+        raise ValueError(f"«{name}» no es una capa de líneas con Z del proyecto ({' o '.join(prefix + '…' for prefix in _LINES_3D_PREFIXES)})")
+    with project.read() as conn:
+        record = dataset_registry.get(conn, name)
+        if record is None:
+            raise GisError("gis.dataset_unknown", obj="Dato de topografía", field="dato", value=name)
+        return read_lines_3d(conn, record.locator)
+
+
+def line_3d(lines: Lines3D, request: RoadRequest, code: str) -> tuple[np.ndarray, int]:
+    """La línea con Z que elige ``request.feature`` (por su ``fid`` o su nombre) de ``lines``, en absolutas float64 ``(k, 3)`` de solo lectura, y su ``fid`` (RF-017-02, RF-017-18): la **planta**
+    con los rechazos de «sobre un eje» (:func:`_read_line`: varias partes, sin longitud, un vértice repetido, que se corta a sí misma) y la **Z**, que ha de estar en cada vértice y ser un
+    número: si no, ``des.road_line_no_z`` nombrando la capa, la pista, el campo y el valor; **sin elegir una cota por la persona**. Sin línea elegida, ``des.entity_param_missing``. No modifica
+    nada: la línea es una entrada (RF-017-18, principio 7)."""
+    if request.feature is None:
+        raise _reject("des.entity_param_missing", request, code, RoadParam.FEATURE, None)
+    layer = lines.layer
+    index = _feature_index(layer, request.feature, request, code, RoadParam.FEATURE)
+    plan = _read_line(layer, index, request.feature, request, code)
+    stored = lines.xyz[index]
+    if stored is None or stored.ndim != 2 or stored.shape[1] < 3 or stored.shape[0] != len(plan) or not bool(np.isfinite(stored[:, 2]).all()):
+        raise _reject("des.road_line_no_z", request, code, RoadParam.FEATURE, str(request.feature))
+    found = np.column_stack([plan, stored[:, 2]])
+    found.flags.writeable = False
+    return found, int(layer.fids[index])
 
 
 # --- El perfil ----------------------------------------------------------------------------------
@@ -897,7 +1004,7 @@ def other_designs(project: StoreProject, version: Version, start_name: str) -> t
     from .entities import _surface_ancestors  # el grafo hacia atrás por la entrada «surface»: lo mismo que «apoyo retirado»
 
     with project.read() as conn:
-        start = dataset_registry.get(conn, start_name, version_uid=version.uid)
+        start = dataset_registry.get(conn, start_name, version_uid=version.uid) or dataset_registry.get(conn, start_name)  # la partida puede ser un dato del proyecto (un MDT importado)
         writer = None if start is None else start.operation_uid
         candidates: dict[str, str] = {}
         for uid in entities.chain_tail_surfaces(conn, version.uid):
@@ -930,8 +1037,8 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     hecha a la que sustituye (un recálculo). **Nada se escribe** (RF-015-03). Los rechazos salen al avanzar, antes de calcular y en este orden: la versión, el nombre y la cadena, la
     capa y la geometría, el perfil, la superficie, los puntos, las cotas, los parámetros, la malla de la ruta, el destino por cota y un sector pendiente.
 
-    «Sobre un eje» lee su línea (RF-017-04); su cálculo es de la T23, y el modo «eje 3D» —cuya Z se lee de una línea de rotura o de la capa propuesta, T23-a— rechaza una capa de entidades
-    (sin Z) y una capa de líneas 3D aún no se lee (``ValueError``: es de la T23)."""
+    «Sobre un eje» lee la línea de su capa de entidades (RF-017-04) y «eje 3D», la línea con su Z de una línea de rotura (``gis_brk_``) o de la capa propuesta (``des_rpl_``; T23-a: una capa de
+    entidades, que guarda solo X e Y, se rechaza con ``des.road_line_no_z``): :func:`read_layer_3d` y :func:`line_3d`. En «eje 3D» la Z es la rasante: **no hay cota de inicio ni de fin**."""
     if masks.version_uid != version.uid:
         raise ValueError(f"las máscaras son de otra versión, no de {version.code}")
     chosen, registry = _identify(project, version, request, code)
@@ -947,12 +1054,15 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     support_name = None if request.support is None else _start_dataset(registry, version, name, chosen, request.support, RoadParam.SUPPORT)
     yield
     mode = request.mode
-    layer = _layer(project, request.layer)
-    _kind(layer, "point" if mode is RoadMode.TRACE else "line", request, chosen)
     line: np.ndarray | None = None
     fid = 0
-    if mode is RoadMode.AXIS_3D:
-        raise _reject("des.road_line_no_z", request, chosen, RoadParam.FEATURE, str(request.feature))
+    if mode is RoadMode.AXIS_3D:  # la Z de la línea sale de una línea de rotura o de la capa propuesta; una capa de entidades no la guarda (T23-a)
+        lines = read_layer_3d(project, request, chosen)
+        layer = lines.layer
+        line, fid = line_3d(lines, request, chosen)
+    else:
+        layer = _layer(project, request.layer)
+        _kind(layer, "point" if mode is RoadMode.TRACE else "line", request, chosen)
     if mode is RoadMode.ON_AXIS:
         if request.feature is None:
             raise _reject("des.entity_param_missing", request, chosen, RoadParam.FEATURE, None)
@@ -985,15 +1095,18 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
             end_level = None
     else:
         assert line is not None and request.feature is not None
-        _check_line_cells(grid, values_start, line, request.feature, request, chosen, start_name)
+        _check_line_cells(grid, values_start, line[:, :2], request.feature, request, chosen, start_name)
         geometry_points = ((float(line[0, 0]), float(line[0, 1])), (float(line[-1, 0]), float(line[-1, 1])))
         start_level = (_terrain_level(grid, values_start, geometry_points[0]), f"cota de la superficie de partida «{start_name}» en el primer vértice de la línea")
         end_level = (_terrain_level(grid, values_start, geometry_points[1]), f"cota de la superficie de partida «{start_name}» en el último vértice de la línea")
-    _check_level(request, chosen, RoadParam.START_LEVEL, request.start_level_m, values_start)
-    _check_level(request, chosen, RoadParam.END_LEVEL, request.end_level_m, values_start)
+        if mode is RoadMode.AXIS_3D:  # la Z de la línea es la rasante (RF-017-18): no hay cota de inicio ni de fin que dar ni que tomar del terreno
+            start_level = end_level = None
+    if mode is not RoadMode.AXIS_3D:
+        _check_level(request, chosen, RoadParam.START_LEVEL, request.start_level_m, values_start)
+        _check_level(request, chosen, RoadParam.END_LEVEL, request.end_level_m, values_start)
     levels: dict[str, tuple[str, str]] = {}
-    resolved_start = request.start_level_m
-    resolved_end = request.end_level_m
+    resolved_start = None if mode is RoadMode.AXIS_3D else request.start_level_m
+    resolved_end = None if mode is RoadMode.AXIS_3D else request.end_level_m
     if resolved_start is None and start_level is not None:
         resolved_start = start_level[0]
         levels[RoadParam.START_LEVEL.value] = (start_level[1], "algorithm")
@@ -1183,19 +1296,14 @@ def _terrain_on(job: RoadJob, axis: road_axis.Axis, shown: str) -> np.ndarray:
     return found
 
 
-def _line_z(axis: road_axis.Axis, line: np.ndarray) -> np.ndarray:
-    """La Z de la línea de «eje 3D» en las estaciones del eje (RF-017-18): la de la línea según la abscisa **proporcional** a lo largo de su poligonal (exacta en una recta, donde el eje y la línea miden
-    lo mismo; con esquinas, el eje con sus curvas es más corto y la Z se reparte proporcionalmente). **El contrato con R-35 y la lectura de esa Z los fija la T23**: esto no los decide."""
-    chord = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(line[:, :2], axis=0).T))))
-    return np.asarray(np.interp(axis.stations / axis.length_m * chord[-1], chord, line[:, 2]), dtype=np.float64)
-
-
 def _levels(job: RoadJob, axis: road_axis.Axis, terrain: np.ndarray) -> np.ndarray:
     """La rasante en las estaciones del eje (A5; RF-017-15, RF-017-16): en «eje 3D» la Z de la línea, **sin recalcularla**; en los demás modos, la rasante acotada de ``gradient_line`` entre la cota de
     inicio y la de fin (las del trabajo o, sin ellas, el terreno y, con un destino por cota, la pedida). ``des.road_drop_too_steep`` si el desnivel pasa de pd por la longitud del eje."""
-    if job.mode is RoadMode.AXIS_3D:
+    if job.mode is RoadMode.AXIS_3D:  # el contrato de la Z de «eje 3D» (T23): la de la línea en la abscisa de cada estación (``road_axis.plan_of_line``), sin recalcularla
         assert job.geometry.line is not None
-        return _line_z(axis, job.geometry.line)
+        found = road_axis.plan_of_line(axis, job.geometry.line).levels
+        assert found is not None
+        return found
     destination = job.geometry.destination
     start = float(terrain[0]) if job.start_level_m is None else job.start_level_m
     if job.end_level_m is not None:
@@ -1211,15 +1319,16 @@ def _levels(job: RoadJob, axis: road_axis.Axis, terrain: np.ndarray) -> np.ndarr
 
 
 def _axis_notices(job: RoadJob, axis: road_axis.Axis, levels: np.ndarray) -> tuple[tuple[Notice, ...], bool]:
-    """Los avisos del eje y de la rasante, en orden, y si la pendiente media pasa de la media máxima del perfil: los radios que bajaron del de diseño (RF-017-14) y, en «eje 3D», la comprobación de la línea
-    (RF-017-18: un aviso por tramo que pasa de pd, la media y cada curva por debajo de Rmín) o, en los demás, el aviso de la media (RF-017-17: la media, el límite y los tramos de mayor pendiente con su
-    abscisa y su lugar). La confirmación expresa y su motivo no son de este cálculo."""
+    """Los avisos del eje y de la rasante, en orden, y si la pendiente media pasa de la media máxima del perfil: en «trazar» y «sobre un eje», los radios que bajaron del de diseño (RF-017-14) y el aviso
+    de la media (RF-017-17: la media, el límite y los tramos de mayor pendiente con su abscisa y su lugar); en «eje 3D», **solo** la comprobación de la línea (RF-017-18: un aviso por tramo que pasa de
+    pd, la media y cada estación cuyo radio de la planta, el del círculo por tres estaciones de la línea remuestreada, es menor que Rmín: T23): el radio de diseño no redondea nada de la persona, así que
+    «el radio baja» no es un aviso de ese modo. La confirmación expresa y su motivo no son de este cálculo."""
     name = job.request.name
-    found = [*axis.notices(name)]
     if job.mode is RoadMode.AXIS_3D:
-        checked = road_gradient.check_axis_3d(axis, levels, job.profile, name)
-        found.extend(checked)
-        return tuple(found), any(notice.code == "des.road_mean_gradient" for notice in checked)
+        assert job.geometry.line is not None
+        checked = road_gradient.check_axis_3d(axis, levels, job.profile, name, job.geometry.line)
+        return checked, any(notice.code == "des.road_mean_gradient" for notice in checked)
+    found = [*axis.notices(name)]
     mean = road_gradient.mean_gradient_notice(axis, levels, job.profile, name)
     if mean is not None:
         found.append(mean)
@@ -1973,16 +2082,20 @@ def frozen_profile(values: Mapping[str, object], code: str) -> road_profiles.Roa
 
 
 def frozen_geometry(asked: RoadRequest, code: str, grid: Grid, layer: FeatureLayer, *, zone_layer: FeatureLayer | None = None, axis: np.ndarray | None = None,
-                    footprint: np.ndarray | None = None) -> tuple[RoadGeometry, int]:
+                    footprint: np.ndarray | None = None, lines: Lines3D | None = None) -> tuple[RoadGeometry, int]:
     """La geometría de origen de la pista ``asked`` (de código ``code``) y el ``fid`` que escribe ``des_epr_``, leídos de lo **congelado** y sin proyecto (spec 017, T22; RF-017-02, RF-017-03, RF-015-02): lo
     mismo que resolvió la preparación (:func:`_resolve_points`, :func:`_read_line`), con la capa de origen ``layer`` ya leída del dato congelado, la capa de la zona del destino por cota (``zone_layer``),
     **el eje por estaciones de la pista en cuyo eje está el origen** (``axis``: ``(n, 5)``, abscisa, x, y, cota del terreno y cota de la rasante, el ``des_rdx_`` congelado; :func:`axis_point_at`) y **la
     huella de la entidad de destino** (``footprint``: sus celdas, ``fila · columnas + columna``, la ``des_epr_`` congelada). «Trazar»: el origen y el destino, un punto de la capa por su nombre o su ``fid``, el
     punto del eje de otra pista o el que cae en la huella de una entidad (sin contar el origen) o el destino por cota con los anillos de su zona; el ``fid`` es el del primer punto que es de la capa (el
-    origen o, si este es el eje de otra pista, el destino; 0 si ninguno). «Sobre un eje»: la línea de la capa **sin corregirla** y el ``fid`` de su geometría. ``ValueError`` si lo que hace falta no se da
-    o no es único (la preparación lo rechazó al crearla: un error del programa) y ``NotImplementedError`` en el modo «eje 3D» (T23)."""
+    origen o, si este es el eje de otra pista, el destino; 0 si ninguno). «Sobre un eje»: la línea de la capa **sin corregirla** y el ``fid`` de su geometría. «Eje 3D» (T23): la línea **con su Z** de la
+    capa de líneas congelada (``lines``: :func:`read_lines_3d` de la copia de su entrada) y el ``fid`` de su geometría. ``ValueError`` si lo que hace falta no se da o no es único (la preparación lo
+    rechazó al crearla: un error del programa)."""
     if asked.mode is RoadMode.AXIS_3D:
-        raise NotImplementedError("reproducir una pista «eje 3D» (la Z de su línea sale de una línea de rotura o de la capa propuesta) lo hace la T23 de la 017")
+        if lines is None:
+            raise ValueError(f"la pista «{asked.name}» «eje 3D» necesita la capa de líneas con Z, que no está entre las entradas congeladas")
+        line, found_fid = line_3d(lines, asked, code)
+        return RoadGeometry(line=line), found_fid
     if asked.mode is RoadMode.ON_AXIS:
         if asked.feature is None:
             raise ValueError(f"la pista «{asked.name}» «sobre un eje» no dice su geometría (feature)")

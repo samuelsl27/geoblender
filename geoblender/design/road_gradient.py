@@ -22,8 +22,8 @@ Lo que da, todo en el dominio (Python y numpy, sin Blender), en float64 y **vect
   aviso (``des.road_mean_gradient``) con la media, el límite y los tramos de mayor pendiente con su abscisa y su lugar. La **confirmación expresa y el
   motivo** (que van a los ajustes de la operación) los pide y los registra la operación de la pista, no este módulo.
 - **El modo «eje 3D»** (:func:`check_axis_3d`; RF-017-18): la Z de la línea **es** la rasante y no se recalcula; se comprueba la pendiente entre estaciones
-  cada ``w`` m (≤ pd), la media (≤ pm) y los radios de su planta (≥ Rmín) y **cada incumplimiento es un aviso** con su abscisa y su lugar. **La línea no se
-  corrige** (es una entrada, principio 7; es el contrato de R-35).
+  cada ``w`` m (≤ pd), la media (≤ pm) y los radios de su planta (≥ Rmín: **el del círculo por tres estaciones consecutivas de la línea remuestreada**, T23) y **cada
+  incumplimiento es un aviso** con su abscisa y su lugar. **La línea no se corrige** (es una entrada, principio 7; es el contrato de R-35).
 
 Unidades: ``pd`` y las pendientes que devuelven las funciones de números son **tanto por uno** (0,10 = 10 %); las cifras que llegan a una persona (los
 avisos y :class:`Stretch`), en **%**, como las del perfil (``max_gradient_pct``, ``max_mean_gradient_pct``).
@@ -42,7 +42,7 @@ import numpy as np
 
 from .messages import DesignError
 from .preview import Named, Notice
-from .road_axis import Axis
+from .road_axis import Axis, plan_of_line
 
 __all__ = [
     "LISTED_STRETCHES",
@@ -61,6 +61,8 @@ _DROP_TOLERANCE_M = 1e-10
 """El margen (m) con que el desnivel se compara con ``pd·S``: un desnivel igual a ``pd·S`` más el ruido de la última cifra cabe."""
 _GRADIENT_TOLERANCE = 1e-9
 """El margen (tanto por uno) con que una pendiente se compara con pd o pm: RF-017-15 pide la pendiente de cada tramo ≤ pd a ≤ 10⁻⁹."""
+_RADIUS_TOLERANCE_M = 1e-9
+"""El margen (m) con que el radio de la planta se compara con Rmín (RF-017-18): un radio de 11,999999999999998 m no es menor que 12 m."""
 _TIE_DECIMALS = 9
 """Las pendientes (tanto por uno) que difieren menos de 10⁻⁹ son la misma al ordenar los tramos: el ruido de la última cifra no decide el orden."""
 
@@ -247,12 +249,17 @@ def mean_gradient_notice(axis: Axis, z: Any, profile: Any, entity: str, *, liste
 # --- El modo «eje 3D» ---------------------------------------------------------------------------------------------------
 
 
-def check_axis_3d(axis: Axis, z: Any, profile: Any, entity: str) -> tuple[Notice, ...]:
+def check_axis_3d(axis: Axis, z: Any, profile: Any, entity: str, line: Any = None) -> tuple[Notice, ...]:
     """La comprobación del modo «eje 3D» (RF-017-18): la Z de la línea **es** la rasante (``z``: su cota en cada estación de ``axis``) y **no se corrige**;
     cada incumplimiento es un aviso con su abscisa y su lugar, en este orden: (1) cada **tramo entre estaciones** cada ``w`` m cuya pendiente pasa de pd
     (``profile.max_gradient_pct``, a 10⁻⁹; ``des.road_axis3d_gradient``), por abscisa; (2) la **media** si pasa de pm (``des.road_mean_gradient``, el de
-    RF-017-17, con sus tramos más empinados); (3) cada **curva por debajo de Rmín** de la planta (``des.road_axis3d_radius``, de
-    :attr:`~design.road_axis.Axis.below_minimum`: el eje se formó con ``reject_below_minimum=False``), por abscisa. Sin incumplimientos, ``()``.
+    RF-017-17, con sus tramos más empinados); (3) cada **estación cuyo radio de la planta es menor que Rmín** (``des.road_axis3d_radius``), por abscisa. Sin
+    incumplimientos, ``()``.
+
+    **El radio de la planta** (T23; decisión de la sesión principal, 21/11/2026): con la ``line`` dibujada (la misma de la que se formó ``axis``) es el del círculo por
+    **tres estaciones consecutivas** de la línea remuestreada en las estaciones del eje (:func:`~.road_axis.plan_of_line`), en el punto de la línea; entre vértices contiguos
+    de una línea densa saldría muy por debajo de Rmín, y una esquina sin curva en la línea avisa aunque el eje la redondee para grabarla. Sin ``line``, la planta es la del eje:
+    las curvas por debajo de Rmín de :attr:`~design.road_axis.Axis.below_minimum` (el eje se formó con ``reject_below_minimum=False``), cada una en el comienzo de su arco.
     ``entity`` es el nombre de la pista; ``ValueError`` si ``z`` no tiene una cota por estación."""
     s = axis.stations
     levels = _vector(z, "la Z de la línea", len(s))
@@ -265,8 +272,15 @@ def check_axis_3d(axis: Axis, z: Any, profile: Any, entity: str) -> tuple[Notice
     mean = mean_gradient_notice(axis, levels, profile, entity)
     if mean is not None:
         notices.append(mean)
+    if line is None:
+        notices.extend(
+            Notice("des.road_axis3d_radius", {"entity": entity, "station": curve.station_m, "radius": curve.radius_m, "minimum": axis.minimum_m,
+                                              "x": curve.x, "y": curve.y})
+            for curve in axis.below_minimum)
+        return tuple(notices)
+    plan = plan_of_line(axis, line)
     notices.extend(
-        Notice("des.road_axis3d_radius", {"entity": entity, "station": curve.station_m, "radius": curve.radius_m, "minimum": axis.minimum_m,
-                                          "x": curve.x, "y": curve.y})
-        for curve in axis.below_minimum)
+        Notice("des.road_axis3d_radius", {"entity": entity, "station": float(s[i]), "radius": float(plan.radii[i]), "minimum": axis.minimum_m,
+                                          "x": float(plan.points[i, 0]), "y": float(plan.points[i, 1])})
+        for i in np.flatnonzero(plan.radii < axis.minimum_m - _RADIUS_TOLERANCE_M).tolist())
     return tuple(notices)

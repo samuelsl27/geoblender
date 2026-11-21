@@ -30,6 +30,11 @@ Lo que da, todo en el dominio (Python y numpy, sin Blender), con las coordenadas
   el nodo quitado más lejano, y lo que se movieron los nodos extremos al poner el origen y el destino exactos). Es una **cota** de la distancia
   entre el eje y la ruta, y **exacta** para una línea dibujada o con ``simplify_m = 0`` (la de los arcos, a ≤ 10⁻⁹ m del cálculo analítico).
 
+- **La línea dibujada en las estaciones** (:meth:`Axis.line_abscissa` y :func:`plan_of_line`; T23, RF-017-18): el modo «eje 3D» no corrige la línea, la **mide**. La abscisa de la línea
+  que corresponde a cada estación del eje (lo que cada curva acorta, repartido por su arco) da la Z de cada estación **en su abscisa** y los puntos de la línea que se remuestrean cada ``w`` m;
+  el radio de la planta en cada estación interior es el del círculo por tres estaciones consecutivas (decisión de la sesión principal, 21/11/2026: entre vértices contiguos de una línea densa
+  saldría muy por debajo de Rmín).
+
 La rasante (``design.road_gradient``, T11), la sección (T12) y el grabado (T13) usan este eje: ``Axis.points`` y ``Axis.stations`` (cada ``w`` m) y, a
 otro paso (la huella, cada 1 m), :meth:`Axis.sample`.
 
@@ -52,8 +57,10 @@ from .preview import Notice
 __all__ = [
     "Axis",
     "Curve",
+    "LinePlan",
     "RadiusBelowMinimum",
     "axis_of",
+    "plan_of_line",
     "stations_for",
 ]
 
@@ -335,15 +342,84 @@ class Axis:
         s = np.clip(s, 0.0, self.length_m)
         return _evaluate(self._pieces, self.vertices[0], self.vertices[0], self.vertices[-1], self.length_m, s)
 
+    def line_abscissa(self, stations: np.ndarray) -> np.ndarray:
+        """La abscisa, **a lo largo de la poligonal de los vértices** (la línea de la que se formó el eje, sin simplificar: la dibujada), que corresponde a cada abscisa ``stations`` del eje (m;
+        las que quedan fuera, en el extremo más próximo): el contrato de la Z del modo «eje 3D» (RF-017-18, T23). Cada curva sustituye un vértice, y el eje es más corto que la línea en lo que
+        sus tangentes (``2T``) pasan de su arco (``R·Δ``): **en una recta del eje la misma distancia desde la curva anterior** (lo que mide el tramo menos sus dos tangentes: exacto) y **en un
+        arco, los ``2T`` de la línea repartidos por su largo** (de su punto de tangencia anterior al siguiente), de modo que la correspondencia es continua y creciente. Sin curvas es la
+        identidad. Sin bucle por estación. ``ValueError`` si no es un vector de números finitos."""
+        s = np.array(stations, dtype=np.float64)
+        if s.ndim != 1 or not bool(np.isfinite(s).all()):
+            raise ValueError("las abscisas del eje son un vector de números finitos")
+        s = np.clip(s, 0.0, self.length_m)
+        along = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(self.vertices, axis=0).T))))
+        if not self.curves:
+            return np.interp(s, [0.0, self.length_m], [0.0, float(along[-1])])
+        at = np.searchsorted(self.kept, np.array([curve.vertex - 1 for curve in self.curves]))
+        tangent = np.array([curve.tangent_m for curve in self.curves])
+        first = np.array([curve.station_m for curve in self.curves])
+        arc = np.array([curve.length_m for curve in self.curves])
+        on_axis = np.concatenate(([0.0], np.column_stack([first, first + arc]).ravel(), [self.length_m]))
+        on_line = np.concatenate(([0.0], np.column_stack([along[at] - tangent, along[at] + tangent]).ravel(), [float(along[-1])]))
+        return np.interp(s, on_axis, on_line)
+
     def notices(self, entity: str) -> tuple[Notice, ...]:
         """Los avisos de RF-017-14, en el orden del eje: uno (``des.road_radius_reduced``) por curva cuyo radio bajó del de diseño, con la pista
         (``entity``), el vértice, el radio pedido y el que cabe y su lugar. Las curvas por debajo de Rmín del modo «eje 3D» (:attr:`below_minimum`) no
-        están: las dice el aviso del radio de ese modo (``des.road_axis3d_radius``), que no se repite como «el radio baja»."""
+        están: de la planta de esa línea avisa el radio de ``plan_of_line`` (``des.road_axis3d_radius``), que no se repite como «el radio baja»."""
         narrow = {curve.vertex for curve in self.below_minimum}
         return tuple(
             Notice("des.road_radius_reduced", {"entity": entity, "vertex": curve.vertex, "radius": curve.design_radius_m, "fitted": curve.radius_m,
                                                "x": curve.x, "y": curve.y})
             for curve in self.curves if curve.reduced and curve.vertex not in narrow)
+
+
+# --- La línea dibujada en las estaciones del eje (el modo «eje 3D», RF-017-18; T23) ----------------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class LinePlan:
+    """La línea dibujada de la que se formó un eje, **remuestreada en las estaciones del eje** (las de la comprobación de la rasante; RF-017-18): ``stations`` (``(n,)``, m, las del eje),
+    ``along_m`` (``(n,)``, m: la abscisa de la línea que corresponde a cada una, :meth:`Axis.line_abscissa`), ``points`` (``(n, 2)``, absolutos, float64: el punto de la línea en esa abscisa),
+    ``levels`` (``(n,)``, m: su Z en esa abscisa; ``None`` si la línea no la lleva) y ``radii`` (``(n,)``, m: **el radio de la planta**, el del círculo por tres estaciones consecutivas; ``inf``
+    donde las tres están en una recta y ``nan`` en las dos de los extremos, que no tienen estación a un lado). Los arrays son de solo lectura."""
+
+    stations: np.ndarray
+    along_m: np.ndarray
+    points: np.ndarray
+    levels: np.ndarray | None
+    radii: np.ndarray
+
+
+def plan_of_line(axis: Axis, line: Any) -> LinePlan:
+    """La línea ``line`` (``(k, 2)`` o ``(k, 3)``, absolutos: la **misma** de la que se formó ``axis`` con ``axis_of``) en las estaciones del eje (:class:`LinePlan`; RF-017-18, T23): la Z de
+    cada estación es la de la línea **en su abscisa** (:meth:`Axis.line_abscissa`, exacta en las rectas) y el radio de la planta, el del círculo por tres estaciones consecutivas (decisión de la sesión
+    principal, 21/11/2026: medido entre los vértices de una línea densa saldría muy por debajo de Rmín; remuestreada cada ``w`` m, no). Es una **medida de la línea tal como viene**, sin corregirla:
+    una esquina sin curva en la línea da un radio pequeño aunque el eje la redondee para grabarla. Se mide en el marco local del primer vértice (la resta de dos coordenadas absolutas cercanas
+    es exacta). ``ValueError`` si ``line`` no es de su forma o no es la línea del eje (sus vértices no son los del eje)."""
+    try:
+        array = np.asarray(line, dtype=np.float64)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"la línea del eje no es un array de números: {error}") from error
+    if array.ndim != 2 or array.shape[1] not in (2, 3) or array.shape[0] < 2:
+        raise ValueError(f"la línea del eje es un array (k, 2) o (k, 3) con al menos dos vértices, no de forma {array.shape}")
+    kept = axis.kept
+    if int(kept[-1]) >= len(array) or not np.array_equal(array[kept, :2], axis.vertices):
+        raise ValueError("la línea no es la de la que se formó el eje: sus vértices no son los del eje")
+    origin = axis.vertices[0]
+    local = axis.vertices - origin
+    along = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(local, axis=0).T))))
+    on_line = axis.line_abscissa(axis.stations)
+    here = np.column_stack([np.interp(on_line, along, local[:, 0]), np.interp(on_line, along, local[:, 1])])
+    levels = None if array.shape[1] < 3 else np.interp(on_line, along, array[kept, 2])
+    radii = np.full(len(on_line), np.nan)
+    if len(on_line) >= 3:
+        a, b, c = here[:-2], here[1:-1], here[2:]
+        legs = np.hypot(*(b - a).T) * np.hypot(*(c - b).T) * np.hypot(*(c - a).T)
+        twice_area = np.abs((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            radii[1:-1] = np.where(twice_area > 0.0, legs / (2.0 * twice_area), np.inf)
+    return LinePlan(axis.stations, _frozen(on_line), _frozen(here + origin), None if levels is None else _frozen(levels), _frozen(radii))
 
 
 # --- El eje ------------------------------------------------------------------------------------------------------------

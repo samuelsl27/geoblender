@@ -250,16 +250,17 @@ class FrozenGeometryTest(unittest.TestCase):
             road_store.frozen_geometry(branch, CODE, GRID, self.LAYER, axis=self.axis())
 
     def test_e_a_line_road_takes_its_line_without_changing_it(self) -> None:
-        """RF-017-02, RF-017-18: «sobre un eje» toma la línea de la capa congelada (absolutas, float64) **sin corregirla** y el ``fid`` de su geometría; un «eje 3D» aún no se reproduce (es de la T23)."""
+        """RF-017-02, RF-017-18: «sobre un eje» toma la línea de la capa congelada (absolutas, float64) **sin corregirla** y el ``fid`` de su geometría; un «eje 3D» toma la línea con su Z de la capa de líneas congelada
+        (T23: ``test_road_modes.FrozenGeometryTest``) y, sin ella, es un error del programa."""
         line = rd.absolute([(100.0, 300.0), (160.0, 300.0), (220.0, 340.0)], GRID)
         lines = vector.FeatureLayer("line", (7, 8), (((line,),), ((line + 10.0,),)), (vector.FieldColumn("nombre", "nombre", "TEXT"),), {"nombre": ("Eje A", "Eje B")})
         asked = request("Sobre un eje", mode="on_axis", layer="ejes", feature="Eje B")
         geometry, fid = road_store.frozen_geometry(asked, CODE, GRID, lines)
         np.testing.assert_array_equal(geometry.line, line + 10.0)
         self.assertEqual((fid, geometry.origin, geometry.destination), (8, None, None))
-        with self.assertRaises(NotImplementedError) as caught:
+        with self.assertRaises(ValueError) as caught:  # «eje 3D» sin la capa de líneas con Z congelada
             road_store.frozen_geometry(request("Eje 3D", mode="axis_3d", layer="ejes", feature="Eje B"), CODE, GRID, lines)
-        self.assertIn("T23", str(caught.exception))
+        self.assertIn("Z", str(caught.exception))
 
 
 class FrozenWeightsTest(unittest.TestCase):

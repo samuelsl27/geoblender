@@ -313,8 +313,9 @@ class ModesTest(unittest.TestCase):
         check_figures(self, outcome, road)
 
     def test_c2_a_3d_corner_below_the_minimum_radius_is_a_notice_and_never_a_rejection(self) -> None:
-        """RF-017-18, RF-017-14: una línea 3D con una esquina de tramos de 15 m y Rmín = 16 m **no se rechaza** (es una entrada: el radio es un aviso, ``des.road_axis3d_radius``, con el radio que cabe, 15 m);
-        con el mismo perfil, «sobre un eje» sí la rechaza. La línea no cambia."""
+        """RF-017-18, RF-017-14: una línea 3D con una esquina de tramos de 15 m y Rmín = 16 m **no se rechaza** (es una entrada: el radio es un aviso, ``des.road_axis3d_radius``); con el mismo perfil,
+        «sobre un eje» sí la rechaza. La línea no cambia. **Desde la T23** el radio de la planta del «eje 3D» es el del círculo por tres estaciones consecutivas de la línea remuestreada, no el
+        «que cabe» (15 m) del eje redondeado: el vértice sin curva da dos avisos (los de las estaciones 11 y 12 m, que lo rodean) con un radio menor que Rmín."""
         planar = rd.absolute(rd.CORNER_SHORT, GRID)
         line = np.column_stack([planar, 140.0 + 0.04 * np.array([0.0, 15.0, 30.0])])
         profile = rd.profile_with(reach_m=12.5, min_radius_m=16.0)
@@ -322,8 +323,9 @@ class ModesTest(unittest.TestCase):
         before = digest_of(job)
         outcome = last(road_store.road_compute_steps(job, COMMON))
         radius = [notice for notice in outcome.notices if notice.code == "des.road_axis3d_radius"]
-        self.assertEqual(len(radius), 1)
-        self.assertAlmostEqual(radius[0].values["radius"], 15.0, delta=TOL)
+        self.assertEqual([notice.values["station"] for notice in radius], [11.0, 12.0])
+        self.assertTrue(all(notice.values["radius"] < 16.0 and notice.values["minimum"] == 16.0 for notice in radius))
+        self.assertNotIn("des.road_radius_reduced", [notice.code for notice in outcome.notices])
         self.assertEqual(digest_of(job), before)
         with self.assertRaises(messages.DesignError) as caught:
             last(road_store.road_compute_steps(axis_job(rd.CORNER_SHORT, profile=profile), COMMON))
