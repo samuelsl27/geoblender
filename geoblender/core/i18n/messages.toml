@@ -7524,6 +7524,145 @@ es = "El perfil de banco ya no está en el proyecto: abra la lista de nuevo"
 ["Bench profiles"]
 es = "Perfiles de banco"
 
+# «Perfil de pista…» (spec 017, T29; HU-017-1; RF-017-07, RF-017-08, RF-017-29; plan 017 §5.3.3 y §5.5): la ventana bl/ui/des_panels.py y las
+# órdenes bl/ops/des.py (des_edit_road_profile y des_save_road_profile). Los nombres de los valores de un perfil («Width of the design vehicle»…)
+# son los de sus familias (design.params, T02); los avisos de un valor fuera de rango, los de design.messages (T04).
+
+["Road profiles"]
+es = "Perfiles de pista"
+
+["Road profiles: {count}"]
+es = "Perfiles de pista: {count}"
+
+["There are no road profiles yet: create one with its vehicle width, carriageway factor, gradients, radii, slope angles and normative class"]
+es = "Aún no hay perfiles de pista: cree uno con el ancho de su vehículo, su factor de calzada, sus pendientes, sus radios, los ángulos de sus taludes y su clase normativa"
+
+["A {vehicle} · f {factor} · pd {pd} · pm {pm} · Rmin {rmin}"]
+es = "A {vehicle} · f {factor} · pd {pd} · pm {pm} · Rmín {rmin}"
+
+["Normative class: {road_class}"]
+es = "Clase normativa: {road_class}"
+
+["Derived values (not parameters)"]
+es = "Valores derivados (no son parámetros)"
+
+["carriageway {carriageway} · section {section} · half-width {half_width}"]
+es = "calzada {carriageway} · sección {section} · semianchura {half_width}"
+
+["Minimum length H/pd: {length} per metre of height difference"]
+es = "Longitud mínima H/pd: {length} por cada metro de desnivel"
+
+["Source: {source} · decided by {who}"]
+es = "Fuente: {source} · decidido por {who}"
+
+["Road profile"]
+es = "Perfil de pista"
+
+["Road profile «{name}» created with the code «{code}»"]
+es = "Perfil de pista «{name}» creado con el código «{code}»"
+
+["Road profile «{name}» saved (code «{code}»)"]
+es = "Perfil de pista «{name}» guardado (código «{code}»)"
+
+["The road profile is no longer in the project: open the list again"]
+es = "El perfil de pista ya no está en el proyecto: abra la lista de nuevo"
+
+["Declared in the road profiles window"]
+es = "Declarado en la ventana de perfiles de pista"
+
+["Code of the road profile to complete or rename (empty: a new profile)"]
+es = "Código del perfil de pista que se completa o se renombra (vacío: un perfil nuevo)"
+
+["Name of the profile, such as PISTA_PRINCIPAL: it can change, its code cannot"]
+es = "Nombre del perfil, como PISTA_PRINCIPAL: puede cambiar, su código no"
+
+["Design vehicle width A (m)"]
+es = "Ancho del vehículo de diseño A (m)"
+
+["Width of the design vehicle in metres, more than 0"]
+es = "Ancho del vehículo de diseño en metros, más de 0"
+
+["Carriageway factor f"]
+es = "Factor de calzada f"
+
+["Factor that multiplies the width of the vehicle to give the carriageway, more than 0"]
+es = "Factor por el que se multiplica el ancho del vehículo para dar la calzada, más de 0"
+
+["Shoulder width (m)"]
+es = "Ancho del arcén (m)"
+
+["Width of the shoulder in metres, 0 or more"]
+es = "Ancho del arcén en metros, 0 o más"
+
+["Windrow width (m)"]
+es = "Ancho del caballón (m)"
+
+["Width of the windrow in metres, 0 or more"]
+es = "Ancho del caballón en metros, 0 o más"
+
+["Maximum design gradient pd (%)"]
+es = "Pendiente máxima de diseño pd (%)"
+
+["Maximum gradient of the haul road in per cent, more than 0"]
+es = "Pendiente máxima de la pista en tanto por ciento, más de 0"
+
+["Step of the level profile w (m)"]
+es = "Paso de la rasante w (m)"
+
+["Distance between the stations where the gradient is checked, in metres, more than 0"]
+es = "Distancia entre las estaciones donde se comprueba la pendiente, en metros, más de 0"
+
+["Maximum mean gradient pm (%)"]
+es = "Pendiente media máxima pm (%)"
+
+["Maximum mean gradient of the whole haul road in per cent, more than 0"]
+es = "Pendiente media máxima de toda la pista en tanto por ciento, más de 0"
+
+["Curve radius R (m)"]
+es = "Radio de curva R (m)"
+
+["Radius of the curves in metres, more than 0"]
+es = "Radio de las curvas en metros, más de 0"
+
+["Minimum radius Rmin (m)"]
+es = "Radio mínimo Rmín (m)"
+
+["Smallest radius allowed in metres, more than 0, at most R and at least the half width of the section"]
+es = "El radio más pequeño que se admite, en metros, más de 0, como mucho R y al menos la semianchura de la sección"
+
+["Cut angle (°)"]
+es = "Ángulo de desmonte (°)"
+
+["Inclination of the cut slope at the edge of the haul road in degrees, between 0 and 90 (both excluded)"]
+es = "Inclinación del talud de desmonte del borde de la pista en grados, entre 0 y 90 (ambos excluidos)"
+
+["Fill angle (°)"]
+es = "Ángulo de terraplén (°)"
+
+["Inclination of the fill slope at the edge of the haul road in degrees, between 0 and 90 (both excluded)"]
+es = "Inclinación del talud de terraplén del borde de la pista en grados, entre 0 y 90 (ambos excluidos)"
+
+["How far the cut and fill slopes of the edge reach, in metres, more than 0"]
+es = "Hasta dónde llegan los taludes de desmonte y de terraplén del borde, en metros, más de 0"
+
+["Normative class"]
+es = "Clase normativa"
+
+["Class of the haul road in the standard it follows, such as «main» or «access to the pit»"]
+es = "Clase de la pista en la norma que sigue, como «principal» o «acceso al tajo»"
+
+["Factor between 0 (excluded) and 1 that reduces the slope of the edge for the grid (empty: 1)"]
+es = "Factor entre 0 (excluido) y 1 que reduce la pendiente del borde para la rejilla (vacío: 1)"
+
+["How the distance of the edge is measured: the exact Euclidean distance (the default) or the 5×5 chamfer"]
+es = "Cómo se mide la distancia del borde: la distancia euclídea exacta (la de por defecto) o el chaflán 5×5"
+
+["Default (exact)"]
+es = "Por defecto (exacta)"
+
+["Whether the source is a document, a standard, a person, an operation or an algorithm"]
+es = "Si la fuente es un documento, una norma, una persona, una operación o un algoritmo"
+
 # «Sectores de diseño…» (spec 013, T23; HU-013-2; RF-013-07, RF-013-08, RF-013-10, RF-013-21; plan
 # 013 §5.5; ADR-0029): la ventana bl/ui/des_panels.py y las órdenes bl/ops/des.py
 # (des_edit_design_sectors y des_set_sector_slope).

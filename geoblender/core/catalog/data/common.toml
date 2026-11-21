@@ -708,3 +708,28 @@ description.es = "Retira un acopio detectado en la versión activa: deja su huel
 entry = "016"
 action = "D"
 frequency = 1
+
+# «Perfil de pista…» (spec 017, T29; HU-017-1; RF-017-07, RF-017-08, RF-017-29): la orden y la interna de su ventana. **Interinas, de R-40**: la T33 las pasa a
+# la entrada 017 (que las entrega con el menú Diseño ▸ Pistas y entidades) y pone «Perfil de pista…» en ese menú; mientras, no tienen casa (el catálogo exige que
+# toda orden real esté en él: BS §7.2).
+[[command]]
+key = "geoblender.des_edit_road_profile"
+kind = "internal"
+label.en = "Road profile…"
+label.es = "Perfil de pista…"
+description.en = "Road profiles such as PISTA_PRINCIPAL, with their values, their source and the widths derived from them"
+description.es = "Perfiles de pista como PISTA_PRINCIPAL, con sus valores, su fuente y las anchuras que se derivan de ellos"
+entry = "R-40"
+action = "P"
+frequency = 2
+
+[[command]]
+key = "geoblender.des_save_road_profile"
+kind = "internal"
+label.en = "Save road profile…"
+label.es = "Guardar perfil de pista…"
+description.en = "Create a road profile, complete the values it lacks or rename it"
+description.es = "Crea un perfil de pista, completa los valores que le faltan o lo renombra"
+entry = "R-40"
+action = "P"
+frequency = 1

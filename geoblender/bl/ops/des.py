@@ -94,6 +94,14 @@ leído del proyecto) y la interna :class:`GEOBLENDER_OT_des_save_bench_profile` 
 ``core_set_parameter`` (la 008 y la 009). Ninguna cuenta ni regla de rango es de aquí: las del
 dominio (``design.model.BenchProfile``, ``design.params``).
 
+**Perfil de pista…** (spec 017, T29; RF-017-07, RF-017-08, RF-017-29, RF-015-28): :class:`GEOBLENDER_OT_des_edit_road_profile` y la interna
+:class:`GEOBLENDER_OT_des_save_road_profile` son las de los perfiles de banco **copiadas para la pista** (plan 017 P-2): la ventana de
+``bl.ui.des_panels`` (lo leído del proyecto, con la fuente de cada valor y los derivados, que no son parámetros) y el diálogo que crea,
+completa y renombra perfiles con ``design.road_profiles.edit_road_profiles`` (``des.edit_road_profiles``: una operación de proyecto, en una
+transacción, con el ámbito de la 009 «¿Para el proyecto o solo para V01?»); los quince valores llevan su tipo, su fuente, su decisor y su
+motivo, y ninguno tiene valor por defecto salvo el factor de malla y la métrica (D-2). ``design.road_profiles`` es perezoso: se importa al
+usarlo. Ninguna cuenta ni regla de rango es de aquí: las del dominio.
+
 **Sectores de diseño…** (T23; RF-013-07, RF-013-08, RF-013-09, RF-013-10, RF-013-21):
 :class:`GEOBLENDER_OT_des_edit_design_sectors` abre la ventana de ``bl.ui.des_panels`` con los
 sectores de la 012 (o el perímetro como único sector), el estado de su búsqueda, el talud que
@@ -1491,6 +1499,312 @@ def _known_values(project: Any, code: str) -> dict[Any, dict[str, str]]:
                        else store.get(key, version=version.uid, conn=conn)}
             found[param] = {scope: des_panels.record_text(record)
                             for scope, record in records.items()
+                            if record is not None and record.value is not None}
+    return found
+
+
+# --- Perfil de pista… (spec 017, T29; HU-017-1; RF-017-07, RF-017-08, RF-017-29, RF-015-28; plan 017 §5.3.3) ------------------------
+
+EDIT_ROAD_PROFILE = provenance.ROAD_PROFILE_COMMAND
+SAVE_ROAD_PROFILE = des_panels.SAVE_ROAD_PROFILE
+ROAD_METRIC_ITEMS = [("DEFAULT", "Default (exact)", ""), ("EXACT", "Exact Euclidean", ""), ("CHAMFER5", "Chamfer 5×5", "")]
+"""La métrica de las envolventes del borde de la pista: la «por defecto» (la euclídea exacta, D-2) no escribe ningún valor; las otras sí."""
+_ROAD_EXAMPLE = "p"  # un código cualquiera para preguntar el ámbito de las claves de los perfiles de pista
+
+
+def _road_fields() -> tuple[tuple[design_params.RoadProfileParam, str, str], ...]:
+    """Los quince valores de un perfil de pista, en el orden del diálogo (RF-017-07): el valor, la propiedad de la orden que lo teclea y su
+    etiqueta en el idioma de Geoblender (el arcén y el caballón, en metros; la pendiente de diseño pd, la media pm, en %)."""
+    param = design_params.RoadProfileParam
+    return (
+        (param.VEHICLE_WIDTH, "vehicle", tr("Design vehicle width A (m)")),
+        (param.LANE_FACTOR, "lane_factor", tr("Carriageway factor f")),
+        (param.SHOULDER, "shoulder", tr("Shoulder width (m)")),
+        (param.BERM, "windrow", tr("Windrow width (m)")),
+        (param.MAX_GRADIENT, "max_gradient", tr("Maximum design gradient pd (%)")),
+        (param.STATION_STEP, "station_step", tr("Step of the level profile w (m)")),
+        (param.MAX_MEAN_GRADIENT, "max_mean_gradient", tr("Maximum mean gradient pm (%)")),
+        (param.CURVE_RADIUS, "curve_radius", tr("Curve radius R (m)")),
+        (param.MIN_RADIUS, "min_radius", tr("Minimum radius Rmin (m)")),
+        (param.CUT_ANGLE, "cut_angle", tr("Cut angle (°)")),
+        (param.FILL_ANGLE, "fill_angle", tr("Fill angle (°)")),
+        (param.REACH, "reach", tr("Reach of the edge (m)")),
+        (param.CLASS, "road_class", tr("Normative class")),
+        (param.MESH_FACTOR, "mesh", tr("Mesh factor")),
+        (param.METRIC, "metric", tr("Metric")),
+    )
+
+
+class GEOBLENDER_OT_des_edit_road_profile(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Road profiles such as PISTA_PRINCIPAL, with their values, their source and the widths derived from them"""
+
+    bl_idname = EDIT_ROAD_PROFILE
+    bl_label = "Road profile…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.EDIT_ROAD_PROFILES
+
+    def execute(self, context: Any) -> set[str]:
+        """Lee los perfiles de pista del proyecto y sus valores en la versión activa en la vista y abre su ventana; desde un guion sin
+        ventana, solo la vista (RF-017-07, RF-017-08). Activa con el proyecto en escritura y la versión activa editable (o ninguna: la
+        edición es de proyecto) y, si no, desactivada con su motivo (RF-017-29)."""
+        try:
+            des_panels.fill_road_profiles(SESSION.project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}
+        return _call_panel(des_panels.ROAD_PROFILES_PANEL)
+
+
+class GEOBLENDER_OT_des_save_road_profile(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Create a road profile, complete the values it lacks or rename it"""
+
+    bl_idname = SAVE_ROAD_PROFILE
+    bl_label = "Save road profile…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    provenance_op_type = provenance.EDIT_ROAD_PROFILES
+
+    code: StringProperty(  # type: ignore[valid-type]
+        name="Profile", description="Code of the road profile to complete or rename (empty: a new profile)", options=_HIDDEN)
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the profile, such as PISTA_PRINCIPAL: it can change, its code cannot", options=_FIELD)
+    vehicle: StringProperty(  # type: ignore[valid-type]
+        name="Design vehicle width A (m)", description="Width of the design vehicle in metres, more than 0", options=_FIELD)
+    lane_factor: StringProperty(  # type: ignore[valid-type]
+        name="Carriageway factor f",
+        description="Factor that multiplies the width of the vehicle to give the carriageway, more than 0", options=_FIELD)
+    shoulder: StringProperty(  # type: ignore[valid-type]
+        name="Shoulder width (m)", description="Width of the shoulder in metres, 0 or more", options=_FIELD)
+    windrow: StringProperty(  # type: ignore[valid-type]
+        name="Windrow width (m)", description="Width of the windrow in metres, 0 or more", options=_FIELD)
+    max_gradient: StringProperty(  # type: ignore[valid-type]
+        name="Maximum design gradient pd (%)", description="Maximum gradient of the haul road in per cent, more than 0",
+        options=_FIELD)
+    station_step: StringProperty(  # type: ignore[valid-type]
+        name="Step of the level profile w (m)",
+        description="Distance between the stations where the gradient is checked, in metres, more than 0", options=_FIELD)
+    max_mean_gradient: StringProperty(  # type: ignore[valid-type]
+        name="Maximum mean gradient pm (%)",
+        description="Maximum mean gradient of the whole haul road in per cent, more than 0", options=_FIELD)
+    curve_radius: StringProperty(  # type: ignore[valid-type]
+        name="Curve radius R (m)", description="Radius of the curves in metres, more than 0", options=_FIELD)
+    min_radius: StringProperty(  # type: ignore[valid-type]
+        name="Minimum radius Rmin (m)",
+        description="Smallest radius allowed in metres, more than 0, at most R and at least the half width of the section",
+        options=_FIELD)
+    cut_angle: StringProperty(  # type: ignore[valid-type]
+        name="Cut angle (°)",
+        description="Inclination of the cut slope at the edge of the haul road in degrees, between 0 and 90 (both excluded)",
+        options=_FIELD)
+    fill_angle: StringProperty(  # type: ignore[valid-type]
+        name="Fill angle (°)",
+        description="Inclination of the fill slope at the edge of the haul road in degrees, between 0 and 90 (both excluded)",
+        options=_FIELD)
+    reach: StringProperty(  # type: ignore[valid-type]
+        name="Reach of the edge (m)",
+        description="How far the cut and fill slopes of the edge reach, in metres, more than 0", options=_FIELD)
+    road_class: StringProperty(  # type: ignore[valid-type]
+        name="Normative class",
+        description="Class of the haul road in the standard it follows, such as «main» or «access to the pit»", options=_FIELD)
+    mesh: StringProperty(  # type: ignore[valid-type]
+        name="Mesh factor",
+        description="Factor between 0 (excluded) and 1 that reduces the slope of the edge for the grid (empty: 1)", options=_FIELD)
+    metric: EnumProperty(  # type: ignore[valid-type]
+        name="Metric",
+        description="How the distance of the edge is measured: the exact Euclidean distance (the default) or the 5×5 chamfer",
+        items=ROAD_METRIC_ITEMS, default="DEFAULT", options=_FIELD)
+    kind: EnumProperty(  # type: ignore[valid-type]
+        name="Type", description="Type of the values: adopted or hypothesis", items=PROFILE_KIND_ITEMS, default="ADOPTADO",
+        options=_FIELD)
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Source",
+        description="Document, standard, person, operation or algorithm the values come from (empty: the decider)", options=_FIELD)
+    source_kind: EnumProperty(  # type: ignore[valid-type]
+        name="Source type",
+        description="Whether the source is a document, a standard, a person, an operation or an algorithm",
+        items=SOURCE_KIND_ITEMS, default="PERSON", options=_FIELD)
+    decided_by: StringProperty(  # type: ignore[valid-type]
+        name="Decided by", description="Who decided the values (the owner, a laboratory, a person)", options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the profile has these values (recorded in its history)", options=_FIELD)
+    scope: EnumProperty(  # type: ignore[valid-type]
+        name="Scope",
+        description="Whether the change is for the project or only for the active version (a parameter that its module admits by "
+                    "version)",
+        items=PARAMETER_SCOPE_ITEMS, default="PROJECT", options=_FIELD)
+
+    def _stored(self, project: Any) -> Any:
+        """La fila del perfil de :attr:`code` en el proyecto; ``ProfileFormError`` si ya no está (sin código, ``None``: un perfil nuevo)."""
+        from ...design import road_profiles  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+        if not self.code:
+            return None
+        with project.read() as conn:
+            found = [row for row in road_profiles.read_profiles(conn) if row.code == self.code]
+        if not found:
+            raise ProfileFormError(tr("The road profile is no longer in the project: open the list again"))
+        return found[0]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo: de un perfil que existe, con su nombre y lo que ya vale en cada ámbito (solo se piden los valores que le
+        faltan); de uno nuevo, vacío. Propone el decisor (la persona de la sesión) y, de los parámetros de versión con una versión activa,
+        el ámbito (RF-009-29); no cambia nada hasta que se acepta."""
+        self.provenance_dialog = True
+        project = SESSION.project
+        try:
+            row = self._stored(project)
+            self._known = {} if row is None else _known_road_values(project, row.code)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        if row is not None:
+            self.name = row.name
+        if not self.decided_by:
+            self.decided_by = project.session.user_host
+        if not self.properties.is_property_set("scope"):
+            self.scope = "PROJECT"
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("Road profile"), confirm_text=tr("Save"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        choice = scope_choice(design_params.road_profile_key(_ROAD_EXAMPLE, design_params.RoadProfileParam.VEHICLE_WIDTH))
+        if choice is not None:  # «¿Para el proyecto o solo para V01?» (RF-009-29)
+            layout.label(text=tr("For the project or only for {version}?", version=choice.code), translate=False)
+            row = layout.row(align=True)
+            row.use_property_split = False
+            row.prop_enum(self, "scope", "PROJECT", text=tr("The project"), translate=False)
+            only = row.row(align=True)
+            only.enabled = choice.refusal is None  # «Versión no editable» (RF-009-21)
+            only.prop_enum(self, "scope", "VERSION", text=tr("Only {version}", version=choice.code), translate=False)
+            if choice.refusal is not None:
+                refused = layout.row()
+                refused.alert = True
+                refused.label(text=choice.refusal, icon="ERROR", translate=False)
+        known = getattr(self, "_known", {})
+        declared = False
+        for param, attribute, label in _road_fields():
+            here = known.get(param, {}).get(self.scope)
+            if here is not None:  # ya vale en ese ámbito: se cambia con «Cambiar…»
+                layout.label(text=tr("{name}: {value}", name=label, value=here), translate=False)
+                declared = True
+            else:
+                layout.prop(self, attribute, text=label, translate=False)
+        if declared:
+            layout.label(text=tr("Values already declared are changed with «Change…» in the list"), translate=False)
+        layout.prop(self, "kind", text=tr("Type"), translate=False)
+        layout.prop(self, "source", text=tr("Source"), translate=False)
+        layout.prop(self, "source_kind", text=tr("Source type"), translate=False)
+        layout.prop(self, "decided_by", text=tr("Decided by"), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def _request(self, project: Any) -> tuple[Any, Any]:
+        """Lo escrito, como lo pide el dominio: la edición (un perfil nuevo con sus valores, o el existente con su nombre nuevo y los valores
+        que se completan) y la declaración de los valores (tipo, fuente, decisor, motivo y ámbito). :class:`ProfileFormError` si lo escrito no
+        se puede leer o no cambia nada; los rangos, los radios, los nombres y los valores que faltan los rechaza el dominio (``DesignError``,
+        RF-017-07): ninguna regla ni cuenta es de aquí."""
+        from ...design import road_profiles  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+        row = self._stored(project)
+        param = design_params.RoadProfileParam
+        values: dict[Any, Any] = {}
+        for item, attribute, label in _road_fields():
+            typed = getattr(self, attribute)
+            if item is param.CLASS:
+                if typed.strip():
+                    values[item] = typed.strip()
+            elif item is param.METRIC:
+                if typed != "DEFAULT":  # la métrica por defecto no escribe ningún valor (D-2)
+                    values[item] = typed.lower()
+            else:
+                number = typed_number(typed, label)
+                if number is not None:  # un perfil nuevo sin un valor: el dominio dice cuál falta
+                    values[item] = number
+        if row is None:
+            edit = road_profiles.ProfileEdit(name=self.name, values=values)
+        else:
+            typed_name = self.name.strip()  # vacío: se queda con el suyo
+            renamed = self.name if typed_name and typed_name != row.name else None
+            if renamed is None and not values:
+                raise ProfileFormError(tr("Nothing to change in «{name}»", name=row.name))
+            edit = road_profiles.ProfileEdit(name=renamed, code=row.code, values=values)
+        if not values:
+            return edit, None
+        decided_by = self.decided_by.strip()
+        if not decided_by:
+            raise ProfileFormError(tr("Write who decides the values of the profile"))
+        source = self.source.strip()
+        version = None
+        if self.scope == "VERSION":  # solo la versión activa (RF-009-24, RF-009-29)
+            active = scene_versions.active()
+            if active is None:
+                raise ProfileFormError(tr("Choose the active version first: Project ▸ Versions ▸ Active version"))
+            version = active.code
+        kind = ParamKind.ADOPTADO if self.kind == "ADOPTADO" else ParamKind.HIPOTESIS
+        return edit, road_profiles.ProfileDeclaration(
+            source=source or decided_by, decided_by=decided_by,
+            reason=self.reason.strip() or tr("Declared in the road profiles window"),
+            source_kind=self.source_kind.lower() if source else "person", kind=kind.value, version=version)
+
+    def execute(self, context: Any) -> set[str]:
+        """Crea, completa o renombra el perfil con ``design.road_profiles.edit_road_profiles`` (una sola operación de proyecto y una sola
+        transacción; RF-017-07). Todo se mira antes de escribir: un perfil sin nombre, con el nombre de otro, sin un valor, con uno fuera de
+        rango o con los radios que no caben se rechaza nombrando el perfil, el campo y el valor, y no deja nada (0 transacciones)."""
+        from ...design import road_profiles  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+        project = SESSION.project
+        try:
+            edit, declaration = self._request(project)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog,
+                             version=scene_versions.active_version())
+        if ready is None:
+            return {"CANCELLED"}
+        try:
+            edited = road_profiles.edit_road_profiles(project, [edit], declaration)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, provenance.EDIT_ROAD_PROFILES)
+        code = edited.created[0] if edited.created else edit.code
+        shown = next(row.name for row in edited.profiles if row.code == code)
+        text = (tr("Road profile «{name}» created with the code «{code}»", name=shown, code=code) if edited.created else
+                tr("Road profile «{name}» saved (code «{code}»)", name=shown, code=code))
+        try:
+            des_panels.fill_road_profiles(project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+            LOGGER.warning("No se pudo volver a leer la lista de perfiles de pista", exc_info=True)
+        des_panels.choose_road(code)
+        des_panels.show_road_report([(text, False)])
+        self.report({"INFO"}, text)
+        return {"FINISHED"}
+
+
+def _known_road_values(project: Any, code: str) -> dict[Any, dict[str, str]]:
+    """Lo que el perfil de pista ``code`` ya tiene declarado, por valor y ámbito (``PROJECT`` o ``VERSION``, el de la versión activa): su
+    texto («3,5 m [ADO]»). Con ello el diálogo de completar no pide lo que ya vale (se cambia con «Cambiar…»)."""
+    store = core_params.ParameterStore(project)
+    version = scene_versions.active()
+    found: dict[Any, dict[str, str]] = {}
+    with project.read() as conn:
+        for param in design_params.RoadProfileParam:
+            key = design_params.road_profile_key(code, param)
+            records = {"PROJECT": store.get(key, conn=conn),
+                       "VERSION": None if version is None else store.get(key, version=version.uid, conn=conn)}
+            found[param] = {scope: des_panels.record_text(record) for scope, record in records.items()
                             if record is not None and record.value is not None}
     return found
 
@@ -7737,7 +8051,9 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_add_buttress,
                              GEOBLENDER_OT_des_edit_stockpile,
                              GEOBLENDER_OT_des_detect_stockpiles,
-                             GEOBLENDER_OT_des_stockpile_candidates)
+                             GEOBLENDER_OT_des_stockpile_candidates,
+                             GEOBLENDER_OT_des_edit_road_profile,
+                             GEOBLENDER_OT_des_save_road_profile)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -7751,4 +8067,5 @@ y la T43, la interna que lanza «Cambiar parámetro…», sin menú); de la 016,
 «016», que la entrega (la T35 la pone detrás de «Acopio (detectar, retirar)…»); la T25 pone «Cuerpo apoyado…» (``des_create_body``, que la T35 pasa
 de la «Unidad por espesor sobre su apoyo…» de Geología al menú Entidades); la T27 pone «Contrafuerte…», con la clave del catálogo
 ``des_add_buttress``; la T35 pone «Acopio (detectar, retirar)…», «Detectar acopios…» y «Candidatos de los acopios…» y entrega la entrada 016 con
-el menú Diseño ▸ Pistas y entidades ▸ Entidades)."""
+el menú Diseño ▸ Pistas y entidades ▸ Entidades); de la 017, la T29 pone «Perfil de pista…» (``des_edit_road_profile``) y su interna
+(``des_save_road_profile``); **aún no están en el catálogo ni en el menú** (la T33: ``PENDING_COMMANDS_017``))."""

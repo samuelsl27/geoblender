@@ -10,6 +10,8 @@ ventanas «Perfiles de banco…», «Sectores de diseño…» y «Envolventes y 
   código, cómo se leen —«h 10 m · cara 60° · berma 6 m · ancla 125 m»—, sus derivados, lo que la
   rejilla no resuelve y sus cinco valores con su tipo y su ámbito,
   :class:`GEOBLENDER_PG_des_param`), el elegido (``profile_index``);
+- los **perfiles de pista** de la 017 (T29: :class:`GEOBLENDER_PG_des_road_profile`: sus quince valores con su tipo, su ámbito y su fuente,
+  su clase normativa y sus derivados), el elegido (``road_profile_index``) y el último resultado (``road_profile_report``);
 - los **sectores de diseño** (:class:`GEOBLENDER_PG_des_sector`: su nombre y código, su área, el
   estado de su búsqueda de intocables, su talud impuesto con su origen y decisor y el perfil
   asignado), el elegido (``sector_index``), y los parámetros huérfanos aparte (``orphans``);
@@ -97,6 +99,28 @@ class GEOBLENDER_PG_des_param(bpy.types.PropertyGroup):
     key: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     text: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     registered: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    source: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_des_road_profile(bpy.types.PropertyGroup):
+    """Un perfil de pista de la lista de «Perfil de pista…» (spec 017, T29; RF-017-07, RF-017-08), ya leído del proyecto: su nombre
+    (``name``) y su código (``code``, inmutable), su clase normativa (``road_class``), cómo se lee (``summary``: «A 3,5 m · f 3 · pd 10 % ·
+    pm 10 % · Rmín 12 m»), sus **derivados**, que no son parámetros (``derived``: la calzada, la sección y su semianchura; ``min_length``: la
+    longitud mínima H/pd por metro de desnivel), la insignia de tipo de sus valores (``badge``: [ADO] o [HIP], la del menos firme), el ámbito
+    de donde salen (``scope``), lo que le falta o no vale en la versión activa (``problem``, en ámbar) y sus quince valores con su tipo, su
+    ámbito y su fuente (``parameters``: :class:`GEOBLENDER_PG_des_param`)."""
+
+    code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    road_class: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    summary: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    derived: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    min_length: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    badge: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    scope: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    problem: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    parameters: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_param, options=_STATIC,
+    )
 
 
 class GEOBLENDER_PG_des_profile(bpy.types.PropertyGroup):
@@ -196,6 +220,14 @@ class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
     profile_report: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_des_line, options=_STATIC,
     )
+    road_profiles: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_road_profile, options=_STATIC,
+    )
+    road_profile_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    road_profiles_project: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    road_profile_report: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_line, options=_STATIC,
+    )
     sectors: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_des_sector, options=_STATIC,
     )
@@ -226,7 +258,7 @@ class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
 
 
 # En orden de registro: cada grupo, después de los que contiene.
-classes: tuple[type, ...] = (GEOBLENDER_PG_des_param, GEOBLENDER_PG_des_profile,
+classes: tuple[type, ...] = (GEOBLENDER_PG_des_param, GEOBLENDER_PG_des_road_profile, GEOBLENDER_PG_des_profile,
                              GEOBLENDER_PG_des_sector, GEOBLENDER_PG_des_line,
                              GEOBLENDER_PG_des_refit_surface, GEOBLENDER_PG_des_bring_row,
                              GEOBLENDER_PG_des_panels)

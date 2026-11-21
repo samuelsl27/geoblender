@@ -17,6 +17,15 @@ proyecto:
   decisor y el motivo y la 009 pregunta «¿Para el proyecto o solo para V01?»);
 - «Perfil nuevo…» y «Completar o renombrar…» (``geoblender.des_save_bench_profile``).
 
+**Perfil de pista…** (spec 017, T29; HU-017-1; RF-017-07, RF-017-08, RF-017-29): la ventana ``GEOBLENDER_PT_des_road_profiles`` (la abre
+``geoblender.des_edit_road_profile``, ``bl.ops.des``) es la de los perfiles de banco **copiada para la pista** (plan 017 P-2: no se generaliza),
+con ``WindowManager.geoblender_design.road_profiles``: la lista (``GEOBLENDER_UL_des_road_profiles``: el nombre con la insignia y «A 3,5 m · f 3 ·
+pd 10 % · pm 10 % · Rmín 12 m»); del elegido, su ámbito, **su clase normativa**, sus **derivados, que no son parámetros y no se editan** (la calzada
+f·A, la anchura de la sección y su semianchura, y la longitud mínima H/pd por metro de desnivel: los de ``design.road_profiles.derived``), lo que
+le falta o no vale (en ámbar) y cada uno de sus quince valores **con su tipo, su ámbito y su fuente** («Fuente: … · decidido por …») y «Cambiar…»;
+«Perfil nuevo…» y «Completar o renombrar…» son ``geoblender.des_save_road_profile``. ``design.road_profiles`` es perezoso: se importa al leer los
+perfiles, no al habilitar (RNF-001-03).
+
 Los derivados y la marca de la rejilla **no se calculan aquí**: son los de
 ``design.model.BenchProfile`` (``avance_m``, ``general_deg``, ``unresolved_by``). **Nada se lee al
 dibujar**: :func:`fill_profiles` regenera la vista desde el proyecto (al abrir la ventana y tras
@@ -218,13 +227,14 @@ from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, tr, translate
 from ...core.params import ParameterStore, ParamKind, format_value, parameter_label
 from ...core.params import definition as param_definition
+from ...core.params.store import shown_value
 from ...core.project.model import Progress
 from ...design import messages as design_messages
 from ...design import profiles as design_profiles
 from ...design import provenance as design_provenance
 from ...design.model import (PERIMETER_SEGMENT, BenchProfile, CellClass, Order, SeedKind, Surface,
                              ToFinalMode, ZoneKind)
-from ...design.params import BenchParam, bench_key
+from ...design.params import BenchParam, RoadProfileParam, bench_key, road_profile_key
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...gis.masks import provenance as masks_provenance
@@ -258,6 +268,9 @@ DECLARE_SECTORS = constraint_panels.DECLARE_SECTORS
 DECLARE_SECTORS_AGAIN = "geoblender.des_declare_sectors"  # la 012 y volver a leer (T44)
 FIND_UNTOUCHABLES = "geoblender.core_find_untouchables"
 EDIT_LIMITS = constraint_panels.EDIT_LIMITS
+ROAD_PROFILES_PANEL = "GEOBLENDER_PT_des_road_profiles"
+ROAD_PROFILES_LIST = "GEOBLENDER_UL_des_road_profiles"
+SAVE_ROAD_PROFILE = "geoblender.des_save_road_profile"
 PROFILES_PANEL_UNITS = 40
 PROFILES_WIDTH_PX = PROFILES_PANEL_UNITS * 20
 PROFILE_ROWS = 5
@@ -285,6 +298,9 @@ LABELS = {
     BenchParam.MESH_FACTOR: "Mesh factor of the profile",
 }
 """El ``msgid`` del nombre de cada valor (el de ``design.params.FAMILIES``)."""
+ROAD_REQUIRED = tuple(param for param in RoadProfileParam
+                      if param not in (RoadProfileParam.MESH_FACTOR, RoadProfileParam.METRIC))
+"""Los trece valores de un perfil de pista que se declaran siempre (el factor de malla y la métrica tienen uno por defecto: D-2)."""
 
 
 def view() -> Any | None:
@@ -453,6 +469,115 @@ def show_report(lines: Sequence[tuple[str, bool]]) -> None:
     shown.profile_report.clear()
     for text, alert in lines:
         line = shown.profile_report.add()
+        line.name, line.alert = text, alert
+
+
+# --- Lo que se enseña de un perfil de pista (spec 017, T29) ------------------------------------------
+
+
+def _road_length(value: float) -> str:
+    """Una longitud derivada como se lee: «10,5 m», «5,75 m» (a lo sumo :data:`DERIVED_DECIMALS` decimales)."""
+    return f"{format_value(round(float(value), DERIVED_DECIMALS), language())} m"
+
+
+def put_road_profile(target: Any, row: Any, store: ParameterStore, conn: sqlite3.Connection, version: Any) -> None:
+    """Un perfil de pista del proyecto (``design.road_profiles.StoredProfile``) en la fila ``target`` de la vista: sus quince valores con su tipo,
+    su ámbito y **su fuente**, su clase normativa, cómo se lee, su insignia y sus **derivados**, que son los del dominio (``RoadProfile`` y
+    ``derived``: la calzada, la sección, su semianchura y la longitud mínima H/pd; RF-017-08) y **no son parámetros**."""
+    from ...design import road_profiles  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+    shown = language()
+    target.name, target.code = row.name, row.code
+    target.parameters.clear()
+    chosen: dict[RoadProfileParam, Any] = {}
+    kinds: list[ParamKind] = []
+    origins: set[str] = set()
+    for param in RoadProfileParam:
+        key = road_profile_key(row.code, param)
+        project_record = store.get(key, conn=conn)
+        own = None if version is None else store.get(key, version=version.uid, conn=conn)
+        found = param_definition(key)
+        line = target.parameters.add()
+        line.key, line.registered = key, project_record is not None or own is not None
+        line.name = translate(shown, found.label_msgid) if found is not None and found.label_msgid else param.value
+        line.text = parameter_text(project_record, own, key, version)
+        record = next((item for item in (own, project_record) if item is not None and item.value is not None), None)
+        if record is None:
+            continue
+        chosen[param] = record
+        line.source = tr("Source: {source} · decided by {who}", source=record.source or NOT_SHOWN, who=record.decided_by)
+        if param in ROAD_REQUIRED:
+            kinds.append(record.kind)
+            origins.add("version" if record is own else "project")
+
+    def shown_of(param: RoadProfileParam) -> str:
+        record = chosen.get(param)
+        return NOT_SHOWN if record is None else shown_value(record.value, record.unit, shown)
+
+    target.road_class = str(chosen[RoadProfileParam.CLASS].value) if RoadProfileParam.CLASS in chosen else ""
+    target.summary = tr("A {vehicle} · f {factor} · pd {pd} · pm {pm} · Rmin {rmin}",
+                        vehicle=shown_of(RoadProfileParam.VEHICLE_WIDTH), factor=shown_of(RoadProfileParam.LANE_FACTOR),
+                        pd=shown_of(RoadProfileParam.MAX_GRADIENT), pm=shown_of(RoadProfileParam.MAX_MEAN_GRADIENT),
+                        rmin=shown_of(RoadProfileParam.MIN_RADIUS))
+    target.badge = provenance.badge(min(kinds, key=FIRMNESS.index)) if kinds else ""
+    target.scope = _scope_text(origins, version)
+    target.derived = target.min_length = target.problem = ""
+    try:
+        profile = road_profiles.RoadProfile.from_values(
+            row.code, row.name, {param.value: record.value for param, record in chosen.items()})
+    except design_messages.DesignError as exc:  # le falta algo o no vale en la versión activa
+        target.problem = design_error_text(exc)
+        return
+    derived = road_profiles.derived(profile)
+    target.derived = tr("carriageway {carriageway} · section {section} · half-width {half_width}",
+                        carriageway=_road_length(derived.carriageway_m), section=_road_length(derived.section_m),
+                        half_width=_road_length(derived.half_width_m))
+    target.min_length = tr("Minimum length H/pd: {length} per metre of height difference",
+                           length=_road_length(derived.min_length_m(1.0)))
+
+
+def fill_road_profiles(project: Any) -> int:
+    """Regenera la lista de Perfil de pista… desde ``project`` (RF-017-07, RF-017-08): los perfiles del proyecto
+    (``design.road_profiles.read_profiles``), cada uno con sus valores en la versión activa y en el proyecto, su fuente y sus derivados;
+    conserva el elegido (por su código). Devuelve cuántos hay. Si no se puede leer, el error sigue y la vista queda como estaba."""
+    from ...design import road_profiles  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+    shown = view()
+    if shown is None:  # inalcanzable con la extensión registrada
+        raise RuntimeError("la vista de los perfiles de pista no está registrada")
+    version = scene_versions.active()
+    store = ParameterStore(project)
+    old = shown.road_profiles
+    chosen = old[shown.road_profile_index].code if 0 <= shown.road_profile_index < len(old) else ""
+    with project.read() as conn:
+        stored = road_profiles.read_profiles(conn)
+        shown.road_profiles.clear()
+        for row in stored:
+            put_road_profile(shown.road_profiles.add(), row, store, conn, version)
+    shown.road_profile_index = next((index for index, item in enumerate(shown.road_profiles) if item.code == chosen), 0)
+    shown.road_profiles_project = project.uid
+    return len(shown.road_profiles)
+
+
+def choose_road(code: str) -> None:
+    """Deja elegido en la lista de perfiles de pista el de código ``code`` (si está)."""
+    shown = view()
+    if shown is None:
+        return
+    for index, item in enumerate(shown.road_profiles):
+        if item.code == code:
+            shown.road_profile_index = index
+            return
+
+
+def show_road_report(lines: Sequence[tuple[str, bool]]) -> None:
+    """Deja ``lines`` (texto, si va en alerta) como el último resultado de la ventana de los perfiles de pista."""
+    shown = view()
+    if shown is None:
+        return
+    shown.road_profile_report.clear()
+    for text, alert in lines:
+        line = shown.road_profile_report.add()
         line.name, line.alert = text, alert
 
 
@@ -1852,6 +1977,11 @@ def on_project_read(project: Any) -> None:
             fill_profiles(project)
         except (GeoblenderError, sqlite3.Error, OSError):
             LOGGER.warning("No se pudieron leer los perfiles de banco", exc_info=True)
+    if shown.road_profiles_project and shown.road_profiles_project == project.uid:
+        try:
+            fill_road_profiles(project)
+        except (GeoblenderError, sqlite3.Error, OSError):
+            LOGGER.warning("No se pudieron leer los perfiles de pista", exc_info=True)
     if shown.sectors_project and shown.sectors_project == project.uid:
         try:
             fill_sectors(project)
@@ -1981,6 +2111,106 @@ class GEOBLENDER_PT_des_profiles(bpy.types.Panel):
 
     def draw(self, context: Any) -> None:
         draw_profiles(self.layout, context)
+
+
+# --- Perfil de pista… (spec 017, T29; HU-017-1; RF-017-07, RF-017-08, RF-017-29) -------------------
+
+
+class GEOBLENDER_UL_des_road_profiles(bpy.types.UIList):
+    """Road profiles of the project with their values and their type"""
+
+    bl_idname = ROAD_PROFILES_LIST
+
+    def draw_item(self, context: Any, layout: Any, data: Any, item: Any, icon: int,
+                  active_data: Any, active_propname: str, index: int = 0,
+                  flt_flag: int = 0) -> None:
+        split = layout.split(factor=NAME_FACTOR, align=True)
+        title = f"{item.name} {item.badge}" if item.badge else item.name
+        split.label(text=title, translate=False)
+        cell = split.row(align=True)
+        cell.alert = bool(item.problem)
+        cell.label(text=item.summary, icon="ERROR" if item.problem else "NONE", translate=False)
+
+
+def _draw_road_chosen(layout: Any, item: Any, width: float, writable: bool) -> None:
+    """El perfil de pista elegido: su nombre, su ámbito y su insignia, su clase normativa, cómo se lee, **sus derivados** (la calzada, la sección,
+    su semianchura y la longitud mínima H/pd: texto, sin botón, porque no son parámetros), lo que le falta o no vale (en alerta), cada uno de
+    sus quince valores con su tipo, su ámbito y su fuente (con «Cambiar…» si está registrado) y «Completar o renombrar…» (RF-017-07,
+    RF-017-08). Los textos largos, partidos al ancho de la zona."""
+    box = layout.box()
+    title = f"{item.name} {item.badge}" if item.badge else item.name
+    box.label(text=title, translate=False)
+    _draw_text(box, tr("Scope: {scope}", scope=item.scope), width)
+    if item.road_class:
+        _draw_text(box, tr("Normative class: {road_class}", road_class=item.road_class), width)
+    _draw_text(box, item.summary, width)
+    if item.problem:
+        _draw_text(box, item.problem, width, alert=True)
+    else:
+        box.label(text=tr("Derived values (not parameters)"), translate=False)
+        _draw_text(box, item.derived, width)
+        _draw_text(box, item.min_length, width)
+    box.label(text=tr("Parameters"), translate=False)
+    for line in item.parameters:
+        block = box.column(align=True)
+        block.enabled = writable
+        _draw_text(block, f"{line.name}:", width)
+        _draw_text(block, line.text, width)
+        if line.source:
+            _draw_text(block, line.source, width)
+        if line.registered:
+            button = block.operator(SET_PARAMETER, text=tr("Change…"), translate=False)
+            button.key = line.key
+    edit = box.row()
+    edit.enabled = writable
+    button = edit.operator(SAVE_ROAD_PROFILE, text=tr("Complete or rename…"), icon="GREASEPENCIL", translate=False)
+    button.code = item.code
+
+
+def draw_road_profiles(layout: Any, context: Any) -> None:
+    """La ventana de Perfil de pista… (véase el módulo), de lo ya leído: la lista, el elegido, «Perfil nuevo…» y el último resultado; con la
+    escritura no disponible (sin proyecto, en solo lectura o con la versión activa no editable: RF-017-29) lo que escribe sale desactivado y el
+    motivo dicho en ámbar."""
+    shown = view()
+    if shown is None:
+        return
+    blocked = _write_unavailable()
+    writable = blocked is None
+    width = labels.dialog_width(PROFILES_WIDTH_PX)
+    _draw_blocked(layout, blocked, width)
+    create = layout.row()
+    create.enabled = writable
+    button = create.operator(SAVE_ROAD_PROFILE, text=tr("New profile…"), icon="ADD", translate=False)
+    button.code = ""
+    if not len(shown.road_profiles):
+        labels.draw_wrapped(layout, tr(
+            "There are no road profiles yet: create one with its vehicle width, carriageway factor, gradients, radii, slope angles "
+            "and normative class"), width, icon="INFO")
+    else:
+        layout.label(text=tr("Road profiles: {count}", count=len(shown.road_profiles)), translate=False)
+        layout.template_list(ROAD_PROFILES_LIST, "", shown, "road_profiles", shown, "road_profile_index", rows=PROFILE_ROWS)
+        index = min(max(shown.road_profile_index, 0), len(shown.road_profiles) - 1)
+        _draw_road_chosen(layout, shown.road_profiles[index], width, writable)
+    if len(shown.road_profile_report):
+        box = layout.box()
+        box.label(text=tr("Last result"), translate=False)
+        for line in shown.road_profile_report:
+            _draw_text(box, line.name, width, alert=bool(line.alert))
+
+
+class GEOBLENDER_PT_des_road_profiles(bpy.types.Panel):
+    """Road profiles of the project: their values, their source and type and their derived widths, and the orders to create, complete,
+    rename and change them"""
+
+    bl_idname = ROAD_PROFILES_PANEL
+    bl_label = "Road profiles"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = PROFILES_PANEL_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_road_profiles(self.layout, context)
 
 
 # --- Sectores de diseño… (T23; HU-013-2; RF-013-07, RF-013-08, RF-013-10, RF-013-21) ----------
@@ -3593,6 +3823,7 @@ def localize() -> None:
 
 # En orden de registro (las listas, antes de la ventana que las dibuja).
 classes: tuple[type, ...] = (GEOBLENDER_UL_des_profiles, GEOBLENDER_PT_des_profiles,
+                             GEOBLENDER_UL_des_road_profiles, GEOBLENDER_PT_des_road_profiles,
                              GEOBLENDER_UL_des_sectors, GEOBLENDER_PT_des_sectors,
                              GEOBLENDER_PT_des_design, GEOBLENDER_PT_des_entity)
 
