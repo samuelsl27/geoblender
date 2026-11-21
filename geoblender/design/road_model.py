@@ -49,6 +49,7 @@ import numpy as np
 
 from ..core.provenance.figures import FigureSpec
 from ..gis.grid import Grid
+from ..gis.messages import format_value
 from .model import _name_or_none, _real_or_none, _text
 from .params import (
     ACCESS_RANGES,
@@ -874,3 +875,19 @@ class AccessOutcome:
         object.__setattr__(self, "zones", _tuple_of(self.zones, ZoneReach, "las zonas"))
         object.__setattr__(self, "figures", _tuple_of(self.figures, FigureSpec, "las cifras de una accesibilidad"))
         object.__setattr__(self, "notices", _tuple_of(self.notices, Notice, "los avisos de una accesibilidad"))
+
+    @property
+    def message(self) -> str:
+        """El mensaje de la operación (spec 017, T17): lo que dice el resumen de lo calculado, en español: la accesibilidad, su código, el área y las cotas alcanzables y cuántos
+        tramos de berma, plataformas y zonas «requiere acceso» quedan comunicados. Es lo que recibe ``DesignWriter.commit`` al crearla (``Calculation.message``). Añadido a un
+        resultado que ya existía (T05): compatible hacia atrás."""
+        head = f"Accesibilidad «{self.name}» ({self.code}) calculada: "
+        if self.z_min_m is None or self.z_max_m is None:
+            return head + "no se alcanza ninguna celda"
+        text = (f"{format_value(round(self.area_m2, 2))} m² alcanzables, de la cota {format_value(round(self.z_min_m, 3))} m a la "
+                f"{format_value(round(self.z_max_m, 3))} m")
+        counts = [(len(self.berms), sum(1 for item in self.berms if item.connected), "tramos de berma"),
+                  (len(self.platforms), sum(1 for item in self.platforms if item.connected), "plataformas"),
+                  (len(self.zones), sum(1 for item in self.zones if item.connected), "zonas «requiere acceso»")]
+        listed = [f"{reached} de {total} {what}" for total, reached, what in counts if total]
+        return head + text + (f"; comunicados {', '.join(listed)}" if listed else "")

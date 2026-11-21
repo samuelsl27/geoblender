@@ -45,6 +45,10 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   (T13; RF-016-02, RF-015-02, RNF-016-03) es :meth:`Calculation.create` o, por pasos, :meth:`Calculation.create_steps`: las
   tablas y las rejillas dispersas se preparan en su temporal y **una** transacción registra los parámetros de la entidad, la
   operación, los datos y las cifras (:func:`~.stockpile_store.create_detection_steps`).
+- :func:`access_run` (spec 017, T17; RF-017-24, RF-017-25, RF-015-03, RF-015-29): «Calcular» la accesibilidad de las pistas (``des.road_access``, de una versión, sin cadena y
+  sin huella) del mismo modo: deja el **resultado** (``design.road_model.AccessOutcome``, con las cifras y los avisos) y el **resumen**
+  (:class:`~.access_store.AccessSummary`: las cotas, las listas de bermas, plataformas y zonas «requiere acceso» comunicadas o no, los avisos y lo que quedará obsoleto al
+  repetirla) y **nada en el proyecto**. Crearla es de la T17b (:meth:`Calculation.create` dice que aún no está).
 - :func:`removal_run` (spec 016, T20; RF-016-11 a 15, RF-015-03, RF-015-29): «Calcular» la retirada de un acopio
   (``des.stockpile_removal``) del mismo modo: deja la superficie (``des_psf_``) en un temporal, el **resumen**
   (:class:`~.preview.RemovalSummary`: las cifras, **la lista de lo que se le apoyaba**, la pared y lo que pide confirmar) y
@@ -94,6 +98,7 @@ from ..gis.masks.access import MaskSet
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.store import StoreProject
 from . import (
+    access_store,
     buttress,
     edges,
     entity_store,
@@ -126,10 +131,12 @@ from .model import (
 )
 from .params import ANTHROPIC_PRESENCE
 from .preview import Notice
+from .road_model import AccessOutcome, AccessRequest
 from .seeds import SeedPlan, SeedSet, pace_progress
 
 __all__ = [
     "Calculation",
+    "access_run",
     "body_run",
     "buttress_run",
     "design_run",
@@ -154,6 +161,7 @@ _CREATED_PHASE = "created"  # la detección de acopios guardada (016, T13)
 _REMOVAL_SUMMARY_PHASE = "removal_summary"  # el resumen de la retirada de un acopio (016, T20)
 _BODY_SUMMARY_PHASE = "body_summary"  # el resumen de un cuerpo apoyado (016, T25)
 _BUTTRESS_SUMMARY_PHASE = "buttress_summary"  # el resumen de un contrafuerte (016, T27)
+_ACCESS_SUMMARY_PHASE = "access_summary"  # el resumen de una accesibilidad (017, T17)
 _OUTSIDE_PHASE = "seeds_outside"  # la cantera parada por sus semillas fuera (T43; RF-014-03)
 _READY, _CREATED, _DISCARDED = "ready", "created", "discarded"
 
@@ -209,14 +217,15 @@ class Calculation:
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
                  | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome
                  | platform.PlatformOutcome | stockpiles.StockpileOutcome | removal.RemovalOutcome
-                 | thickness.BodyOutcome | buttress.ButtressOutcome,
+                 | thickness.BodyOutcome | buttress.ButtressOutcome | AccessOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object],
                  entity: entity_store.PreparedPlatform | stockpile_store.PreparedDetection
-                 | supported_store.PreparedRemoval | supported_store.PreparedBody | supported_store.PreparedButtress | None = None,
+                 | supported_store.PreparedRemoval | supported_store.PreparedBody | supported_store.PreparedButtress
+                 | access_store.PreparedAccess | None = None,
                  summary: preview.PlatformSummary | preview.StockpileSummary | preview.RemovalSummary
-                 | preview.BodySummary | preview.ButtressSummary | None = None) -> None:
+                 | preview.BodySummary | preview.ButtressSummary | access_store.AccessSummary | None = None) -> None:
         self._project = project
         self._writer = writer
         self._start = start
@@ -351,6 +360,9 @@ class Calculation:
             return stored
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
+        if isinstance(self.entity, access_store.PreparedAccess):
+            raise NotImplementedError("crear la accesibilidad (des.road_access) aún no está: lo hace la T17b de la 017 (crear en una transacción, recalcular, "
+                                      "reproducir y la lectura para la 012); «Calcular» solo prepara y calcula, y no escribe nada")
         if isinstance(self.entity, supported_store.PreparedRemoval):
             return self._create_removal(self.entity, decided_by)
         if isinstance(self.entity, supported_store.PreparedBody):
@@ -656,6 +668,21 @@ def stockpile_run(project: StoreProject, request: StockpileRequest, *, version: 
     return _stockpile_steps(project, request, version, masks, code, supersedes, budget_s)
 
 
+def access_run(project: StoreProject, request: AccessRequest, *, version: str | None, masks: MaskSet | None = None, code: str | None = None,
+               supersedes: str | None = None, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**«Calcular»** la accesibilidad ``request`` en la versión ``version`` (uid o código) por pasos de ``budget_s`` como mucho (spec 017, T17; RF-017-24, RF-017-25, RF-015-03,
+    RF-015-29, RF-017-30; RNF-017-05 y RNF-017-06; «Accesibilidad de las pistas…»): el último ``Progress`` lleva la :class:`Calculation` de ``des.road_access``, con su resultado
+    (``Calculation.outcome``: ``design.road_model.AccessOutcome``, con las cifras y los avisos), su resumen (``Calculation.summary``: ``design.access_store.AccessSummary``: las
+    cotas y las listas de bermas, plataformas y zonas «requiere acceso» comunicadas o no, los avisos —una entrada que no cae en terreno transitable, lo que no se comunica— y lo que
+    quedará obsoleto al repetirla) y **nada registrado ni escrito en el proyecto**: ni la base de datos, ni las operaciones, los datos, los parámetros o los ficheros. ``masks``, como
+    en :func:`envelope_run`. ``code`` y ``supersedes``, los de ``access_store.prepare_access_units`` (recalcular una accesibilidad que ya está en la versión y sustituir su operación).
+
+    Los rechazos salen **al avanzar**, antes de calcular y sin escribir nada: los de ``prepare_access_units`` (sin versión activa o no editable, la capa de entradas y su campo, los
+    parámetros sin valor, la superficie y su rejilla, las bermas, ningún punto de entrada o uno sin dato: RF-017-04). Cerrar el generador a mitad (Esc) o un fallo después de calcular
+    no dejan nada (RF-015-29). **Crear** la accesibilidad es de la T17b: :meth:`Calculation.create` lo dice (``NotImplementedError``)."""
+    return _access_steps(project, request, version, masks, code, supersedes, budget_s)
+
+
 def removal_run(project: StoreProject, request: RemovalRequest, *, version: str | None,
                 masks: MaskSet | None = None, code: str | None = None, supersedes: str | None = None,
                 budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
@@ -918,6 +945,25 @@ def _stockpile_steps(project: StoreProject, request: StockpileRequest, version: 
             project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
             seeds=None, values={ANTHROPIC_PRESENCE: prepared.job.params.threshold_m}, entity=prepared,
             summary=summary)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda nada
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _access_steps(project: StoreProject, request: AccessRequest, version: str | None, masks: MaskSet | None, code: str | None,
+                  supersedes: str | None, budget_s: float) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.ROAD_ACCESS)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: access_store.PreparedAccess = yield from _prepare_steps(
+        access_store.prepare_access_units(project, request, found, loaded, code=code, supersedes=supersedes), budget_s)
+    writer = store.DesignWriter(project, provenance.ROAD_ACCESS, request.name, version=found.uid, supersedes=supersedes)
+    try:
+        outcome: AccessOutcome = yield from access_store.access_compute_steps(prepared.job, budget_s=budget_s)
+        yield Progress(_ACCESS_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
+        summary = access_store.prepared_summary(project, prepared, outcome, supersedes=supersedes)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices, seeds=None, values={},
+                                  entity=prepared, summary=summary)
     except BaseException as error:  # un fallo o cerrar el generador: no queda nada
         writer.close(error)
         raise

@@ -42,7 +42,7 @@ retirado». Los de la 017
 (plan 017 §5.1, T02; RF-017-04 a 07, 12, 14, 16 a 18 y 22) van al final, por familias: ``des.road_*`` (la pista: su geometría, su
 perfil, sus cotas, lo que avisa de su partida y de su afección, «sin ruta» con sus tres causas y su tramo limitante, el radio
 reducido, el desnivel, la pendiente media, el modo «eje 3D» y la calzada que no queda en su rasante) y ``des.access_*`` (la
-accesibilidad: sus puntos de entrada); ninguno empieza por las familias cerradas de la 015 ni de la 016. Un campo
+accesibilidad: sus puntos de entrada, su capa, sus rejillas de bermas y, de T17, lo que avisa y resume al calcular); ninguno empieza por las familias cerradas de la 015 ni de la 016. Un campo
 que es un texto de una lista cerrada que la persona ve (el papel de una superficie, el tipo de
 geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce; por
 eso, lo que cambia con el idioma va en otro código (las partes que vacían el recinto, notas detrás
@@ -2953,6 +2953,123 @@ CATALOG: tuple[Message, ...] = (
         "(x = {x} m, y = {y} m); move it or choose another surface; nothing is created.",
         "Capa «{layer}», accesibilidad «{entity}»: el punto de entrada «{value}» no tiene dato en la superficie "
         "«{surface}» (x = {x} m, y = {y} m); muévalo o elija otra superficie; no se crea nada.",
+    ),
+    # T17: lo que prepara la accesibilidad rechaza además de lo anterior (la capa de entradas y las rejillas de bermas), y lo que avisa y dice al calcular.
+    Message(
+        "des.access_layer_not_points",
+        "Layer «{layer}», accessibility «{entity}»: «{field}» = {value}, not points: the entry points of an accessibility "
+        "come from a point layer of the project; choose another layer; nothing is created.",
+        "Capa «{layer}», accesibilidad «{entity}»: «{field}» = {value}, no puntos: los puntos de entrada de una "
+        "accesibilidad salen de una capa de puntos del proyecto; elija otra capa; no se crea nada.",
+    ),
+    Message(
+        "des.access_layer_field",
+        "Layer «{layer}», accessibility «{entity}»: it has no text field «{value}» to name the entry points («{field}»); "
+        "the fields of the layer are: {fields}; choose another one in the dialog; nothing is created.",
+        "Capa «{layer}», accesibilidad «{entity}»: no tiene ningún campo de texto «{value}» para nombrar los puntos de "
+        "entrada («{field}»); sus campos son: {fields}; elija otro en el diálogo; no se crea nada.",
+    ),
+    Message(
+        "des.access_berm_unknown",
+        "Accessibility «{entity}»: «{field}» = «{value}» is not a berm elevation grid of {version}; choose one of them "
+        "or leave the field empty to use all those that are up to date; nothing is created.",
+        "Accesibilidad «{entity}»: «{field}» = «{value}» no es una rejilla de cotas de berma de {version}; elija una de "
+        "ellas o deje el campo vacío para usar todas las que estén al día; no se crea nada.",
+    ),
+    Message(
+        "des.access_entry_not_walkable",
+        "Layer «{layer}», accessibility «{entity}»: the entry point «{value}» (x = {x} m, y = {y} m) is not on walkable "
+        "ground (a local gradient above the maximum walkable one, an untouchable zone or a passage narrower than the "
+        "minimum width), so it reaches nothing; the calculation goes on with the other entry points.",
+        "Capa «{layer}», accesibilidad «{entity}»: el punto de entrada «{value}» (x = {x} m, y = {y} m) no cae en "
+        "terreno transitable (una pendiente local mayor que la máxima transitable, una zona intocable o un paso más "
+        "estrecho que el ancho mínimo): no alcanza nada; el cálculo sigue con los demás puntos de entrada.",
+        "warning",
+    ),
+    Message(
+        "des.access_nothing_reached",
+        "Accessibility «{entity}»: no cell is reached from the entry points, so there are no levels or area to give; "
+        "check the entry points, the maximum walkable gradient and the minimum width.",
+        "Accesibilidad «{entity}»: desde los puntos de entrada no se alcanza ninguna celda, así que no hay cotas ni "
+        "área que dar; revise los puntos de entrada, la pendiente máxima transitable y el ancho mínimo.",
+        "warning",
+    ),
+    Message(
+        "des.access_final_none",
+        "Accessibility «{entity}»: no cell of the final surface of the quarry is reached with the same parameters, so "
+        "there is no lowest reachable level on it.",
+        "Accesibilidad «{entity}»: sobre la superficie final de la cantera no se alcanza ninguna celda con los mismos "
+        "parámetros, así que no hay cota mínima alcanzable sobre ella.",
+        "warning",
+    ),
+    Message(
+        "des.access_summary",
+        "Accessibility «{entity}» ({code}): {berms_reached} of {berms} berm stretches, {platforms_reached} of "
+        "{platforms} platforms and {zones_reached} of {zones} zones that require access are communicated.",
+        "Accesibilidad «{entity}» ({code}): quedan comunicados {berms_reached} de {berms} tramos de berma, "
+        "{platforms_reached} de {platforms} plataformas y {zones_reached} de {zones} zonas «requiere acceso».",
+        "note",
+    ),
+    Message(
+        "des.access_levels",
+        "Reachable levels from {z_min} m to {z_max} m over {area} m² (accessibility «{entity}»).",
+        "Cotas alcanzables de {z_min} m a {z_max} m sobre {area} m² (accesibilidad «{entity}»).",
+        "note",
+    ),
+    Message(
+        "des.access_final",
+        "On the final surface «{final}» of the quarry the lowest reachable level is {z_final} m.",
+        "Sobre la superficie final «{final}» de la cantera la cota mínima alcanzable es {z_final} m.",
+        "note",
+    ),
+    Message(
+        "des.access_berm_missing",
+        "Berm stretch {stretch} of «{source}» (level {level} m, {area} m², at x = {x} m, y = {y} m) is not communicated: "
+        "no reachable cell touches it.",
+        "El tramo de berma {stretch} de «{source}» (cota {level} m, {area} m², en x = {x} m, y = {y} m) no queda "
+        "comunicado: ninguna celda alcanzable lo toca.",
+        "warning",
+    ),
+    Message(
+        "des.access_platform_missing",
+        "Platform {code} is not communicated: no reachable cell falls in its footprint.",
+        "La plataforma {code} no queda comunicada: ninguna celda alcanzable cae en su huella.",
+        "warning",
+    ),
+    Message(
+        "des.access_zone_missing",
+        "Zone «{code}» that requires access is not communicated: the nearest reachable ground is {distance} m away "
+        "(level difference {difference} m), next to x = {x} m, y = {y} m.",
+        "La zona «{code}» que requiere acceso no queda comunicada: lo alcanzable más próximo está a {distance} m "
+        "(diferencia de cota {difference} m), junto a x = {x} m, y = {y} m.",
+        "warning",
+    ),
+    Message(
+        "des.access_zone_missing_unplaced",
+        "Zone «{code}» that requires access is not communicated, and its distance to the reachable ground cannot be "
+        "measured (nothing is reachable or the zone has no cells).",
+        "La zona «{code}» que requiere acceso no queda comunicada y no se puede medir su distancia a lo alcanzable "
+        "(no hay nada alcanzable o la zona no tiene celdas).",
+        "warning",
+    ),
+    Message(
+        "des.access_more",
+        "… and {more} more that are not communicated (the whole list is in the summary)",
+        "… y {more} más sin comunicar (la lista entera está en el resumen)",
+        "note",
+    ),
+    Message(
+        "des.access_obsolete_dependents",
+        "Calculating the accessibility «{entity}» again will make {operations} operations that depended on it stale: "
+        "{items}.",
+        "Al calcular de nuevo la accesibilidad «{entity}», quedarán obsoletas {operations} operaciones que dependían "
+        "de ella: {items}.",
+        "note",
+        count="operations",
+        one_msgid="Calculating the accessibility «{entity}» again will make {operations} operation that depended on "
+        "it stale: {items}.",
+        one_es="Al calcular de nuevo la accesibilidad «{entity}», quedará obsoleta {operations} operación que dependía "
+        "de ella: {items}.",
     ),
     # RF-017-05: la partida es la superficie final restaurada (a) y un relleno que la pista no tiene en cuenta (b); se puede crear.
     Message(

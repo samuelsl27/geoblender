@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Los mensajes de la pista y de la accesibilidad de la 017 (spec 017, T02 y T13; RF-017-04 a 07, 12, 14, 16, 17, 18, 21 y 22;
+"""Los mensajes de la pista y de la accesibilidad de la 017 (spec 017, T02, T13 y T17; RF-017-04 a 07, 12, 14, 16, 17, 18, 21, 22, 24 y 25;
 plan 017 §5.1 y §5.5; principio 10).
 
 Un código ``des.road_*`` o ``des.access_*`` por cada rechazo y aviso de la spec, con su ``msgid`` en inglés y su texto
@@ -53,6 +53,22 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # RF-017-04 (y RF-017-24): la accesibilidad sin punto de entrada o con uno sin dato.
     "des.access_no_entry": ("error", "RF-017-04", {"layer", "entity"}),
     "des.access_entry_no_data": ("error", "RF-017-04", {"layer", "entity", "value", "surface", *POSITION}),
+    # T17: la capa de entradas (que no es de puntos o sin su campo), las rejillas de bermas, lo que avisa y lo que resume al calcular (RF-017-24 y 25).
+    "des.access_layer_not_points": ("error", "RF-017-04", GEOMETRY),
+    "des.access_layer_field": ("error", "RF-017-04", {*GEOMETRY, "fields"}),
+    "des.access_berm_unknown": ("error", "RF-017-25", {"entity", "field", "value", "version"}),
+    "des.access_entry_not_walkable": ("warning", "RF-017-24", {"layer", "entity", "value", *POSITION}),
+    "des.access_nothing_reached": ("warning", "RF-017-24", {"entity"}),
+    "des.access_final_none": ("warning", "RF-017-24", {"entity"}),
+    "des.access_summary": ("note", "RF-017-25", {"entity", "code", "berms", "berms_reached", "platforms", "platforms_reached", "zones", "zones_reached"}),
+    "des.access_levels": ("note", "RF-017-24", {"entity", "z_min", "z_max", "area"}),
+    "des.access_final": ("note", "RF-017-24", {"final", "z_final"}),
+    "des.access_berm_missing": ("warning", "RF-017-25", {"stretch", "source", "level", "area", *POSITION}),
+    "des.access_platform_missing": ("warning", "RF-017-25", {"code"}),
+    "des.access_zone_missing": ("warning", "RF-017-25", {"code", "distance", "difference", *POSITION}),
+    "des.access_zone_missing_unplaced": ("warning", "RF-017-25", {"code"}),
+    "des.access_more": ("note", "RF-017-25", {"more"}),
+    "des.access_obsolete_dependents": ("note", "RF-015-16", {"entity", "operations", "items"}),
     # RF-017-05: la partida es la final (a) y un relleno que la pista no tiene en cuenta (b).
     "des.road_start_is_final": ("warning", "RF-017-05", {"entity", "surface", "z_final", "z_pit"}),
     "des.road_other_design_differs": ("warning", "RF-017-05", {"entity", "other", "area", "difference", *POSITION}),
@@ -94,7 +110,7 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.road_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.access_declared_reason": ("note", "RF-015-10", {"name"}),
 }
-"""Los códigos de la T02 con su gravedad, su RF y lo que su texto nombra."""
+"""Los códigos de la T02 (y los de la T13 y la T17) con su gravedad, su RF y lo que su texto nombra."""
 PREFIXES = ("des.road_", "des.access_")
 PROFILE_CODES = frozenset(code for code in CODES if code.startswith("des.road_profile_")) - {"des.road_profile_unknown"}
 """Los rechazos del perfil mismo (no de la pista que lo nombra: ``des.road_profile_unknown`` es de la pista)."""
@@ -169,7 +185,8 @@ class RoadMessagesTest(unittest.TestCase):
                   "half_width": 5.75, "low": 100.0, "high": 140.0, "limit": 1000.0, "zone": "Cota 140",
                   "z_origin": 120.0, "z_destination": 128.5, "gradient": 12.5, "margin": 60.0, "budget": 5000000,
                   "expanded": 5000001, "length_before": 14.0, "length_after": 18.0, "fitted": 9.0, "minimum": 12.0,
-                  "length": 200.0, "needed": 300.0, "drop": 30.0, "name": "Pista 1"}
+                  "length": 200.0, "needed": 300.0, "drop": 30.0, "name": "Pista 1",
+                  "fields": "nombre, cota", "version": "V01"}
         for code, (severity, _rf, _marks) in CODES.items():
             with self.subTest(code=code):
                 if severity == "error":

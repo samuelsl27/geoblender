@@ -265,6 +265,7 @@ from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 
 if TYPE_CHECKING:  # solo para los tipos: importar el informe arrastraría los cálculos
     from .report import DesignReport
+    from .road_model import AccessRequest  # lo crea quien calcula la accesibilidad, no habilitar (RNF-001-03)
     from .supported_requests import (  # las crea la primera llamada que las usa, no habilitar (T51)
         BodyRequest,
         ButtressFields,
@@ -477,6 +478,7 @@ __all__ = [
     "access_figures",
     "access_inputs",
     "access_params",
+    "access_settings",
     "body_figures",
     "body_inputs",
     "body_params",
@@ -3882,6 +3884,18 @@ def access_params(code: str, *, berms: bool = False) -> tuple[str, ...]:
     if berms:
         read.add(AccessParam.BERMS)
     return _unique(entity_key(code, item) for item in AccessParam if item in read)
+
+
+def access_settings(request: AccessRequest, code: str) -> dict[str, Any]:
+    """Los ajustes de ``des.road_access`` (spec 017, T17; RF-017-24, RF-015-02; JSON sin rutas): el nombre de la accesibilidad, su ``code`` (``ACC-001``) y el campo de su capa de
+    entradas del que sale el nombre de cada punto (``entries``: ``name_field``; ``None`` si no lo lleva). **Ninguna otra cosa**: la capa, la superficie, los datos de bermas y los
+    umbrales son **parámetros de la entidad** (``des.access.{e}.*``, :func:`access_params`), como en la detección de acopios. Es un diccionario nuevo; ``ValueError`` si ``code``
+    no es el de una accesibilidad y ``TypeError`` si ``request`` no es una ``AccessRequest``."""
+    from .road_model import AccessRequest  # al usarlo: habilitar no la crea (RNF-001-03)
+    if not isinstance(request, AccessRequest):
+        raise TypeError(f"los ajustes de una accesibilidad salen de una AccessRequest, no {request!r}")
+    _typed_code(code, "access", "una accesibilidad")
+    return {"name": request.name, "code": code, "entries": {"name_field": request.entries.name_field}}
 
 
 def road_figures(name: str, code: str, values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:

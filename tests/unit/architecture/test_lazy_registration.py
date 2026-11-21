@@ -101,6 +101,9 @@ HEAVY: frozenset[str] = frozenset({
     # Lo alcanzable y las cotas de la accesibilidad de la 017 (spec 017, T15; pendiente local, apertura y componentes con numpy): lo pide quien calcula la accesibilidad;
     # ``design.model`` y el arranque no lo importan.
     "design.road_access",
+    # La operación de accesibilidad de la 017 (spec 017, T17): preparar, calcular por pasos y el resumen (lee el almacén, las superficies y las máscaras); la piden las
+    # órdenes al usarla, no habilitar.
+    "design.access_store",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 
