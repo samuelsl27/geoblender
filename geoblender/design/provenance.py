@@ -162,9 +162,11 @@ operación):
   de la accesibilidad, lo alcanzable (``des_acc_``, ``road_access``), sus bermas (``des_acb_``), sus plataformas (``des_acp_``) y
   sus zonas «requiere acceso» (``des_acz_``, ``access_zones``: :data:`ROAD_ACCESS_ZONES_ROLE`, el papel por el que lo lee la 012 sin
   importar ``design``). Más las ``des_psf_``, ``des_epr_`` y ``des_prp_`` de la 015 con sus papeles ``entity_surface`` y ``entity``.
-- :data:`ROAD_OPERATION_TYPES`: tres tipos de la versión, repetibles y reproducibles (:data:`ROAD_VERSION_TYPES`,
-  :data:`ROAD_REPRODUCIBLE`): ``des.road`` (:data:`ROAD`, con cadena), ``des.road_access`` (:data:`ROAD_ACCESS`) y ``des.road_propose``
-  (:data:`ROAD_PROPOSE`), con :func:`road_operation_defs`; y la edición de los perfiles de pista, ``des.edit_road_profiles``
+- :data:`ROAD_OPERATION_TYPES`: cuatro tipos de la versión, repetibles (:data:`ROAD_VERSION_TYPES`) y, los tres primeros, reproducibles
+  (:data:`ROAD_REPRODUCIBLE`): ``des.road`` (:data:`ROAD`, con cadena), ``des.road_access`` (:data:`ROAD_ACCESS`), ``des.road_propose``
+  (:data:`ROAD_PROPOSE`) y, de la T26, ``des.road_layer`` (:data:`ROAD_LAYER`: la capa de ejes de pistas ``des_rax_<vNN>`` para QGIS, **no reproducible**,
+  como ``des.entity_layer``; con :func:`road_layer_inputs`, :func:`road_layer_params`, :func:`road_layer_settings` y :func:`has_road_operation`),
+  con :func:`road_operation_defs`; y la edición de los perfiles de pista, ``des.edit_road_profiles``
   (:data:`EDIT_ROAD_PROFILES`), **de proyecto** y sin repetición (:data:`ROAD_PROFILE_OPERATIONS`: como la de los perfiles de banco,
   que ``bl`` registra; su mecánica es de ``design.road_profiles``, perezoso). La pista y la accesibilidad son entidades del registro
   (:data:`ENTITY_OP_NAMES`); la propuesta, no.
@@ -415,6 +417,9 @@ __all__ = [
     "ROAD_COMMAND",
     "ROAD_DATA_FAMILIES",
     "ROAD_FIGURES",
+    "ROAD_LAYER",
+    "ROAD_LAYER_ROLE",
+    "ROAD_LAYER_TABLE",
     "ROAD_OPERATION_TYPES",
     "ROAD_OTHER_DESIGN_ROLE",
     "ROAD_PROFILE_COMMAND",
@@ -526,6 +531,7 @@ __all__ = [
     "has_entity_operation",
     "has_declaring_operation",
     "has_platform_operation",
+    "has_road_operation",
     "merge_released",
     "released_supports",
     "operation_def",
@@ -560,6 +566,9 @@ __all__ = [
     "removal_settings",
     "road_figures",
     "road_inputs",
+    "road_layer_inputs",
+    "road_layer_params",
+    "road_layer_settings",
     "road_operation_defs",
     "road_params",
     "road_request",
@@ -725,6 +734,8 @@ BODY_DATA_ROLE = "body_data"
 ROAD_AXIS_ROLE = "road_axis"
 """El papel del eje de una pista por estaciones (``des_rdx_``: abscisa, x, y, cota del terreno, cota de la rasante, pendiente en %,
 radio y curva), de donde otra pista toma su lugar y su cota a una abscisa (RF-017-03)."""
+ROAD_LAYER_ROLE = "road_layer"
+"""El papel de la capa de ejes de pistas de la versión (``des_rax_<vNN>``; spec 017, T26): líneas con la rasante en su Z, una por pista calculada, **no editable a mano** (D-19)."""
 ROUTE_LAYER_ROLE = "route_layer"
 """El papel de la capa propuesta de «Proponer el trazado…» (``des_rpl_``: líneas con Z). **Editable a mano** en QGIS (P-8): desde que
 se crea es del usuario, y una pista «eje 3D» la lee como cualquier capa con su hash."""
@@ -948,6 +959,9 @@ ROAD_AXIS_TABLE = "rdx"
 ROUTE_LAYER_TABLE = "rpl"
 """La capa propuesta de «Proponer el trazado…», líneas con Z, **editable** (``des_rpl_<nombre>_<vNN>``; papel
 :data:`ROUTE_LAYER_ROLE`)."""
+ROAD_LAYER_TABLE = "rax"
+"""La capa de ejes de pistas de la versión para QGIS (``des_rax_<vNN>``; papel :data:`ROAD_LAYER_ROLE`; spec 017, T26; RF-017-27): una fila por pista calculada, con su eje en líneas con Z, su clase,
+sus cifras y su estado; una por versión (sin el nombre de una operación) y **no editable a mano** (D-19)."""
 ACCESS_GRID = "acc"
 """Lo alcanzable de una accesibilidad: 1 alcanzable y 0 no (``rasters/des_acc_<nombre>_<vNN>.tif``; papel :data:`ROAD_ACCESS_ROLE`)."""
 ACCESS_BERMS_TABLE = "acb"
@@ -960,6 +974,8 @@ ACCESS_ZONES_TABLE = "acz"
 ROAD_DATA_FAMILIES: tuple[DatasetFamily, ...] = (
     DatasetFamily(ROAD_AXIS_TABLE, "table", Store.GPKG, GPKG_LAYER.id, ROAD_AXIS_ROLE, "",
                   "Eje de la pista por estaciones"),
+    DatasetFamily(ROAD_LAYER_TABLE, "vector", Store.GPKG, GPKG_LAYER.id, ROAD_LAYER_ROLE, "",
+                  "Capa de ejes de pistas", named=False),
     DatasetFamily(ROUTE_LAYER_TABLE, "vector", Store.GPKG, GPKG_LAYER.id, ROUTE_LAYER_ROLE, "",
                   "Capa propuesta del trazado de una pista", qgis_editable=True),
     DatasetFamily(ACCESS_GRID, "raster", Store.RASTERS, GEOTIFF.id, ROAD_ACCESS_ROLE, ".tif",
@@ -975,7 +991,7 @@ ROAD_DATA_FAMILIES: tuple[DatasetFamily, ...] = (
 deja además las ``des_psf_``, ``des_epr_`` y ``des_prp_`` de la 015). Cada una con su papel, por el que las leen la 012 y R-44;
 ninguna lleva el papel de una superficie de diseño. **Solo la capa propuesta (``des_rpl_``) es editable a mano en QGIS** (P-8: desde
 que se crea es del usuario, y una pista la lee con su hash); las demás son salidas calculadas, que se bloquean si se editan fuera
-(RF-008-56). La capa de ejes de pistas ``des_rax_<vNN>`` es de la T26."""
+(RF-008-56). La capa de ejes de pistas ``des_rax_<vNN>`` (T26) es **una por versión** (``named`` falso: sin el nombre de una operación, como ``des_enl_``)."""
 FAMILIES_BY_CODE: Mapping[str, DatasetFamily] = MappingProxyType(
     {family.code: family
      for family in (*FAMILIES, *QUARRY_FAMILIES, *ENTITY_FAMILIES, *SUPPORTED_FAMILIES, *ROAD_DATA_FAMILIES)})
@@ -1408,9 +1424,11 @@ operación se declara en ``OperationDef.commands``."""
 ROAD = "des.road"
 ROAD_ACCESS = "des.road_access"
 ROAD_PROPOSE = "des.road_propose"
+ROAD_LAYER = "des.road_layer"
 EDIT_ROAD_PROFILES = "des.edit_road_profiles"
-"""Los tipos de la 017 (spec 017, T03; plan 017 §5.2.3): la pista (con cadena), la accesibilidad de las pistas (sin cadena), «Proponer el
-trazado» y la edición de los perfiles de pista (**de proyecto**, sin repetición)."""
+"""Los tipos de la 017 (spec 017, T03 y T26; plan 017 §5.2.3): la pista (con cadena), la accesibilidad de las pistas (sin cadena), «Proponer el
+trazado», la capa de ejes de pistas para QGIS (T26-a: de versión, repetible y **no reproducible**, como ``des.entity_layer``) y la edición de los
+perfiles de pista (**de proyecto**, sin repetición)."""
 ROAD_COMMAND = "geoblender.des_create_road"
 ACCESS_COMMAND = "geoblender.des_road_access"
 PROPOSE_COMMAND = "geoblender.des_propose_road"
@@ -1534,9 +1552,11 @@ ROAD_OPERATION_TYPES: tuple[OperationType, ...] = (
                   (), ACCESS_FIGURES, (ACCESS_COMMAND,)),
     OperationType(ROAD_PROPOSE, "Proposal of the route of a haul road", (ROUTE_LAYER_TABLE,), (), PROPOSE_FIGURES,
                   (PROPOSE_COMMAND,)),
+    OperationType(ROAD_LAYER, "Layer of the axes of the haul roads", (ROAD_LAYER_TABLE,), (), (), (ROAD_COMMAND,), reproducible=False, drops_discarded=True),
 )
 """Los tipos de operación de la 017 (plan 017 §5.2.3), aparte de los de las cuatro specs anteriores: de la versión, repetibles y
-reproducibles, **sin comportamiento todavía** (cada tarea que crea una operación le da su cálculo). La definición de la pista y de la
+reproducibles salvo la capa de ejes (T26-a: es una vista regenerable que incluye el estado de cada pista, deducido del grafo; ``drops_discarded``: su recálculo
+reúne él mismo las pistas vivas, como la capa de entidades), **sin comportamiento todavía** (cada tarea que crea una operación le da su cálculo). La definición de la pista y de la
 accesibilidad son sus **parámetros** (``des.road.{e}.*``, ``des.access.{e}.*``): los ajustes no declaran ninguno. Salidas: la pista, su
 superficie entera (``des_psf_``), su huella (``des_epr_``: es lo que sale en la capa de entidades), su eje por estaciones
 (``des_rdx_``) y su informe, y deja también ``des.supported_m3`` (lo que se le apoya: RF-015-15); la accesibilidad, lo alcanzable, sus
@@ -1580,9 +1600,10 @@ SUPPORTED_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in SUPPORTED_OPE
 """Los tipos de la 016 que se reproducen: todos (bit a bit desde una revisión congelada, con
 :data:`FIGURE_TOLERANCE` en las cifras)."""
 ROAD_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in ROAD_OPERATION_TYPES)
-"""Los tipos de versión de la 017, que se repiten solos: la pista, la accesibilidad y la propuesta del trazado."""
+"""Los tipos de versión de la 017, que se repiten solos: la pista, la accesibilidad, la propuesta del trazado y la capa de ejes de pistas."""
 ROAD_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in ROAD_OPERATION_TYPES if t.reproducible)
-"""Los tipos de la 017 que se reproducen: todos (bit a bit desde una revisión congelada, con :data:`FIGURE_TOLERANCE` en las cifras)."""
+"""Los tipos de la 017 que se reproducen: la pista, la accesibilidad y la propuesta (bit a bit desde una revisión congelada, con :data:`FIGURE_TOLERANCE` en las cifras); **no** la capa de
+ejes (T26-a), que incluye el estado de cada pista."""
 
 
 def operation_def(op_type: str, recompute: RecomputeFunction | None = None,
@@ -1652,14 +1673,13 @@ def supported_operation_defs(recompute: Mapping[str, RecomputeFunction],
 
 def road_operation_defs(recompute: Mapping[str, RecomputeFunction],
                         reproduce: Mapping[str, ReproduceFunction]) -> tuple[OperationDef, ...]:
-    """Los ``OperationDef`` de los tres tipos de la 017 (spec 017, T03), en su orden —la pista, la accesibilidad y la propuesta
-    del trazado—: cada uno con su función de ``recompute`` (todos se repiten solos) y de ``reproduce``
-    (:data:`ROAD_REPRODUCIBLE`: todos). ``ValueError`` si sobra o falta alguna. La edición de los perfiles de pista, de proyecto, es
+    """Los ``OperationDef`` de los cuatro tipos de la 017 (spec 017, T03 y T26), en su orden —la pista, la accesibilidad, la propuesta
+    del trazado y la capa de ejes—: cada uno con su función de ``recompute`` (todos se repiten solos) y de ``reproduce``
+    (:data:`ROAD_REPRODUCIBLE`: los tres primeros). ``ValueError`` si sobra o falta alguna. La edición de los perfiles de pista, de proyecto, es
     :data:`ROAD_PROFILE_OPERATIONS`."""
     _check_functions("recálculo", recompute, ROAD_VERSION_TYPES)
     _check_functions("reproducción", reproduce, ROAD_REPRODUCIBLE)
-    return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type])
-                 for declared in ROAD_OPERATION_TYPES)
+    return tuple(declared.definition(recompute[declared.op_type], reproduce.get(declared.op_type)) for declared in ROAD_OPERATION_TYPES)
 
 
 # --- Las cifras: armarlas -----------------------------------------------------------------------
@@ -1869,6 +1889,18 @@ def has_entity_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
     hecha y sin sustituir, en cualquier revisión (spec 016, T34): como :func:`has_platform_operation` para los cinco
     tipos. Sin ella la capa de entidades no tiene nada que enseñar. Una sola consulta. Solo lee."""
     return conn.execute(_LIVE_ENTITY, (version_uid, *ENTITY_OP_NAMES)).fetchone() is not None
+
+
+_LIVE_ROAD = (
+    "SELECT 1 FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    "WHERE r.version_uid = ? AND o.op_type = ? AND o.status = 'done' AND o.superseded_by IS NULL LIMIT 1")
+
+
+def has_road_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
+    """Si la versión ``version_uid`` (su uid) tiene **alguna** operación ``des.road`` hecha y sin sustituir, en cualquier revisión (spec 017, T26; RF-017-27): como :func:`has_entity_operation` para la
+    pista. Sin ella la capa de ejes de pistas no tiene nada que enseñar y **no se carga** (``design.road_layer`` es perezoso): es lo que mira lo que sigue a una orden de entidades y a «Recalcular lo
+    obsoleto». Una sola consulta. Solo lee."""
+    return conn.execute(_LIVE_ROAD, (version_uid, ROAD)).fetchone() is not None
 
 
 def entity_figure_scope(name: str, code: str) -> dict[str, str]:
@@ -2775,9 +2807,15 @@ def entity_layer_settings(entities: Iterable[tuple[str, str]]) -> dict[str, Any]
     return {"entities": _entity_pairs(entities, "de la capa de entidades")}
 
 
+def road_layer_settings(roads: Iterable[tuple[str, str]]) -> dict[str, Any]:
+    """Los ajustes de ``des.road_layer`` (spec 017, T26; RF-017-27): las pistas que enseña, ``(código, nombre)`` de cada una, **también la descartada** (sale atenuada): como
+    :func:`entity_layer_settings`. ``ValueError`` si una pista está dos veces o falta su nombre."""
+    return {"entities": _entity_pairs(roads, "de la capa de ejes de pistas")}
+
+
 def settings_entities(settings: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
-    """Las entidades ``(código, nombre)`` que guardan unos ajustes de ``des.declare_constraints`` o
-    de ``des.entity_layer`` (:func:`declare_settings`, :func:`entity_layer_settings`), por orden.
+    """Las entidades ``(código, nombre)`` que guardan unos ajustes de ``des.declare_constraints``, de
+    ``des.entity_layer`` o de ``des.road_layer`` (:func:`declare_settings`, :func:`entity_layer_settings`, :func:`road_layer_settings`), por orden.
     ``ValueError`` si no las llevan como esas listas."""
     what = "los ajustes de la declaración o de la capa de entidades"
     items = _mapping(settings, what).get("entities")
@@ -3110,6 +3148,19 @@ def entity_layer_inputs(names: Iterable[str], detections: Iterable[str] = ()) ->
         found.append(Use(dataset_name(ENTITY_REPORT_TABLE, name), ENTITY_REPORT_ROLE))
     for name in _codes(detections, "las detecciones de acopios de la capa"):
         found.append(Use(dataset_name(STOCKPILES_TABLE, name), STOCKPILES_ROLE))
+    return _unique(found)
+
+
+def road_layer_inputs(names: Iterable[str]) -> tuple[Use, ...]:
+    """Lo que consume ``des.road_layer`` (spec 017, T26; RF-017-27; plan 017 §5.2.3): de **cada pista viva**, por su nombre, su huella ``des_epr_`` (papel :data:`ENTITY_ROLE`: de ella salen las
+    anchuras y la sección), su eje por estaciones ``des_rdx_`` (papel :data:`ROAD_AXIS_ROLE`: la línea con la rasante en su Z) y su informe ``des_prp_`` (papel :data:`ENTITY_REPORT_ROLE`):
+    repetir la pista, también con la misma huella, deja la capa obsoleta con su causa (la capa de entidades hace lo mismo con la huella y el informe). La pista descartada sale en la capa
+    pero no es entrada: sus datos están descartados. Como :func:`entity_layer_inputs` en lo demás."""
+    found: list[Use] = []
+    for name in _codes(names, "las pistas de la capa de ejes"):
+        found.append(Use(dataset_name(ENTITY_TABLE, name), ENTITY_ROLE))
+        found.append(Use(dataset_name(ROAD_AXIS_TABLE, name), ROAD_AXIS_ROLE))
+        found.append(Use(dataset_name(ENTITY_REPORT_TABLE, name), ENTITY_REPORT_ROLE))
     return _unique(found)
 
 
@@ -3861,6 +3912,19 @@ def road_params(code: str, *, mode: str, profile: str, valued: Iterable[str] = (
         read.add(RoadParam.SUPPORTS)
     return _unique([*(entity_key(code, item) for item in RoadParam if item in read),
                     *(road_profile_key(profile, item) for item in _ROAD_PROFILE_READ), *PLATFORM_COMMON_PARAMS])
+
+
+def road_layer_params(roads: Iterable[tuple[str, str]]) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.road_layer`` (``begin_operation(params=…)``; spec 017, T26; RF-017-27): de cada pista **viva**, ``(código, código de su perfil)``, el perfil que usa
+    (``des.road.{e}.profile``) y la **clase normativa** de ese perfil (``des.roadprofile.{p}.class``), por orden de las pistas y sin repetir. La pista **no lee** su clase (no cambia ninguna cifra:
+    :func:`road_params`) y la capa la dice en su campo de clase: leerla aquí deja obsoleta la capa, con su causa, si se cambia la clase de un perfil, y no la pista. ``ValueError`` si un código no
+    es el de una pista o el perfil no es un código de perfil."""
+    found: list[str] = []
+    for code, profile in roads:
+        _typed_code(code, "road", "una pista")
+        found.append(entity_key(code, RoadParam.PROFILE))
+        found.append(road_profile_key(profile, RoadProfileParam.CLASS))
+    return _unique(found)
 
 
 def road_settings(request: RoadRequest, code: str) -> dict[str, Any]:

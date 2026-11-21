@@ -53,9 +53,10 @@ COMMANDS = {ROAD: "geoblender.des_create_road", ACCESS: "geoblender.des_road_acc
             PROPOSE: "geoblender.des_propose_road"}
 PROFILE_COMMAND = "geoblender.des_edit_road_profile"
 OUTPUTS = {ROAD: ("psf", "epr", "rdx", "prp"), ACCESS: ("acc", "acb", "acp", "acz", "prp"), PROPOSE: ("rpl",)}
-# Código → (tipo, almacén, lector, papel, extensión, editable en QGIS) de las seis familias de datos nuevas (plan 017 §5.2.3).
+# Código → (tipo, almacén, lector, papel, extensión, editable en QGIS) de las siete familias de datos nuevas (plan 017 §5.2.3; la capa de ejes de pistas ``rax``, de la T26, es una por versión).
 FAMILIES = {
     "rdx": ("table", "gpkg", "core.gpkg_layer@1", "road_axis", "", False),
+    "rax": ("vector", "gpkg", "core.gpkg_layer@1", "road_layer", "", False),
     "rpl": ("vector", "gpkg", "core.gpkg_layer@1", "route_layer", "", True),
     "acc": ("raster", "rasters", "gis.geotiff@1", "road_access", ".tif", False),
     "acb": ("table", "gpkg", "core.gpkg_layer@1", "access_berms", "", False),
@@ -102,13 +103,14 @@ class OperationTypesTest(unittest.TestCase):
         """RF-017-01, 24, 28 (plan 017 §5.2.3; ADR-0025): tres tipos de operación de la versión, del módulo ``des``,
         versión 1.0, repetibles y reproducibles con 10⁻⁹ relativo, sin grupo acoplado, cada uno con su orden del plan
         §5.3.3, sus familias de datos y sus cifras; van aparte de los de las cuatro specs anteriores, que siguen como
-        estaban."""
+        estaban. **Desde la T26** hay un cuarto, ``des.road_layer`` (la capa de ejes de pistas: repetible y no reproducible;
+        lo prueba ``test_road_layer``): está detrás de los tres y no entra en lo que reproducen."""
         self.assertEqual((provenance.ROAD, provenance.ROAD_ACCESS, provenance.ROAD_PROPOSE), tuple(TYPES.values()))
-        self.assertEqual([t.op_type for t in provenance.ROAD_OPERATION_TYPES], list(TYPES.values()))
-        self.assertEqual(provenance.ROAD_VERSION_TYPES, tuple(TYPES.values()))
+        self.assertEqual([t.op_type for t in provenance.ROAD_OPERATION_TYPES], [*TYPES.values(), provenance.ROAD_LAYER])
+        self.assertEqual(provenance.ROAD_VERSION_TYPES, (*TYPES.values(), provenance.ROAD_LAYER))
         self.assertEqual(provenance.ROAD_REPRODUCIBLE, tuple(TYPES.values()))
         self.assertEqual(provenance.OP_VERSION, "1.0")
-        for declared in provenance.ROAD_OPERATION_TYPES:
+        for declared in provenance.ROAD_OPERATION_TYPES[:3]:
             op_type = declared.op_type
             with self.subTest(op_type=op_type):
                 self.assertIs(provenance.OPERATION_TYPES_BY_NAME[op_type], declared)
@@ -128,7 +130,7 @@ class OperationTypesTest(unittest.TestCase):
         for older in (*provenance.OPERATION_TYPES, *provenance.QUARRY_OPERATION_TYPES,
                       *provenance.ENTITY_OPERATION_TYPES, *provenance.SUPPORTED_OPERATION_TYPES):
             self.assertIs(provenance.OPERATION_TYPES_BY_NAME[older.op_type], older)
-        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5 + 3)
+        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5 + 3 + 1)  # + la capa de ejes de pistas (T26)
 
     def test_the_figures_of_each_type_and_what_fills_on_a_road(self) -> None:
         """RF-017-23, 24, 28, RF-015-15 (ADR-0031 §4): las cifras de cada tipo son las de su tabla; la pista deja también
@@ -158,10 +160,10 @@ class OperationTypesTest(unittest.TestCase):
     def test_the_functions_of_the_definitions_are_checked(self) -> None:
         """RF-008-26, RF-009-11: ``road_operation_defs`` arma las tres definiciones, en su orden, con su función de
         recálculo y de reproducción; ``ValueError`` si sobra o falta alguna."""
-        functions = dict.fromkeys(TYPES.values(), recompute)
+        functions = {**dict.fromkeys(TYPES.values(), recompute), provenance.ROAD_LAYER: recompute}  # y la capa de ejes (T26: se recalcula, no se reproduce)
         replays = dict.fromkeys(TYPES.values(), reproduce)
         built = provenance.road_operation_defs(functions, replays)
-        self.assertEqual([item.op_type for item in built], list(TYPES.values()))
+        self.assertEqual([item.op_type for item in built], [*TYPES.values(), provenance.ROAD_LAYER])
         self.assertTrue(all(item.repeatable and item.scope == "version" for item in built))
         with self.assertRaises(ValueError):
             provenance.road_operation_defs({ROAD: recompute}, replays)
@@ -193,7 +195,7 @@ class DataFamiliesTest(unittest.TestCase):
         R-44 sin importar ``design``; ninguna lleva el papel de una superficie de diseño; las de la pista que ya
         existían (``des_psf_``, ``des_epr_`` y ``des_prp_``) siguen con los suyos."""
         self.assertEqual([family.code for family in provenance.ROAD_DATA_FAMILIES], list(FAMILIES))
-        self.assertEqual((provenance.ROAD_AXIS_TABLE, provenance.ROUTE_LAYER_TABLE, provenance.ACCESS_GRID,
+        self.assertEqual((provenance.ROAD_AXIS_TABLE, provenance.ROAD_LAYER_TABLE, provenance.ROUTE_LAYER_TABLE, provenance.ACCESS_GRID,
                           provenance.ACCESS_BERMS_TABLE, provenance.ACCESS_PLATFORMS_TABLE,
                           provenance.ACCESS_ZONES_TABLE), tuple(FAMILIES))
         for family in provenance.ROAD_DATA_FAMILIES:
@@ -202,22 +204,22 @@ class DataFamiliesTest(unittest.TestCase):
                 self.assertIs(provenance.FAMILIES_BY_CODE[family.code], family)
                 self.assertEqual((family.kind, str(family.store), family.reader, family.role, family.extension),
                                  (kind, store_name, reader, role, extension))
-                self.assertTrue(family.named)
+                self.assertEqual(family.named, family.code != "rax")  # la capa de ejes de pistas es una por versión (T26)
                 self.assertEqual(family.prefix, f"des_{family.code}_")
                 self.assertTrue(family.label.strip())
         roles = [family.role for family in provenance.ROAD_DATA_FAMILIES]
-        self.assertEqual(len(set(roles)), 6)
+        self.assertEqual(len(set(roles)), 7)
         older = {family.role for family in (*provenance.FAMILIES, *provenance.QUARRY_FAMILIES,
                                             *provenance.ENTITY_FAMILIES, *provenance.SUPPORTED_FAMILIES)}
         self.assertEqual(set(roles) & older, set())
         self.assertNotIn(provenance.DESIGN_SURFACE_ROLE, roles)
-        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 5 + 10 + 5 + 8 + 6)  # 013, 014, 015, 016 y 017
+        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 5 + 10 + 5 + 8 + 7)  # 013, 014, 015, 016 y 017
 
     def test_the_roles_of_what_the_operations_consume_and_leave(self) -> None:
         """RF-017-01, 24, 25, 28 (plan 017 §5.2.3): el papel del eje por estaciones de otra pista, de la capa propuesta, de
         lo alcanzable y de las zonas «requiere acceso» (``ROAD_ACCESS_ZONES_ROLE``, el que importará ``reserves``: nada de
         ``design.entities``); y los de lo que consume la accesibilidad (sus entradas, la superficie final de la cantera)."""
-        self.assertEqual((provenance.ROAD_AXIS_ROLE, provenance.ROUTE_LAYER_ROLE, provenance.ROAD_ACCESS_ROLE,
+        self.assertEqual((provenance.ROAD_AXIS_ROLE, provenance.ROAD_LAYER_ROLE, provenance.ROUTE_LAYER_ROLE, provenance.ROAD_ACCESS_ROLE,
                           provenance.ROAD_ACCESS_BERMS_ROLE, provenance.ROAD_ACCESS_PLATFORMS_ROLE,
                           provenance.ROAD_ACCESS_ZONES_ROLE),
                          tuple(item[3] for item in FAMILIES.values()))
@@ -238,10 +240,11 @@ class DataFamiliesTest(unittest.TestCase):
         self.assertEqual(provenance.dataset_locator("rpl", "Pista 1", "V10"), "des_rpl_pista_1_v10")
         for code, (kind, _store, reader, role, extension, editable) in FAMILIES.items():
             with self.subTest(family=code):
-                found = provenance.dataset_spec(code, "Pista 1", "V03", crs_epsg=25830)
-                expected = f"des_{code}_pista_1_v03"
+                named = code != "rax"  # una por versión (T26): sin el nombre de una operación
+                found = provenance.dataset_spec(code, "Pista 1" if named else "", "V03", crs_epsg=25830)
+                expected = f"des_{code}_pista_1_v03" if named else f"des_{code}_v03"
                 self.assertEqual((found.name, found.module, found.kind, found.reader, found.role, found.crs_epsg),
-                                 (f"des_{code}_pista_1", "des", kind, reader, role, 25830))
+                                 (f"des_{code}_pista_1" if named else f"des_{code}", "des", kind, reader, role, 25830))
                 self.assertEqual(found.locator, f"rasters/{expected}{extension}" if extension else expected)
                 self.assertIsInstance(found, datasets.DatasetSpec)
                 self.assertEqual(found.qgis_editable, editable)
@@ -674,11 +677,11 @@ class ClosedListsTest(unittest.TestCase):
 
     def test_recomputed_lists_the_three_types_after_the_016(self) -> None:
         """RF-008-26, RF-017-01: ``RECOMPUTED`` (lo que repite «Recalcular lo obsoleto») lleva los tres tipos de la 017
-        detrás de los de la 016, sin cambiar lo que ya llevaba ni repetir ninguno."""
+        detrás de los de la 016 y, **desde la T26**, la capa de ejes de pistas al final, sin cambiar lo que ya llevaba ni repetir ninguno."""
         for op_type in TYPES.values():
             self.assertIn(op_type, store.RECOMPUTED)
-        self.assertEqual(store.RECOMPUTED[-3:], tuple(TYPES.values()))
-        self.assertEqual(store.RECOMPUTED[-3 - len(provenance.SUPPORTED_TYPES):-3], provenance.SUPPORTED_TYPES)
+        self.assertEqual(store.RECOMPUTED[-4:], (*TYPES.values(), provenance.ROAD_LAYER))
+        self.assertEqual(store.RECOMPUTED[-4 - len(provenance.SUPPORTED_TYPES):-4], provenance.SUPPORTED_TYPES)
         self.assertEqual(len(set(store.RECOMPUTED)), len(store.RECOMPUTED))
 
     def test_recompute_run_has_a_branch_for_each_type_and_none_falls_to_another_design(self) -> None:

@@ -92,7 +92,8 @@ class RecomputeCase(CreateCase):
 
     @classmethod
     def entity_definitions(cls) -> tuple[Any, ...]:
-        return pop.real_definitions()
+        """Los tipos de las entidades con sus funciones reales y, desde la T26, la capa de ejes de pistas (``des.road_layer``: la que encadena ``after_entity_change`` cuando la versión tiene pistas), con la suya."""
+        return (*pop.real_definitions(), provenance.operation_def(provenance.ROAD_LAYER, recompute_function))
 
     @classmethod
     def build_chain(cls) -> dict[str, Any]:

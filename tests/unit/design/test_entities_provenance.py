@@ -161,7 +161,7 @@ class EntityDatasetsTest(unittest.TestCase):
                                  (kind, store, reader, role, extension, named))
                 self.assertEqual(family.prefix, f"des_{family.code}_")
                 self.assertTrue(family.label.strip())
-        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 34)  # y las ocho de la 016 (T03) y las seis de la 017 (T03)
+        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 35)  # y las ocho de la 016 (T03) y las siete de la 017 (T03 y T26)
         self.assertEqual(dict(provenance.FAMILIES_BY_CODE),
                          {family.code: family for family in (
                              *provenance.FAMILIES, *provenance.QUARRY_FAMILIES,

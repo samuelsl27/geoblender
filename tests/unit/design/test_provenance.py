@@ -1219,7 +1219,7 @@ class QuarryDatasetsTest(unittest.TestCase):
                 self.assertEqual(family.prefix, f"des_{family.code}_")
                 self.assertEqual(family.extension, ".tif" if kind == "raster" else "")
                 self.assertTrue(family.label.strip())
-        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 34)  # con las cinco de la 015 (T04), las ocho de la 016 y las seis de la 017 (T03)
+        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 35)  # con las cinco de la 015 (T04), las ocho de la 016 y las siete de la 017 (T03 y T26)
 
     def test_names_locators_and_specs(self) -> None:
         """RF-008-17, D-34 de la 009: el nombre ``des_<familia>_<nombre>`` y la ubicación con el

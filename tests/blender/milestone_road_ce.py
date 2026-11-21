@@ -329,7 +329,7 @@ class RoadCETest(unittest.TestCase):
     def test_b_e5_changing_the_target_platform_makes_the_four_stale_with_the_cause_and_the_modal_repeats_them_in_order(self) -> None:
         """E5, RF-015-16, RF-017-03, D-13 (T24b), CE-017-08 (el modal real con las funciones que registra ``bl``): la cota de ``P1`` pasa de 112 a 111,6 m: ella, la pista, el ramal y el relleno
         quedan **obsoletos con su causa** (el parámetro) y «Recalcular lo obsoleto» los rehace **en orden de dependencia** (``P1`` antes que la pista, la pista antes que el ramal y que el
-        relleno) más lo que sigue (la capa de entidades); **la pista acaba a la cota nueva** (la cota de fin que derivó de ``P1`` la sigue) y nada queda obsoleto."""
+        relleno) más lo que sigue (la capa de entidades y, desde la T26, la de ejes de pistas); **la pista acaba a la cota nueva** (la cota de fin que derivó de ``P1`` la sigue) y nada queda obsoleto."""
         key = "des.platform.plt_001.start_level_m"
         before = {code: self.current(code) for code in ("PLT-001", "RDW-001", "RDW-002", "PLT-002")}
         self.change(key, NEW_M)
@@ -340,7 +340,7 @@ class RoadCETest(unittest.TestCase):
         self.assertEqual(operator.result.cancelled, False)
         self.assertEqual(self.made_names(operator, "failed"), [], "ninguna unidad falla")
         done = self.made_names(operator, "done")
-        self.assertEqual([name for name in done if name != "des.entity_layer"], [PLATFORM, FIRST, SECOND, FILL])
+        self.assertEqual([name for name in done if name not in ("des.entity_layer", "des.road_layer")], [PLATFORM, FIRST, SECOND, FILL])  # y las capas (la de ejes de pistas, T26)
         self.assertEqual(set(self.states().values()), {"current"})
         _stations, levels = self.axis_levels(FIRST)
         self.assertAlmostEqual(float(levels[-1]), NEW_M, places=9)
@@ -455,6 +455,60 @@ class RoadCETest(unittest.TestCase):
         self.assertTrue(figures and all(check.same for check in figures), [check for check in figures if not check.same])
         self.assertEqual([note for note in report.not_reproducible if note.operation_uid in roads], [])
         self.assertEqual((self.rows("SELECT count(*) FROM gb_dataset"), self.rows("SELECT count(*) FROM gb_operation")), before, "reproducir no escribe")
+
+    # --- La capa de ejes de pistas (T26) -----------------------------------------------------------
+
+    def roads_layer(self) -> tuple[dict[str, tuple[str, str]], dict[str, tuple[str, str]], bool]:
+        """Lo que dice la capa de ejes de V01 (código → nombre y estado), lo que dice el registro de las pistas calculadas y si la capa está marcada (``road_layer_pending``)."""
+        layer = _module("design.road_layer")
+        table = layer.road_layer_table(self.v01.code)
+        shown = {code: (name, state) for code, name, state in self.rows(f'SELECT code, name, state FROM "{table}"')}
+        registry = self.entities.registry(self.project, self.v01.uid)
+        wanted = {entry.record.code: (entry.record.name, str(entry.record.state)) for entry in registry if entry.record.code.startswith("RDW") and entry.operation_uid is not None}
+        with self.project.read() as conn:
+            return shown, wanted, bool(layer.road_layer_pending(self.project, conn, self.v01.uid))
+
+    def test_ga_the_roads_layer_says_what_the_registry_says_after_changing_a_parameter_and_after_recomputing(self) -> None:
+        """T26, RF-017-27, RF-015-27 (hallazgo D-1 de la 016 con la pista), con lo que registra la extensión (``des.road_layer``: su función de recalcular, lo que sigue a las órdenes y lo que sigue a
+        «Recalcular lo obsoleto» y a «Cambiar parámetro…»): las órdenes de pistas son de la fase G (aquí las pistas se crean con el dominio y no encadenan lo que sigue), así que la capa de ejes —que
+        escribió lo que sigue a «Plataforma…»— está atrasada: **lo que registra ``bl`` tras «Recalcular lo obsoleto»** (``_layers_after_recompute``, con pistas vivas) la pone al día y dice lo que el
+        registro; **«Cambiar parámetro…» (la orden real) con un parámetro de una pista** (el presupuesto de estados) la deja diciendo «obsoleta» al terminar lo que sigue; y «Recalcular lo
+        obsoleto» (el modal) rehace la pista y la capa dice «al día». ``des.road_layer`` es de ``RECOMPUTED`` y no se reproduce."""
+        dprov = self.dprov
+        self.assertIn(dprov.ROAD_LAYER, _module("design.store").RECOMPUTED)
+        self.assertIn(dprov.ROAD_LAYER, {definition.op_type for definition in self.des_ops.OPERATION_DEFS})
+        self.assertNotIn(dprov.ROAD_LAYER, self.des_ops.REPRODUCE)
+        self.assertEqual(bpy.ops.geoblender.core_set_active_version(version_uid=self.v01.uid), {"FINISHED"})
+        work = self.des_ops._layers_after_recompute(self.project)  # lo que hace ``bl`` al terminar «Recalcular lo obsoleto»
+        self.assertIsNotNone(work, "con pistas vivas se mira la capa")
+        _last(work)
+        shown, wanted, pending = self.roads_layer()
+        self.assertGreaterEqual(len(wanted), 3)
+        self.assertEqual((shown, pending), (wanted, False))
+        self.assertEqual({state for _name, state in shown.values()}, {"current"})
+        code = sorted(wanted)[-1]
+        self.assertEqual(bpy.ops.geoblender.core_set_parameter(
+            "EXEC_DEFAULT", key=f"des.road.{code.lower().replace('-', '_')}.search_budget", value="4999999", scope="VERSION", source="Criterio de la prueba de la T26", decided_by=PERSON,
+            reason=REASON), {"FINISHED"})
+        refresh = [op for op in bpy.context.window.modal_operators if isinstance(op, self.des_ops.GEOBLENDER_OT_des_entity_refresh) and getattr(op, "_steps", None) is not None]
+        self.assertEqual(len(refresh), 1, "«Cambiar parámetro…» lanza lo que sigue")
+        for _ in range(MAX_TICKS):  # lo que sigue al cambio (la declaración, las máscaras y las capas) por pasos, como el modal (los temporizadores no corren en ``blender -b``)
+            if refresh[0].modal(bpy.context, TIMER) != {"RUNNING_MODAL"}:
+                break
+        else:
+            self.fail("lo que sigue a cambiar el parámetro no termina")
+        shown, wanted, pending = self.roads_layer()
+        self.assertEqual(wanted[code][1], "stale", "la pista queda obsoleta por el parámetro")
+        self.assertEqual((shown, pending), (wanted, False), "lo que sigue al cambio pone la capa al día al instante")
+        operator = self.recompute()
+        self.assertEqual(self.made_names(operator, "failed"), [])
+        self.assertIn(self.names_of(code), self.made_names(operator, "done"))
+        shown, wanted, pending = self.roads_layer()
+        self.assertEqual(wanted[code][1], "current")
+        self.assertEqual((shown, pending), (wanted, False))
+
+    def names_of(self, code: str) -> str:
+        return str(self.entities.registry(self.project, self.v01.uid).get(code).record.name)
 
     # --- E5: descartar la pista principal ----------------------------------------------------------
 

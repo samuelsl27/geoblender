@@ -177,6 +177,8 @@ PENDING_015_API: frozenset[str] = frozenset({
     "access_settings", "access_run",
     # La 017, T17b (la petición que repiten los ajustes y los parámetros de una accesibilidad, al recalcular y reproducir; lo demás de la T17b es de ``design.access_store``, un módulo pendiente):
     "access_request",
+    # La 017, T26 (la capa de ejes de pistas: ``has_road_operation``, ``road_layer_inputs`` y ``road_layer_params``; lo demás de la T26 es de ``design.road_layer``, un módulo pendiente):
+    "has_road_operation", "road_layer_inputs", "road_layer_params",
     # La 017, T19 (los ajustes de la pista; lo demás de la T19 es de ``design.road_store``, un módulo pendiente) y T22 (la petición que repiten los ajustes y los parámetros de la pista, al recalcular y reproducir):
     "road_settings", "road_request",
     # La 017, T20b («Calcular» una pista: ``steps.road_run`` y el resumen ``preview.RoadSummary``; lo demás de la T20b es de ``design.road_store``, un módulo pendiente):
@@ -188,7 +190,7 @@ PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 017, T04 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):
     "design.road_profiles", "design.road_model", "design.road_net", "design.road_route",
     "design.road_axis", "design.road_gradient", "design.road_section", "design.road_engrave",
-    "design.road_access", "design.access_store", "design.road_store",
+    "design.road_access", "design.access_store", "design.road_store", "design.road_layer",
 })
 
 

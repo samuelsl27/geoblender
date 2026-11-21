@@ -47,7 +47,8 @@ el nombre de su dato, y los parámetros congelados de cada una; el decisor, la f
 versión, de los ajustes de la operación). **La capa de entidades** (``des.entity_layer``, spec 015, T30) **no se
 reproduce**: su contenido incluye el estado de cada entidad (al día, obsoleta, descartada, «apoyo retirado»), que
 deduce el grafo del proyecto y no se reproduce sin él; es una vista regenerable (como ``des.refit``, spec 010) y, en
-una revisión congelada, se toma lo congelado (``core.versions.reproduce`` la da por no reproducible). **La detección de
+una revisión congelada, se toma lo congelado (``core.versions.reproduce`` la da por no reproducible). **La capa de ejes de pistas** (``des.road_layer``, spec 017, T26) **tampoco**, por
+lo mismo (incluye el estado de cada pista). **La detección de
 acopios** (spec 016, T14; RF-016-10, RF-009-11): :func:`reproduce_stockpile_detect` (con el cálculo que comparte con el
 proyecto, ``stockpile_store.detection_compute_steps`` sobre el mismo ``StockpileJob``: la capa de marcas, la superficie, las
 bases propias y las máscaras congeladas por su nombre y su papel, y los parámetros de la entidad y el umbral de la huella

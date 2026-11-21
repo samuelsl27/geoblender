@@ -1737,6 +1737,29 @@ class DesignWriter:
         self._vectors[provenance.ENTITY_MAP_TABLE] = _Declared(provenance.ENTITY_MAP_TABLE, planned, rows)
         return planned
 
+    def road_layer_steps(self, rows: Iterable[Any]) -> Generator[None, None, DatasetSpec]:
+        """Prepara la capa de ejes de pistas de la versión (``rax``; spec 017, T26; RF-017-27, D-19) con ``rows`` (una por pista **calculada**: la capa se reescribe **entera**,
+        ``design.road_layer.write_road_layer``), **sin registrar nada**: una capa de líneas con Z del GeoPackage del proyecto, no editable en QGIS (RF-008-56) y con su estilo por clase
+        (``commit`` lo escribe en su transacción), de la que la operación calcula el hash al registrarla. Devuelve su ``DatasetSpec`` en ``StopIteration.value``. Se rechaza al llamar, como
+        :meth:`entity_layer_steps` (``ValueError``; ``TypeError`` si una fila no es una :class:`~.road_layer.RoadLayerRow`); dos filas con el mismo código las rechaza
+        :func:`~.road_layer.write_road_layer` al confirmar, sin escribir nada."""
+        from .road_layer import RoadLayerRow  # al usarlo: ``road_layer`` importa este módulo
+
+        self._produces(provenance.ROAD_LAYER_TABLE, "vector")
+        chosen = tuple(rows)
+        for item in chosen:
+            if not isinstance(item, RoadLayerRow):
+                raise TypeError(f"una fila de la capa de ejes de pistas es una RoadLayerRow, no {item!r}")
+        return self._road_layer_steps(chosen)
+
+    def _road_layer_steps(self, rows: tuple[Any, ...]) -> Generator[None, None, DatasetSpec]:
+        planned = provenance.dataset_spec(provenance.ROAD_LAYER_TABLE, "", self.version_code, crs_epsg=self.crs.epsg)
+        with self.project.read() as conn:
+            self._check_place(conn, planned)
+        yield
+        self._vectors[provenance.ROAD_LAYER_TABLE] = _Declared(provenance.ROAD_LAYER_TABLE, planned, rows)
+        return planned
+
     @property
     def specs(self) -> tuple[DatasetSpec, ...]:
         """Las salidas preparadas, en el orden de su tipo (las de una familia con partes, en el
@@ -1794,9 +1817,14 @@ class DesignWriter:
         insert_rows(conn, spec.locator, _names(columns), table.rows)
 
     def _write_declared(self, conn: sqlite3.Connection, declared: _Declared) -> None:
-        """Escribe la capa de versión ``declared`` entera: las declaradas (``write_declared``) o la de entidades
-        (``write_entity_layer``)."""
+        """Escribe la capa de versión ``declared`` entera: las declaradas (``write_declared``), la de entidades
+        (``write_entity_layer``) o la de ejes de pistas (``write_road_layer``, spec 017, T26)."""
         self._check_place(conn, declared.spec)
+        if declared.family == provenance.ROAD_LAYER_TABLE:
+            from .road_layer import write_road_layer  # al usarlo: ``road_layer`` importa este módulo
+
+            write_road_layer(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
+            return
         write = write_entity_layer if declared.family == provenance.ENTITY_MAP_TABLE else write_declared
         write(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
 
@@ -2048,8 +2076,8 @@ entidades (T17; ``design.entity_store.recompute_declaration``) y la capa de enti
 ``design.entity_store.recompute_entity_layer``) y, de la 016 (T03), los cuatro tipos de entidad
 (:data:`~.provenance.SUPPORTED_TYPES`: la detección de acopios, de versión y **de proyecto** —T04, D-15—, su retirada, el
 contrafuerte y el cuerpo apoyado) y, de la 017 (T03), la pista, la accesibilidad de las pistas y «Proponer el trazado»
-(:data:`~.provenance.ROAD_VERSION_TYPES`; la accesibilidad se repite desde la T17b, ``design.access_store.recompute_access``, y la pista desde la T22,
-``design.road_store.recompute_road``; la propuesta, **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace). La detección de acopios se repite desde la T14
+(:data:`~.provenance.ROAD_VERSION_TYPES`; la accesibilidad se repite desde la T17b, ``design.access_store.recompute_access``, la pista desde la T22,
+``design.road_store.recompute_road``, y la capa de ejes de pistas desde la T26, ``design.road_layer.recompute_road_layer``; la propuesta, **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace). La detección de acopios se repite desde la T14
 (``design.stockpile_store.recompute_detection``, en el proyecto o en su versión) y su retirada desde la T20
 (``design.supported_store.recompute_removal``) y el cuerpo apoyado desde la T25 (``design.supported_store.recompute_body``); el otro,
 **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace
@@ -3928,7 +3956,7 @@ _ROAD_TASKS: Mapping[str, str] = MappingProxyType({provenance.ROAD_PROPOSE: "pro
 """Qué tarea de la 017 da su cálculo a cada tipo que aún no lo tiene (el aviso de ``recompute_run``; la accesibilidad lo tiene desde la T17b y la pista, desde la T22)."""
 _NO_REST_TYPES = frozenset({provenance.ENVELOPE, provenance.EXCAVATION_AREA, provenance.DECLARE_CONSTRAINTS,
                             provenance.ENTITY_LAYER, *provenance.STOCKPILE_DETECT_TYPES, provenance.ROAD_ACCESS,
-                            provenance.ROAD_PROPOSE})
+                            provenance.ROAD_PROPOSE, provenance.ROAD_LAYER})
 """Los tipos que no dejan una superficie en la que apoyar nada (no se apoyan en un acopio): ``recompute_run`` no les pregunta si perdieron su apoyo."""
 
 
@@ -3991,7 +4019,7 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
     if released and request.op_type in (provenance.ENVELOPE, provenance.EXCAVATION_AREA,
                                         provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER,
                                         *provenance.STOCKPILE_DETECT_TYPES, provenance.ROAD_ACCESS,
-                                        provenance.ROAD_PROPOSE):
+                                        provenance.ROAD_PROPOSE, provenance.ROAD_LAYER):
         raise ValueError(f"«{request.op_type}» no deja una superficie que se apoye en una entidad: no da por "
                          "bueno ningún apoyo")
     _refuse_retired_support(project, request, released)
@@ -4060,6 +4088,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import road_store  # al usarlo: road_store importa este módulo
 
         return road_store.recompute_road(request, budget_s=budget_s, released=released)
+    if request.op_type == provenance.ROAD_LAYER:
+        from . import road_layer  # al usarlo: road_layer importa este módulo
+
+        return road_layer.recompute_road_layer(request, budget_s=budget_s)
     if request.op_type in provenance.ROAD_VERSION_TYPES:
         # El otro tipo de la 017 que aún no tiene cálculo (T03): «Proponer el trazado», T27 (la accesibilidad es de la T17b y la pista, de la T22,
         # arriba). Nunca cae en un escalonado.

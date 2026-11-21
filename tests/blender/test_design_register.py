@@ -51,7 +51,7 @@ from tests.support.trees import temp_folder
 
 ENTRY = "013"
 ENTRY_TITLE = ("Envelopes and benching", "Envolventes y escalonado")
-COUNTS = {"parámetros": 9, "familias": 145, "operaciones": 20, "grupos": 0, "cifras": 98}
+COUNTS = {"parámetros": 9, "familias": 145, "operaciones": 21, "grupos": 0, "cifras": 98}
 """Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 + 21 + 69 + 49 familias (013, 015, 016 y 017; la 20.ª de la 015,
 ``discarded``, es de la T25 y la 21.ª, ``stockpile``, de la T21 de la 016; las 69 de la 016 son las de sus cuatro tipos: 25 + 13 + 14 + 17;
 las 49 de la 017, las de la pista, la accesibilidad y el perfil de pista: 26 + 8 + 15), 3 + 5 + 3 + 5 + 4 tipos de
@@ -80,12 +80,13 @@ COMMANDS_016: dict[str, str] = {"des.stockpile_detect": "geoblender.des_detect_s
 """La orden de cada uno (las definitivas de la T35: se conservan los nombres del catálogo, ``des_add_buttress``, y la
 «Unidad por espesor sobre su apoyo…» pasa a ser ``des_create_body``). **Todas están en el catálogo** desde la T35 (la entrada 016, entregada),
 cada una con su clase real."""
-ROAD_TYPES = ("des.road", "des.road_access", "des.road_propose")
-"""Los tres tipos de la 017 (T03): de la versión, repetibles y reproducibles, sin comportamiento todavía."""
+ROAD_TYPES = ("des.road", "des.road_access", "des.road_propose", "des.road_layer")
+"""Los cuatro tipos de la 017 (T03 y T26): de la versión y repetibles; los tres primeros, reproducibles (sin comportamiento todavía el último, «Proponer el trazado»); **la capa de ejes de pistas
+(``des.road_layer``, T26-a) no se reproduce**: incluye el estado de cada pista, que deduce el grafo (como la capa de entidades)."""
 ROAD_PROFILES_TYPE = "des.edit_road_profiles"
 """La edición de los perfiles de pista (T03): de proyecto y sin repetición, como la de los perfiles de banco."""
 COMMANDS_017: dict[str, str] = {"des.road": "geoblender.des_create_road", "des.road_access": "geoblender.des_road_access",
-                                "des.road_propose": "geoblender.des_propose_road",
+                                "des.road_propose": "geoblender.des_propose_road", "des.road_layer": "geoblender.des_create_road",
                                 "des.edit_road_profiles": "geoblender.des_edit_road_profile"}
 """La orden de cada uno (plan 017 §5.3.3). **Aún no están en el catálogo** (las tres provisionales de «Pistas y entidades» las sustituyen las
 tareas de la fase G: D-20): ``OperationDef.commands`` solo comprueba su forma, y la T29 a la T33 las dan de alta y las quitan de
@@ -402,8 +403,8 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual(sorted(des_ops.ENTITY_REPRODUCE), sorted(ENTITY_TYPES[:2]))
         self.assertEqual(sorted(des_ops.SUPPORTED_RECOMPUTE), sorted(SUPPORTED_TYPES))  # los cinco de la 016 (T03, T04)
         self.assertEqual(sorted(des_ops.SUPPORTED_REPRODUCE), sorted(SUPPORTED_TYPES))
-        self.assertEqual(sorted(des_ops.ROAD_RECOMPUTE), sorted(ROAD_TYPES))  # los tres de la 017 (T03)
-        self.assertEqual(sorted(des_ops.ROAD_REPRODUCE), sorted(ROAD_TYPES))
+        self.assertEqual(sorted(des_ops.ROAD_RECOMPUTE), sorted(ROAD_TYPES))  # los cuatro de la 017 (T03 y T26)
+        self.assertEqual(sorted(des_ops.ROAD_REPRODUCE), sorted(ROAD_TYPES[:3]))  # la capa de ejes no se reproduce
         recomputed = {**des_ops.RECOMPUTE, **des_ops.QUARRY_RECOMPUTE, **des_ops.ENTITY_RECOMPUTE,
                       **des_ops.SUPPORTED_RECOMPUTE, **des_ops.ROAD_RECOMPUTE}
         reproduced = {**des_ops.REPRODUCE, **des_ops.QUARRY_REPRODUCE, **des_ops.ENTITY_REPRODUCE,
@@ -494,8 +495,10 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertFalse(m.commands.is_provisional(platform_class))
         self.assertTrue(m.commands.is_available(PLATFORM_COMMAND))  # la entrada la entrega la T31
         self.assertNotIn("geoblender.des_draw_platform", self.cat.commands)  # la clave marcador, sustituida
-        self.assertEqual({idname: launched[idname] for idname in COMMANDS_017.values()},
-                         {idname: [op_type] for op_type, idname in COMMANDS_017.items()})  # una orden por tipo de la 017 (T03)
+        by_road_command: dict[str, list[str]] = {}
+        for op_type, idname in COMMANDS_017.items():  # una orden por tipo de la 017 (T03); «Pista…» lanza también la capa de ejes de pistas (T26, como «Plataforma…» la de entidades)
+            by_road_command.setdefault(idname, []).append(op_type)
+        self.assertEqual({idname: launched[idname] for idname in COMMANDS_017.values()}, by_road_command)
         for idname in sorted(set(launched) - COMMANDS_014 - {PLATFORM_COMMAND} - set(COMMANDS_016.values())
                              - set(COMMANDS_017.values())):
             with self.subTest(orden=idname):

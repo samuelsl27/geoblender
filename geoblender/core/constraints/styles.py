@@ -44,6 +44,13 @@ de notas (``Notes``) la nota de la capa, que QGIS enseña en el panel de capas, 
 RF-008-56 (``qgis_editable=False``: si se edita, se bloquea y no se compila con ella). Sin las categorías de
 campos (``Fields``) ni de las demás: el resto de la capa (sus listas de valores, alias) queda como está.
 
+**La capa de ejes de pistas** (spec 017, T26; RF-017-27, D-19): ``des_rax_<vNN>`` (``design.road_layer``) es de **una versión**, no editable a mano y se
+abre en QGIS con su estilo **por clase** (:class:`VersionLayer` ``ROADS``): líneas, con una categoría por cada clase normativa (el campo ``class_name``)
+y por estado —la descartada, atenuada; la de «apoyo retirado», marcada— y «otra clase» para la que el estilo no conoce, sobre los campos de
+:data:`ROAD_FIELDS`. **Las clases son abiertas** (el texto de un perfil de pista): salen de la propia tabla al escribir el estilo
+(:func:`insert_version_styles`) y, si aparece una clase nueva, **el estilo que escribió Geoblender se rehace** con ella (lo reconoce por su nombre,
+:data:`ROAD_STYLE_NAME`); el que guardó una persona desde QGIS, con otro nombre, no se toca nunca.
+
 **Una operación de versión no escribe ``core_layer_styles`` como salida** (RF-009-05: sus salidas son de su
 versión; el dato es del proyecto, de la operación de la 012 que lo creó): :func:`write_version_styles` escribe
 la fila de ``layer_styles`` **en la transacción de la operación que escribe la capa** (si falla, no queda
@@ -93,6 +100,12 @@ __all__ = [
     "FILL_ALPHA",
     "MARK_COLOR",
     "QGIS_VERSION",
+    "ROAD_CLASS_COLORS",
+    "ROAD_FIELDS",
+    "ROAD_LAYER",
+    "ROAD_OTHER_COLOR",
+    "ROAD_OTHER_LABEL",
+    "ROAD_STYLE_NAME",
     "STYLES_DATASET",
     "STYLES_TABLE",
     "StyleRow",
@@ -149,6 +162,28 @@ DECLARED_STYLE_NAME = "Restricciones declaradas"
 """El nombre del estilo de las declaradas (como mucho 30 caracteres, ``TEXT(30)`` de QGIS)."""
 ENTITY_STYLE_NAME = "Entidades de diseño"
 """El nombre del estilo de la capa de entidades."""
+ROAD_LAYER = "des_rax"
+"""El nombre del dato de la capa de ejes de pistas de la versión (``des_rax_<vNN>`` es su ubicación; spec 017, T26): el mismo que ``design.provenance.dataset_name("rax")`` (``core`` no importa
+``design``; una prueba lo comprueba)."""
+ROAD_STYLE_NAME = "Ejes de pistas"
+"""El nombre del estilo de la capa de ejes de pistas (como mucho 30 caracteres): por él se reconoce el que escribió Geoblender."""
+ROAD_FIELDS: tuple[str, ...] = ("code", "name", "class_name", "state", "profile")
+"""Los campos de la capa de ejes de pistas que el estilo conoce (el contrato con la tabla ``des_rax_<vNN>`` de ``design``, T26): el código de la pista, su nombre, su clase normativa (``class_name``: por
+ella se pinta), su estado (``EntityState``) y su perfil. La tabla lleva más (las cifras): el estilo marca de solo lectura los que la tabla tiene de verdad."""
+ROAD_OTHER_LABEL = "Otra clase"
+"""El nombre de las pistas de una clase que el estilo no conoce (una clase que apareció después de escribirlo)."""
+ROAD_OTHER_COLOR = (110, 110, 110)
+"""Su color."""
+ROAD_CLASS_COLORS: tuple[tuple[int, int, int], ...] = (
+    (0, 114, 178), (213, 94, 0), (0, 158, 115), (204, 121, 167), (230, 159, 0), (86, 180, 233))
+"""El color de cada clase, por su orden (la paleta de Okabe e Ito, legible con daltonismo); con más clases que colores, vuelve al primero."""
+_ROAD_DESCRIPTION = ("Geoblender: un color por clase normativa de pista; la descartada, atenuada, y la de apoyo retirado, marcada "
+                     "(no se edita a mano)")
+_ROAD_NOTE = ("Ejes de las pistas de esta versión (Geoblender): líneas con la rasante en su Z, que Geoblender regenera tras cada orden de "
+              "pistas; no se edita a mano, se cambian en la pista. Si la edita, Geoblender la bloquea.")
+_ROAD_LINE_MM = 0.9
+_ROAD_FADED_MM = 0.4
+_ROAD_MARK_MM = 1.4
 _DECLARED_DESCRIPTION = ("Geoblender: el estilo por tipo de las restricciones del proyecto, para las que "
                          "declaran las entidades de diseño (no se editan a mano)")
 _ENTITY_DESCRIPTION = ("Geoblender: un color por tipo de entidad de diseño; la descartada, atenuada, y la de "
@@ -333,25 +368,28 @@ def _qml(table: str) -> str:
 
 class VersionLayer(StrEnum):
     """Las capas de una versión que tienen estilo: las restricciones que declaran las entidades
-    (``des_decl_<vNN>``) y la capa de entidades (``des_enl_<vNN>``)."""
+    (``des_decl_<vNN>``), la capa de entidades (``des_enl_<vNN>``) y, de la 017 (T26), la capa de ejes de pistas
+    (``des_rax_<vNN>``)."""
 
     DECLARED = "declared"
     ENTITIES = "entities"
+    ROADS = "roads"
 
 
-_VERSION_LAYER = re.compile(rf"(?P<layer>{DECLARED_LAYER}|{ENTITY_LAYER})_v[0-9]+")
-_TABLE_INDEX = {VersionLayer.DECLARED: 4, VersionLayer.ENTITIES: 5}
+_VERSION_LAYER = re.compile(rf"(?P<layer>{DECLARED_LAYER}|{ENTITY_LAYER}|{ROAD_LAYER})_v[0-9]+")
+_LAYER_OF_NAME = {DECLARED_LAYER: VersionLayer.DECLARED, ENTITY_LAYER: VersionLayer.ENTITIES, ROAD_LAYER: VersionLayer.ROADS}
+_TABLE_INDEX = {VersionLayer.DECLARED: 4, VersionLayer.ENTITIES: 5, VersionLayer.ROADS: 6}
 """El número de capa de las claves de regla de cada capa de versión (1 a 3: las del proyecto)."""
 
 
 def version_layer(table: object) -> VersionLayer | None:
-    """La capa de versión que es la tabla ``table`` (``des_decl_v01`` o ``des_enl_v12``: la ubicación
-    de ``des_decl`` y ``des_enl`` con el código de la versión, ``core.versions.model.version_locator``) o
+    """La capa de versión que es la tabla ``table`` (``des_decl_v01``, ``des_enl_v12`` o ``des_rax_v03``: la ubicación
+    de ``des_decl``, ``des_enl`` y ``des_rax`` con el código de la versión, ``core.versions.model.version_locator``) o
     ``None`` si no es de ninguna (lo que no es un texto, tampoco)."""
     found = _VERSION_LAYER.fullmatch(table) if isinstance(table, str) else None
     if found is None:
         return None
-    return VersionLayer.DECLARED if found["layer"] == DECLARED_LAYER else VersionLayer.ENTITIES
+    return _LAYER_OF_NAME[found["layer"]]
 
 
 def _attr(text: str) -> str:
@@ -423,6 +461,43 @@ def _entity_rules() -> tuple[str, str]:
     return "\n".join(rules), "\n".join(symbols)
 
 
+def _road_symbol(index: int, rgb: tuple[int, int, int], *, alpha: int, style: str, width_mm: float) -> str:
+    return _symbol(index, "line", "SimpleLine", (
+        ("capstyle", "round"), ("joinstyle", "round"), ("line_color", _color(rgb, alpha)), ("line_style", style),
+        ("line_width", f"{width_mm:g}"), ("line_width_unit", "MM")))
+
+
+def _road_rules(classes: Iterable[str]) -> tuple[str, str]:
+    """Las reglas (de cada clase de ``classes`` —por orden, sin repetir— y de «otra clase», cada una normal, descartada y con el
+    apoyo retirado) y los símbolos de la capa de ejes de pistas (spec 017, T26): **categorías por el campo de la clase**
+    (``class_name``). Las reglas no se solapan (una pista recibe un solo símbolo); la clase con comillas, «&» o «<» va escapada."""
+    ordered = sorted({name for name in classes if isinstance(name, str) and name}, key=lambda name: (name.casefold(), name))
+    special = ", ".join(f"'{state}'" for state in (*ENTITY_FADED_STATES, *ENTITY_MARKED_STATES))
+    known = ", ".join("'" + _attr(name.replace("'", "''")) + "'" for name in ordered)
+    items: list[tuple[str, str, tuple[int, int, int]]] = [
+        (name, "&quot;class_name&quot; = '" + _attr(name.replace("'", "''")) + "'", ROAD_CLASS_COLORS[number % len(ROAD_CLASS_COLORS)])
+        for number, name in enumerate(ordered)]
+    items.append((ROAD_OTHER_LABEL, f"coalesce(&quot;class_name&quot;, '') NOT IN ({known})" if ordered else "TRUE", ROAD_OTHER_COLOR))
+    rules = []
+    symbols = []
+    index = 0
+    for label, of_class, rgb in items:
+        variants = (
+            (label, f"{of_class} AND coalesce(&quot;state&quot;, '') NOT IN ({special})",
+             _road_symbol(index, rgb, alpha=255, style="solid", width_mm=_ROAD_LINE_MM)),
+            (f"{label} {_FADED_LABEL}", f"{of_class} AND {_state_condition(ENTITY_FADED_STATES)}",
+             _road_symbol(index + 1, rgb, alpha=_FADED_OUTLINE_ALPHA, style="dash", width_mm=_ROAD_FADED_MM)),
+            (f"{label} {_MARKED_LABEL}", f"{of_class} AND {_state_condition(ENTITY_MARKED_STATES)}",
+             _road_symbol(index + 2, MARK_COLOR, alpha=255, style="dash dot", width_mm=_ROAD_MARK_MM)),
+        )
+        for text, condition, symbol in variants:
+            rules.append(f'   <rule key="{_rule_key(_TABLE_INDEX[VersionLayer.ROADS], index + 1)}" '
+                         f'filter="{condition}" label="{_attr(text)}" symbol="{index}"/>')
+            symbols.append(symbol)
+            index += 1
+    return "\n".join(rules), "\n".join(symbols)
+
+
 def _check_fields(fields: Iterable[str]) -> tuple[str, ...]:
     found = tuple(dict.fromkeys(fields))
     if not found or any(not isinstance(name, str) or not name for name in found):
@@ -430,25 +505,30 @@ def _check_fields(fields: Iterable[str]) -> tuple[str, ...]:
     return found
 
 
-def style_for(table: str, fields: Iterable[str] | None = None) -> StyleRow:
+def style_for(table: str, fields: Iterable[str] | None = None, classes: Iterable[str] | None = None) -> StyleRow:
     """El estilo por defecto de la capa ``table``: una de las tres capas de restricciones del proyecto
     (:data:`CONSTRAINT_LAYERS`; ``fields`` no cuenta: su QML no cambia) o de una versión (:func:`version_layer`:
-    ``des_decl_<vNN>``, ``des_enl_<vNN>``), con la editabilidad de solo lectura de **cada** campo de
-    ``fields`` (por defecto, ``fid`` y los que conoce el estilo: :data:`~.declared.COLUMN_NAMES` o
-    :data:`ENTITY_FIELDS`; quien escribe la fila pasa los que la tabla tiene de verdad). ``ValueError``
-    si ``table`` no es ninguna de ellas o ``fields`` no son nombres."""
+    ``des_decl_<vNN>``, ``des_enl_<vNN>``, ``des_rax_<vNN>``), con la editabilidad de solo lectura de **cada** campo de
+    ``fields`` (por defecto, ``fid`` y los que conoce el estilo: :data:`~.declared.COLUMN_NAMES`,
+    :data:`ENTITY_FIELDS` o :data:`ROAD_FIELDS`; quien escribe la fila pasa los que la tabla tiene de verdad). ``classes``
+    (solo la capa de ejes de pistas, T26): las clases normativas que tienen las pistas, una categoría cada una
+    (:func:`_road_rules`). ``ValueError`` si ``table`` no es ninguna de ellas o ``fields`` no son nombres."""
     layer = version_layer(table)
     if layer is None:
         if table not in CONSTRAINT_LAYERS.values():
             raise ValueError(f"solo hay estilo de las capas de restricciones "
                              f"({', '.join(CONSTRAINT_LAYERS.values())}) y de las de una versión "
-                             f"({DECLARED_LAYER}_<vNN>, {ENTITY_LAYER}_<vNN>), no de «{table}»")
+                             f"({DECLARED_LAYER}_<vNN>, {ENTITY_LAYER}_<vNN>, {ROAD_LAYER}_<vNN>), no de «{table}»")
         return StyleRow(STYLE_NAME, STYLE_DESCRIPTION, _qml(table))
     if layer is VersionLayer.DECLARED:
         named = _check_fields(("fid", *DECLARED_COLUMNS) if fields is None else fields)
         rule_lines, symbol_lines = _by_type(_TABLE_INDEX[layer], "fill")
         return StyleRow(DECLARED_STYLE_NAME, _DECLARED_DESCRIPTION,
                         _version_qml(layer, rule_lines, symbol_lines, _DECLARED_NOTE, named))
+    if layer is VersionLayer.ROADS:
+        named = _check_fields(("fid", *ROAD_FIELDS) if fields is None else fields)
+        rule_lines, symbol_lines = _road_rules(() if classes is None else classes)
+        return StyleRow(ROAD_STYLE_NAME, _ROAD_DESCRIPTION, _version_qml(layer, rule_lines, symbol_lines, _ROAD_NOTE, named))
     named = _check_fields(("fid", *ENTITY_FIELDS) if fields is None else fields)
     rule_lines, symbol_lines = _entity_rules()
     return StyleRow(ENTITY_STYLE_NAME, _ENTITY_DESCRIPTION,
@@ -522,17 +602,58 @@ def _fields_of(conn: sqlite3.Connection, table: str) -> list[str]:
             if str(row[1]) not in geometry]
 
 
+def _classes_of(conn: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    """Las clases normativas que tienen las pistas de la capa de ejes ``table`` (``class_name``), por orden; vacío si ``table`` no es la
+    capa de ejes de pistas o no tiene ese campo (spec 017, T26)."""
+    if version_layer(table) is not VersionLayer.ROADS:
+        return ()
+    try:
+        found = conn.execute(f'SELECT DISTINCT class_name FROM "{table}" WHERE class_name IS NOT NULL AND class_name != \'\'').fetchall()
+    except sqlite3.OperationalError:
+        return ()
+    return tuple(sorted((str(row[0]) for row in found), key=lambda name: (name.casefold(), name)))
+
+
+_STYLES_UPDATE = (
+    f'UPDATE "{STYLES_TABLE}" SET styleQML = ?, description = ?, update_time = strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\') '
+    "WHERE f_table_name = ? AND f_geometry_column = ? AND useAsDefault AND styleName = ?"
+)
+
+
+def _stale_road_styles(conn: sqlite3.Connection, tables: Iterable[str]) -> list[str]:
+    """Las capas de ejes de pistas de ``tables`` cuyo estilo por defecto **escribió Geoblender** (por su nombre, :data:`ROAD_STYLE_NAME`) y ya no es el
+    que daría hoy, porque las clases de sus pistas cambiaron (spec 017, T26): se rehace. El que guardó una persona desde QGIS (otro nombre) no cuenta nunca, ni
+    una capa sin estilo (esa es de :func:`_pending`)."""
+    if not _exists(conn, STYLES_TABLE):
+        return []
+    found = []
+    for table in dict.fromkeys(tables):
+        if version_layer(table) is not VersionLayer.ROADS or not _exists(conn, table):
+            continue
+        row = conn.execute(f'SELECT styleQML FROM "{STYLES_TABLE}" WHERE f_table_name = ? AND f_geometry_column = ? AND useAsDefault AND styleName = ?',
+                           (table, GEOMETRY_COLUMN, ROAD_STYLE_NAME)).fetchone()
+        if row is not None and row[0] != style_for(table, _fields_of(conn, table), _classes_of(conn, table)).qml:
+            found.append(table)
+    return found
+
+
 def insert_version_styles(conn: sqlite3.Connection, tables: Iterable[str]) -> tuple[str, ...]:
     """Escribe, en la transacción de ``conn``, el estilo por defecto de cada capa de versión entre ``tables``
     (:func:`version_layer`) que existe y aún no lo tiene (RF-012-20, RF-015-27): con la editabilidad de
-    solo lectura de **cada columna que la capa tiene** (:func:`_fields_of`). Devuelve las capas cuya
-    fila escribió. No crea ``layer_styles`` (la crea la primera operación de la 012: :func:`write_styles`)
-    ni anota el dato ``core_layer_styles``: es lo que hace :func:`write_version_styles`. Repetirla no
+    solo lectura de **cada columna que la capa tiene** (:func:`_fields_of`) y, la capa de ejes de pistas, con las clases que tiene
+    (:func:`_classes_of`; spec 017, T26). Devuelve las capas cuya fila escribió. De la capa de ejes de pistas, además, **rehace** el estilo que
+    escribió Geoblender si cambiaron las clases (:func:`_stale_road_styles`). No crea ``layer_styles`` (la crea la primera operación de la
+    012: :func:`write_styles`) ni anota el dato ``core_layer_styles``: es lo que hace :func:`write_version_styles`. Repetirla no
     duplica y lo que guardó QGIS se respeta."""
+    named = tuple(dict.fromkeys(tables))
     written = []
-    for table in _pending(conn, tables):
-        row = style_for(table, _fields_of(conn, table))
+    for table in _pending(conn, named):
+        row = style_for(table, _fields_of(conn, table), _classes_of(conn, table))
         conn.execute(_STYLES_INSERT, (table, GEOMETRY_COLUMN, row.name, row.qml, row.description))
+        written.append(table)
+    for table in _stale_road_styles(conn, named):
+        row = style_for(table, _fields_of(conn, table), _classes_of(conn, table))
+        conn.execute(_STYLES_UPDATE, (row.qml, row.description, table, GEOMETRY_COLUMN, ROAD_STYLE_NAME))
         written.append(table)
     return tuple(written)
 
@@ -561,7 +682,8 @@ def write_version_styles(conn: sqlite3.Connection, project: dataset_registry.Dat
     estilo en QGIS y nadie lo comprobó), la fila se escribe igual pero **no** se anota: la comprobación
     sigue viendo esa edición. Si el proyecto no tiene ``layer_styles``, no escribe nada. Devuelve las capas
     cuya fila escribió; si la transacción se deshace, no queda nada."""
-    pending = _pending(conn, tables)
+    named = tuple(dict.fromkeys(tables))
+    pending = [*_pending(conn, named), *_stale_road_styles(conn, named)]
     if not pending:
         return ()
     synced = _synced_styles(conn, project)

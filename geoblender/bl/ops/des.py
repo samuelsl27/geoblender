@@ -155,7 +155,9 @@ rejilla; el terreno, **compuesto entero** con la superficie de la que parte la d
 una retirada, un contrafuerte o un cuerpo apoyado (el de los dos primeros, la resta de sus dos superficies). **La capa de entidades**
 (T30; RF-015-27): la regeneran, como operación aparte y tras la entidad,
 las órdenes que encadenan ``design.entity_store.after_entity_change`` (crear, descartar…) y «Recalcular lo
-obsoleto» (:func:`recompute_entity_layer`); no tiene orden propia.
+obsoleto» (:func:`recompute_entity_layer`); no tiene orden propia. **La capa de ejes de pistas** (spec 017, T26; RF-017-27, D-19):
+``des.road_layer`` (``design.road_layer``), de la versión, repetible (:func:`recompute_road_layer`) y no reproducible, la regeneran las mismas
+órdenes que la de entidades (``after_entity_change`` y «Recalcular lo obsoleto»), solo si la versión tiene pistas.
 
 **Los cargadores de la vista** (T27): el de las rejillas ``des_env_``, ``des_srf_`` y ``des_brm_``
 (objetos ``DESIGN``) es de ``bl/scene/des_views.py``, que registra ``bl.scene`` junto al tipo de
@@ -267,7 +269,8 @@ sigue a crear o descartar una entidad (``design.entity_store.after_entity_change
 así una sola pasada de «Recalcular lo obsoleto» deja al día la entidad, las máscaras y la capa. Al terminar
 «Recalcular lo obsoleto» (:func:`_layers_after_recompute`, ``core_provenance.register_recompute_after``) se pone al día la
 capa de entidades de las versiones en que no dice lo que el registro (``design.entity_store.layers_sync_steps``: la
-008 no rehace lo que depende de una salida que no cambió), con una entidad viva de cualquier tipo, también sin plataformas.
+008 no rehace lo que depende de una salida que no cambió), con una entidad viva de cualquier tipo, también sin plataformas; y, de la 017
+(T26), la capa de ejes de pistas de la versión que tenga una pista (``layers_sync_steps`` la incluye: hallazgo D-1 de la 016 con la pista).
 
 **Descartar una entidad y soltar el apoyo** (spec 015, T25; HU-015-2; RF-015-17, RF-009-12, RF-015-28, RF-015-29; D-12;
 plan 015 §5.3.3 y §5.4 A7, P-6): :class:`GEOBLENDER_OT_des_entity_discard` (``geoblender.des_entity_discard``) **enseña
@@ -732,6 +735,11 @@ def recompute_road_propose(request: RecomputeRequest) -> OperationHandle:
     return _recompute(request)
 
 
+def recompute_road_layer(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.road_layer`` (RF-017-27; T26-a; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
 def reproduce_road(request: ReproduceRequest) -> Iterator[Progress]:
     """La reproducción de ``des.road``: la de ``design.reproduce``."""
     from ...design import reproduce  # al usarla: habilitar no carga la reproducción
@@ -821,15 +829,16 @@ ROAD_RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = (
         provenance.ROAD: recompute_road,
         provenance.ROAD_ACCESS: recompute_road_access,
         provenance.ROAD_PROPOSE: recompute_road_propose,
+        provenance.ROAD_LAYER: recompute_road_layer,
     }))
-"""La función de recálculo de cada tipo de la 017 (todos se repiten solos; RF-017-01, RF-017-24, RF-017-28)."""
+"""La función de recálculo de cada tipo de la 017 (todos se repiten solos; RF-017-01, RF-017-24, RF-017-28 y, la capa de ejes de pistas, RF-017-27)."""
 ROAD_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = (
     MappingProxyType({
         provenance.ROAD: reproduce_road,
         provenance.ROAD_ACCESS: reproduce_road_access,
         provenance.ROAD_PROPOSE: reproduce_road_propose,
     }))
-"""La función de reproducción de cada tipo de la 017 (los tres se reproducen; RF-009-11)."""
+"""La función de reproducción de cada tipo de la 017 que se reproduce (la pista, la accesibilidad y la propuesta; RF-009-11): la capa de ejes de pistas no (T26-a), que incluye el estado de cada pista."""
 OPERATION_DEFS: tuple[contract.OperationDef, ...] = (
     *provenance.operation_defs(RECOMPUTE, REPRODUCE), *design_profiles.OPERATIONS,
     *provenance.quarry_operation_defs(QUARRY_RECOMPUTE, QUARRY_REPRODUCE),

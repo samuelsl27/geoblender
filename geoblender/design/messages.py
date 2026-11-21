@@ -1888,6 +1888,36 @@ CATALOG: tuple[Message, ...] = (
         "ya no es la tabla de una entidad (se borró su fila fuera de Geoblender): recalcule la entidad para que vuelva "
         "a escribirla; mientras tanto no se declaran sus restricciones ni se compilan las máscaras de {version}.",
     ),
+    # La capa de ejes de pistas de la versión (spec 017, T26; RF-017-27, RF-008-56; D-19): el eje de una pista editado fuera de Geoblender, lo que falta o está dañado, el fallo de lo que sigue a una
+    # orden de pistas y el nombre de la operación. Fuera de la familia ``des.road_*`` (cerrada por ``test_road_messages``).
+    Message(
+        "des.axes_layer_blocked",
+        "The table «{table}» of the road «{entity}» (the axis its row of the roads layer comes from) was edited outside Geoblender and is not edited by hand: accept the edit with a reason or recompute the road "
+        "so it writes the table again; the roads layer of {version} is not updated meanwhile.",
+        "La tabla «{table}» de la pista «{entity}» (el eje de la que sale su fila de la capa de ejes de pistas) se editó fuera de Geoblender y no se edita a mano: acepte la edición con un motivo o "
+        "recalcule la pista para que vuelva a escribirla; mientras tanto no se pone al día la capa de ejes de pistas de {version}.",
+    ),
+    Message(
+        "des.axes_layer_unusable",
+        "The table «{table}» of the road «{entity}» (the axis its row of the roads layer comes from) is missing, damaged or is no longer the axis of a road (its rows were deleted outside Geoblender): "
+        "recompute the road so it writes the table again; the roads layer of {version} is not updated meanwhile.",
+        "La tabla «{table}» de la pista «{entity}» (el eje de la que sale su fila de la capa de ejes de pistas) falta, está dañada o ya no es el eje de una pista (se borraron sus filas fuera de "
+        "Geoblender): recalcule la pista para que vuelva a escribirla; mientras tanto no se pone al día la capa de ejes de pistas de {version}.",
+    ),
+    Message(
+        "des.axes_layer_failed",
+        "The roads layer of {version} could not be updated: {reason} The road is created; the layer keeps what it had and is stale if a road it shows changed (Project ▸ Recompute the stale results brings it "
+        "up to date); it is updated the next time a road is created, changed or discarded.",
+        "No se pudo poner al día la capa de ejes de pistas de {version}: {reason} La pista está creada; la capa conserva lo que tenía y queda obsoleta si cambió una pista que enseña (Proyecto ▸ "
+        "Recalcular lo obsoleto la pone al día); se pone al día la próxima vez que se cree, cambie o descarte una pista.",
+        "warning",
+    ),
+    Message(
+        "des.axes_layer_name",
+        "the roads layer of {version}",
+        "la capa de ejes de pistas de {version}",
+        "note",
+    ),
     # Traer las entidades de otra versión (RF-015-18, RF-009-01; D-18; T26): lo que se rechaza y lo que se avisa.
     Message(
         "des.entity_bring_same",

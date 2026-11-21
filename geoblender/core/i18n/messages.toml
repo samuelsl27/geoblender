@@ -10599,6 +10599,9 @@ es = "Accesibilidad de las pistas"
 ["Proposal of the route of a haul road"]
 es = "Propuesta de trazado de una pista"
 
+["Layer of the axes of the haul roads"]
+es = "Capa de ejes de pistas"
+
 ["Edition of the road profiles"]
 es = "Edición de los perfiles de pista"
 

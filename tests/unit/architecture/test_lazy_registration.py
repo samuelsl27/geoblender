@@ -106,6 +106,9 @@ HEAVY: frozenset[str] = frozenset({
     "design.access_store",
     # Preparar la pista de la 017 (spec 017, T19; lee el almacén, las superficies, las máscaras y las capas): la piden las órdenes al usarla, no habilitar.
     "design.road_store",
+    # La capa de ejes de pistas de la 017 (spec 017, T26): el formato de ``des_rax_<vNN>``, lo que lee el almacén y la operación; ``provenance`` declara la operación
+    # (``des.road_layer``) y ``design.store`` la importa al escribirla; ``design.entity_store`` solo si la versión tiene pistas.
+    "design.road_layer",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 
