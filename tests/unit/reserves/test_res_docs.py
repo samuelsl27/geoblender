@@ -19,13 +19,16 @@ estas pruebas avisan de que se separan:
   sus ejemplos existe en la cubicación (T39);
 - y, de la 016 (su T38), la ficha ``res.md`` dice la base de los acopios como entrada de la verificación de la 012
   (``reserves.compliance.lowest_base`` y la selección de ``reserves.compliance_store``, que ``test_constraints_docs``
-  comprueba nombre a nombre): automática, con lo que no usa y su causa, el corte de terreno y el de acopios, y lo que guarda.
+  comprueba nombre a nombre): automática, con lo que no usa y su causa, el corte de terreno y el de acopios, y lo que guarda;
+- y, de la 017 (su T35), la ficha ``res.md`` dice las **tres respuestas** de una zona «requiere acceso» (cumple, no cumple, sin comprobar)
+  con la accesibilidad de las pistas como entrada de la verificación (RF-012-21, 22 y 24 con el DIFF-017): ya no dice «sin comprobar (R-40)».
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``).
 """
 
 from __future__ import annotations
 
+import inspect
 import pkgutil
 import re
 import sqlite3
@@ -44,9 +47,17 @@ provenance = import_geoblender("reserves.provenance")
 store = import_geoblender("reserves.store")
 compliance_store = import_geoblender("reserves.compliance_store")
 compliance = import_geoblender("reserves.compliance")
+design_provenance = import_geoblender("design.provenance")
 
 RES_RELPATH = "docs/arquitectura/modulos/res.md"
 FORMAT_RELPATH = "docs/arquitectura/datos/formato-proyecto.md"
+
+
+def one_line(text: str) -> str:
+    """``text`` con cada salto de línea y sangría reducidos a un espacio, para buscar una frase que el documento parte en dos renglones."""
+    return re.sub(r"\s+", " ", text)
+
+
 RES_NAME = re.compile(r"^reserves(?:\.[A-Za-z_]\w*)+$")
 SQL_FENCE = re.compile(r"^```sql\n(.*?)^```", re.MULTILINE | re.DOTALL)
 COMMENT = re.compile(r"--[^\n]*")
@@ -177,6 +188,40 @@ class ResModuleDocTest(unittest.TestCase):
                 self.assertIn(fact, owned)
         self.assertIn("**el algoritmo, `reserves.compliance`, no importa `design`**", section(self.text,
                       "## Dependencias permitidas"))
+
+    def test_the_three_answers_of_requires_access_are_told(self) -> None:
+        """RF-012-21, RF-012-22, RF-012-24 (spec 012 0.6, el diff de la 017; DIFF-017; A12 de la 017; P-9; T35): la ficha dice que una zona
+        «requiere acceso» tiene **tres respuestas** —«cumple» si la accesibilidad al día hecha sobre la final la comunica, «no cumple» si no y
+        «sin comprobar» si esa final no tiene ninguna— y no «sin comprobar (R-40)»; que la accesibilidad es de **cada final** y automática, con
+        la unión si hay varias, lo que no usa y su causa; que su tabla de zonas es una entrada (``road_access_<k>``) que se congela; lo que
+        guarda; y que ``reserves`` importa ``design.access_store`` y no ``design.road_*``; y todo eso existe."""
+        api = one_line(section(self.text, "## API pública"))
+        for fact in ("**las tres respuestas**", "`reserves.compliance_store.select_access`", "`reserves.compliance_store.AccessSelection`",
+                     "`reserves.compliance_store.AccessUse`", "`reserves.compliance_store.SkippedAccess`",
+                     "`reserves.compliance_store.access_role(k)`", "`reserves.compliance_store.read_communicated`",
+                     "`communicated`", "`Verdict.UNCHECKED`", "`ComplianceRequest.communicated_of`", "`design.access_store.accessibilities_on`",
+                     "**alguna** la comunica", "`road_access_<k>`", "`access_used`", "`access_skipped`", "`res.freeze_access`",
+                     "no importa `design.road_*`", "**la de siempre, bit a bit**"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, api)
+        self.assertNotIn("sin comprobar (R-40)", self.text)
+        self.assertEqual(compliance_store.access_role(2), "road_access_2")
+        self.assertEqual(compliance_store.access_role(1).removesuffix("_1"), design_provenance.ROAD_ACCESS_ROLE)
+        self.assertEqual({verdict.value for verdict in compliance.Verdict}, {"complies", "fails", "not_judged", "unchecked"})
+        self.assertIn("communicated", compliance.ComplianceRequest.__dataclass_fields__)
+        self.assertTrue(hasattr(compliance.ComplianceRequest, "communicated_of"))
+        self.assertIn("communicated", inspect.signature(compliance.verdict).parameters)
+        self.assertIn("communicated", inspect.signature(compliance.Checker).parameters)
+        for field in ("access", "access_skipped", "access_selection"):
+            with self.subTest(stored=field):
+                self.assertIn(field, compliance_store.StoredVerification.__dataclass_fields__)
+        owned = section(self.text, "## Datos que posee")
+        for fact in ("`access_used`", "`access_skipped`", "`road_access_<k>`"):
+            with self.subTest(owned=fact):
+                self.assertIn(fact, owned)
+        verification = self.text[self.text.index("**Lo que entrega la spec 012**"):self.text.index("## API pública")]
+        self.assertIn("«cumple» si la accesibilidad", one_line(verification))
+        self.assertIn("`design.access_store`", one_line(section(self.text, "## Dependencias permitidas")))
 
 
 @docs.requires_docs

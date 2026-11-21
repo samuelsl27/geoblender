@@ -30,6 +30,10 @@ describe; estas pruebas avisan de que se separan:
   (§3.3, §3.11 y §4.2), la guía ``docs/usuario/acopios-y-contrafuertes.md`` (todo texto entre «» sale del catálogo o es un
   ejemplo que la prueba lista; los umbrales, los datos y las cifras son los del código), el ADR-0031 (su fe de erratas),
   la barra superior, los paneles contextuales, el índice de specs, el roadmap y el ``CHANGELOG.md``.
+- la 017 (su T35, la arquitectura; la guía, el glosario, el ``CHANGELOG.md``, el roadmap y el índice son de la T35b): la ficha de ``des``
+  (§4.5: los trece módulos nuevos con los nombres **reales** del código y lo que la 017 añade a los demás; §1.9; «Datos que posee»: las
+  siete familias de datos, las tres de parámetros, las cifras y los cuatro tipos de operación y el de los perfiles),
+  ``formato-proyecto.md`` (§3.3, §3.11 con el SQL de las siete tablas y §4.2), la barra superior (§8.7) y los paneles contextuales (§3.11).
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``). Las pruebas del emparejado de las
 citas (:class:`QuoteMatcherTest`) no la necesitan: comprueban que la regla no da falsos verdes.
@@ -48,7 +52,7 @@ from contextlib import closing
 from tests.support import docs
 from tests.support.bs_tables import backticked, section, tables
 from tests.support.package import import_geoblender
-from tests.support.repo import ROOT
+from tests.support.repo import EXTENSION_DIR, ROOT
 
 design = import_geoblender("design")
 dmessages = import_geoblender("design.messages")
@@ -59,6 +63,7 @@ dsectors = import_geoblender("design.sectors")
 enlayer = import_geoblender("design.entity_layer")
 dstore = import_geoblender("design.store")
 dpreview = import_geoblender("design.preview")
+dexport = import_geoblender("design.export")
 provenance = import_geoblender("core.provenance")
 gpkg_base = import_geoblender("core.gpkg.base")
 i18n = import_geoblender("core.i18n")
@@ -157,54 +162,28 @@ ENTITY_EXAMPLES: tuple[str, ...] = (
 API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
                 "### 4.2 Lo que entrega la spec 014 (R-34)",
                 "### 4.3 Lo que entrega la spec 015 (R-36)",
-                "### 4.4 Lo que entrega la spec 016 (R-36)")
+                "### 4.4 Lo que entrega la spec 016 (R-36)",
+                "### 4.5 Lo que entrega la spec 017 (R-40)")
 
-# El mecanismo de la 014, la 015 y la 016 para una spec que añade API pública mientras se construye: cada tarea
+# El mecanismo de la 014, la 015, la 016 y la 017 para una spec que añade API pública mientras se construye: cada tarea
 # añade aquí sus nombres (y los módulos nuevos, que aún no tienen fila en la ficha) y la tarea de documentación los
 # lleva a la ficha y vacía estos dos conjuntos. Vacíos desde la T34 de la 015 (la ficha, ``des.md`` §4.3, nombra todo lo
-# público de ``design``), otra vez desde su T47 y **desde la T38 de la 016** (``des.md`` §4.4 nombra los siete módulos
-# nuevos y lo que la 016 añade a los demás); una spec posterior los usará con los suyos. El nombre ``PENDING_015_*`` se
-# conserva porque otras pruebas lo importan.
-PENDING_015_API: frozenset[str] = frozenset({
-    # La 017, T02 y T03 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):
-    "AccessParam", "RoadParam", "RoadProfileParam", "check_road_profile", "check_road_profile_radii",
-    "check_road_profile_value", "road_half_width_m", "road_profile_key",
-    "access_figures", "access_inputs", "access_params", "propose_figures", "road_figures", "road_inputs",
-    "road_operation_defs", "road_params", "reproduce_road", "reproduce_road_access", "reproduce_road_propose",
-    # La 017, T15 (``report.max_tangents`` y ``report.padded_rows``, antes privadas ``_max_tangents`` y ``_padded``: las usa también la accesibilidad):
-    "max_tangents", "padded_rows",
-    # La 017, T17 (los ajustes de la accesibilidad y «Calcular» de una accesibilidad: ``steps.access_run``):
-    "access_settings", "access_run",
-    # La 017, T17b (la petición que repiten los ajustes y los parámetros de una accesibilidad, al recalcular y reproducir; lo demás de la T17b es de ``design.access_store``, un módulo pendiente):
-    "access_request",
-    # La 017, T26 (la capa de ejes de pistas: ``has_road_operation``, ``road_layer_inputs`` y ``road_layer_params``; lo demás de la T26 es de ``design.road_layer``, un módulo pendiente):
-    "has_road_operation", "road_layer_inputs", "road_layer_params",
-    # La 017, T19 (los ajustes de la pista; lo demás de la T19 es de ``design.road_store``, un módulo pendiente) y T22 (la petición que repiten los ajustes y los parámetros de la pista, al recalcular y reproducir):
-    "road_settings", "road_request",
-    # La 017, T20b («Calcular» una pista: ``steps.road_run`` y el resumen ``preview.RoadSummary``; lo demás de la T20b es de ``design.road_store``, un módulo pendiente):
-    "road_run", "RoadSummary",
-    # La 017, T22b (a qué entidad apunta el origen o el destino de una pista y cómo se re-apunta al traerla a otra versión: ``design.entities``):
-    "refers_to", "with_code",
-    # La 017, T27 («Proponer el trazado»: lo que anotan sus ajustes y lo que lee como parámetros, ``design.provenance``; la rasante a CSV, ``design.export``; lo demás es de ``design.road_store`` y
-    # ``design.road_layer``, módulos pendientes):
-    "propose_params", "propose_resolved", "StoredRoad", "export_road_csv", "road_csv_bytes", "stored_road",
-    # La 017, T28 (la vista previa de la pista, ``design.preview``: la petición, lo que enseña, los tramos de la rasante por pd y pm y los bordes de la sección; lo demás de la T28 es de
-    # ``design.road_store``, un módulo pendiente):
-    "RoadAsk", "RoadPoint", "RoadPreview", "GradientStatus", "GradientStretch", "road_preview_steps", "gradient_stretches", "section_edges",
-    # La 017, T31 (el eje por estaciones de una pista que dibuja la vista, ``design.entity_store.read_road_axis``; la superficie de una accesibilidad, ``design.access_store.read_access_surface``,
-    # es de un módulo pendiente):
-    "read_road_axis",
-    # La 017, T33 (a) («Proponer el trazado…»: ``steps.road_propose_run``, y «Exportar pista…»: ``export.stored_road_export``; lo demás es de ``design.road_store``, un módulo pendiente):
-    "road_propose_run", "stored_road_export",
-})
-PENDING_015_MODULES: frozenset[str] = frozenset({
-    # La 017, T04 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):
-    "design.road_profiles", "design.road_model", "design.road_net", "design.road_route",
-    "design.road_axis", "design.road_gradient", "design.road_section", "design.road_engrave",
-    "design.road_access", "design.access_store", "design.road_store", "design.road_layer",
-    # La 017, T31b (lo que la barra N lee de una pista y de una accesibilidad):
-    "design.road_card",
-})
+# público de ``design``), otra vez desde su T47, **desde la T38 de la 016** (``des.md`` §4.4 nombra los siete módulos
+# nuevos y lo que la 016 añade a los demás) y **desde la T35 de la 017** (``des.md`` §4.5 nombra los trece módulos nuevos
+# de las pistas y la accesibilidad y lo que la 017 añade a los demás); una spec posterior los usará con los suyos. El nombre
+# ``PENDING_015_*`` se conserva porque otras pruebas lo importan.
+PENDING_015_API: frozenset[str] = frozenset()
+PENDING_015_MODULES: frozenset[str] = frozenset()
+
+
+def roadprofiles():
+    """``design.road_profiles`` (perezoso: ``bl`` lo importa al usarlo; la prueba, solo al comprobar la documentación de la 017)."""
+    return import_geoblender("design.road_profiles")
+
+
+def roadlayer():
+    """``design.road_layer`` (perezoso, como :func:`roadprofiles`)."""
+    return import_geoblender("design.road_layer")
 
 
 def one_line(text: str) -> str:
@@ -240,9 +219,10 @@ def documented_tables(document: str) -> dict[str, list[str]]:
 
 
 def code_tables() -> dict[str, str]:
-    """El SQL con que el código crea cada tabla de la 013, la 015 y la 016 (normalizado), con el nombre de
-    ejemplo ``Hoyo`` (la 015, ``Carga``; la 016, ``Acopios`` y ``Refuerzo``, el de un contrafuerte) y la versión
-    ``V01`` para las de una versión."""
+    """El SQL con que el código crea cada tabla de la 013, la 015, la 016 y la 017 (normalizado), con el nombre de
+    ejemplo ``Hoyo`` (la 015, ``Carga``; la 016, ``Acopios`` y ``Refuerzo``, el de un contrafuerte; la 017, ``Acceso`` el
+    eje de una pista, ``Accesibilidad`` sus tres tablas y ``Trazado`` la capa propuesta) y la versión ``V01`` para las de
+    una versión."""
     berms = dprov.dataset_locator(dprov.BERM_TABLE, "Hoyo", "V01")
     report = dprov.dataset_locator(dprov.REPORT_TABLE, "Hoyo", "V01")
     entity = dprov.dataset_locator(dprov.ENTITY_TABLE, "Carga", "V01")
@@ -251,6 +231,12 @@ def code_tables() -> dict[str, str]:
     stockpiles = dprov.dataset_locator(dprov.STOCKPILES_TABLE, "Acopios", "V01")
     candidates = dprov.dataset_locator(dprov.STOCKPILE_CANDIDATES_TABLE, "Acopios", "V01")
     buttress = dprov.dataset_locator(dprov.ENTITY_TABLE, "Refuerzo", "V01")
+    axis = dprov.dataset_locator(dprov.ROAD_AXIS_TABLE, "Acceso", "V01")
+    berms_reached = dprov.dataset_locator(dprov.ACCESS_BERMS_TABLE, "Accesibilidad", "V01")
+    platforms_reached = dprov.dataset_locator(dprov.ACCESS_PLATFORMS_TABLE, "Accesibilidad", "V01")
+    zones_reached = dprov.dataset_locator(dprov.ACCESS_ZONES_TABLE, "Accesibilidad", "V01")
+    axes_layer = roadlayer().road_layer_table("V01")
+    route_layer = roadlayer().route_layer_table("V01", "Trazado")
     with closing(sqlite3.connect(":memory:")) as conn:
         gpkg_base.create_structure(conn)
         conn.execute("INSERT INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, "
@@ -266,8 +252,16 @@ def code_tables() -> dict[str, str]:
         gpkg_base.create_attribute_table(conn, candidates, dstore.CANDIDATE_COLUMNS, "candidatos")
         gpkg_base.create_attribute_table(conn, buttress, dstore.columns_of(dprov.BUTTRESS, dprov.ENTITY_TABLE),
                                          "entidad de un contrafuerte")
+        roadprofiles().create_table(conn)
+        gpkg_base.create_attribute_table(conn, axis, dstore.ROAD_AXIS_COLUMNS, "eje de una pista")
+        gpkg_base.create_attribute_table(conn, berms_reached, dstore.ACCESS_BERM_COLUMNS, "bermas comunicadas")
+        gpkg_base.create_attribute_table(conn, platforms_reached, dstore.ACCESS_PLATFORM_COLUMNS, "plataformas comunicadas")
+        gpkg_base.create_attribute_table(conn, zones_reached, dstore.ACCESS_ZONE_COLUMNS, "zonas comunicadas")
+        roadlayer().create_road_layer_table(conn, axes_layer, 25830)
+        roadlayer().create_route_layer_table(conn, route_layer, 25830, "Trazado")
         rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'").fetchall()
-    wanted = (dprofiles.TABLE, berms, report, entity, entity_report, entity_map, stockpiles, candidates, buttress)
+    wanted = (dprofiles.TABLE, berms, report, entity, entity_report, entity_map, stockpiles, candidates, buttress,
+              roadprofiles().TABLE, axis, berms_reached, platforms_reached, zones_reached, axes_layer, route_layer)
     return {str(name): normalized(str(sql)) for name, sql in rows if name in wanted}
 
 
@@ -474,12 +468,14 @@ class ProjectFormatDocTest(unittest.TestCase):
         ``des_bmt_`` (las cotas reales de las bermas) y de ``des_rpt_`` (el informe) y, de la 015, de
         ``des_epr_`` (la entidad), ``des_prp_`` (su informe) y ``des_enl_`` (la capa de entidades), el
         que escribe el código y, de la 016, el de ``des_stk_`` (los acopios), ``des_stc_`` (sus candidatos) y la
-        ``des_epr_`` de un contrafuerte (con su zona de coronación); ``des_decl_`` (las restricciones declaradas) está
-        en §3.9 (``test_constraints_docs``)."""
+        ``des_epr_`` de un contrafuerte (con su zona de coronación); y RF-017-07, RF-017-23, RF-017-24, RF-017-27 y RF-017-28
+        (plan 017 §5.2.3; T35) las siete de la 017: ``des_road_profile`` (los perfiles), ``des_rdx_`` (el eje por estaciones),
+        ``des_acb_``, ``des_acp_`` y ``des_acz_`` (lo comunicado), ``des_rax_`` (la capa de ejes) y ``des_rpl_`` (la capa propuesta);
+        ``des_decl_`` (las restricciones declaradas) está en §3.9 (``test_constraints_docs``)."""
         documented = documented_tables(section(self.text, "### 3.11 Tablas de los módulos"))
         in_code = code_tables()
-        self.assertEqual(len(in_code), 9)
-        for name in (dprofiles.TABLE, *(
+        self.assertEqual(len(in_code), 16)
+        for name in (dprofiles.TABLE, roadprofiles().TABLE, *(
                 dprov.dataset_locator(code, "Hoyo", "V01")
                 for code in (dprov.BERM_TABLE, dprov.REPORT_TABLE)),
                 *(dprov.dataset_locator(code, "Carga", "V01")
@@ -487,7 +483,11 @@ class ProjectFormatDocTest(unittest.TestCase):
                 enlayer.entity_layer_table("V01"),
                 dprov.dataset_locator(dprov.STOCKPILES_TABLE, "Acopios", "V01"),
                 dprov.dataset_locator(dprov.STOCKPILE_CANDIDATES_TABLE, "Acopios", "V01"),
-                dprov.dataset_locator(dprov.ENTITY_TABLE, "Refuerzo", "V01")):
+                dprov.dataset_locator(dprov.ENTITY_TABLE, "Refuerzo", "V01"),
+                dprov.dataset_locator(dprov.ROAD_AXIS_TABLE, "Acceso", "V01"),
+                *(dprov.dataset_locator(code, "Accesibilidad", "V01")
+                  for code in (dprov.ACCESS_BERMS_TABLE, dprov.ACCESS_PLATFORMS_TABLE, dprov.ACCESS_ZONES_TABLE)),
+                roadlayer().road_layer_table("V01"), roadlayer().route_layer_table("V01", "Trazado")):
             with self.subTest(table=name):
                 self.assertEqual(documented.get(name, []), [in_code[name]])
         self.assertEqual(sorted(documented), sorted(in_code), "una tabla des_ que el código no crea")
@@ -1350,7 +1350,7 @@ class SupportedCardDocTest(unittest.TestCase):
         hechas (la verificación única, T39, sin pantalla; la convergencia, T41 a T52; el H3 en pantalla, T40), con su guía, y que la
         015 está **cerrada y publicada**; la API de la 016 está en §4.4 y la «API prevista» pasó a §4.5; y el «apoyo retirado», la
         fe de erratas, el borde de la rejilla, lo que no está confirmado (la apertura de 31 m) y lo que decidió Samuel están en
-        §1.7."""
+        §1.7 (y desde la T35 de la 017, la «API prevista» pasó a §4.6)."""
         head = one_line(self.des[:self.des.index("## Responsabilidad")])
         for fact in ("Desde la spec 016", "**cerrada por Samuel el 20/11/2026**", "**en `main` y publicada el 20/11/2026** (código `5e41ea8`)",
                      "con las 52 tareas hechas", "su verificación única, T39, sin pantalla", "la convergencia de la T41 a la T52",
@@ -1364,8 +1364,9 @@ class SupportedCardDocTest(unittest.TestCase):
                 self.assertNotIn(stale, head)
         self.assertNotIn("el acopio, el contrafuerte y los cuerpos apoyados de §1.7 —la 016—, §1.8", head)
         self.assertIn("### 4.4 Lo que entrega la spec 016 (R-36)", self.des)
-        self.assertIn("### 4.5 API prevista (otras entradas del roadmap)", self.des)
+        self.assertIn("### 4.6 API prevista (otras entradas del roadmap)", self.des)  # la 017 (T35) puso su §4.5 delante
         self.assertNotIn("### 4.4 API prevista", self.des)
+        self.assertNotIn("### 4.5 API prevista", self.des)
         text = one_line(section(self.des, "### 1.7 Entidades paramétricas y transiciones (DIS-09, DIS-10, DIS-13…DIS-16)"))
         for fact in ("fe de erratas del ADR-0031 §2", "des.stockpile_detect_project", "**marca ha de rodear el pie**",
                      "**Un montón que toca el borde de la rejilla no sale candidato**", "P-6 no queda confirmado",
@@ -1855,6 +1856,225 @@ class SupportedStateDocTest(unittest.TestCase):
         for fact in ("**Desde la 016, lo propio de cada tipo:**", "`ROW_CANDIDATES`", "`ROW_DECIDE`", "de una **retirada**",
                      "**contrafuerte**", "**cuerpo apoyado**", "«Apoyo retirado: se retiró el acopio …»",
                      "docs/usuario/acopios-y-contrafuertes.md"):
+            with self.subTest(panels=fact):
+                self.assertIn(fact, panels)
+
+
+# --- La 017 (pistas y rampas; su T35: la arquitectura) --------------------------------------------------
+
+# Las seis órdenes de la 017 con su clase de ``bl/ops/des.py`` y las tres provisionales de R-40 que desaparecen.
+ROAD_COMMANDS = ("des_create_road", "des_propose_road", "des_road_access", "des_edit_road_profile",
+                 "des_save_road_profile", "des_export_road")
+ROAD_CLASSES = tuple(f"GEOBLENDER_OT_{name}" for name in ROAD_COMMANDS)
+GONE_COMMANDS = ("des_draw_haul_road", "des_route_haul_road", "des_burn_roads")
+DES_OPS_PATH = EXTENSION_DIR / "bl" / "ops" / "des.py"
+# Cuántos valores tiene cada familia de parámetros de la 017 y cuáles son HIPÓTESIS.
+ROAD_FAMILY_COUNTS = ((dparams.ROAD_ENTITY, 26), (dparams.ACCESS_ENTITY, 8))
+ROAD_ROUTE_HYPOTHESES = {"mesh_m", "level_step_m", "max_cut_fill_m", "lambda_per_m", "turn_m", "margin_m", "simplify_m",
+                         "arrival_tol_m"}
+ACCESS_HYPOTHESES = {"walk_slope_pct", "walk_width_m", "min_berm_area_m2"}
+
+
+def values_by_name(families: Iterable[object]) -> dict[str, object]:
+    """Las plantillas de ``families`` (``ParamFamily``) por el último segmento de su clave (``des.road.{e}.mode`` → ``mode``)."""
+    return {family.pattern.rsplit(".", 1)[1]: family.template for family in families}  # type: ignore[attr-defined]
+
+
+@docs.requires_docs
+class RoadsCardDocTest(unittest.TestCase):
+    """Las fichas de arquitectura dicen los datos, los parámetros, las cifras y las operaciones de la 017 (T35; plan 017 §5.2):
+    ``des.md`` («Datos que posee», §1.9, §2.4 y §4.5 con los nombres reales) y ``formato-proyecto.md`` (§3.3, §3.11 y §4.2)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.des = docs.read(DES_RELPATH)
+        cls.format = docs.read(FORMAT_RELPATH)
+
+    def test_owned_data_parameters_figures_and_operations_of_the_017(self) -> None:
+        """RF-017-01, RF-017-02, RF-017-07, RF-017-23, RF-017-24, RF-017-27, RF-017-28 (plan 017 §5.2.1 a §5.2.3): «Datos que posee»
+        nombra cada familia de datos de la 017 (las siete), las tres familias de parámetros (26, 8 y 15 valores), la tabla de los
+        perfiles, cada cifra (las 23 de la pista y las 9 de la accesibilidad), cada tipo de operación (los cuatro, de versión, y
+        el de los perfiles, de proyecto) y ya no dice que las pistas grabadas estén previstas."""
+        owned = inline_tokens(section(self.des, "## Datos que posee"))
+        self.assertEqual(len(dprov.ROAD_DATA_FAMILIES), 7)
+        for family in dprov.ROAD_DATA_FAMILIES:
+            locator = dprov.dataset_locator(family.code, "Mi nombre" if family.named else "", "V01")
+            shown = locator.removeprefix("rasters/").removesuffix(".tif").replace("mi_nombre", "<nombre>").replace("v01", "<vNN>")
+            with self.subTest(dataset=family.code):
+                self.assertTrue(any(shown in token for token in owned), shown)
+        self.assertIn(roadprofiles().TABLE, owned)
+        for entity, count in ROAD_FAMILY_COUNTS:
+            prefix = entity.families[0].pattern.rsplit(".", 1)[0]
+            with self.subTest(parameters=entity.kind):
+                self.assertEqual(len(entity.families), count)
+                self.assertIn(f"{prefix}.*", owned)
+        self.assertEqual(len(dparams.ROAD_PROFILE_FAMILIES), 15)
+        self.assertIn("des.roadprofile.{p}.*", owned)
+        self.assertEqual((len(dprov.ROAD_FIGURES), len(dprov.ACCESS_FIGURES)), (23, 9))
+        for figure in (*dprov.ROAD_FIGURES, *dprov.ACCESS_FIGURES):
+            with self.subTest(figure=figure.key):
+                self.assertIn(figure.key, owned)
+        self.assertEqual(tuple(op.op_type for op in dprov.ROAD_OPERATION_TYPES),
+                         ("des.road", "des.road_access", "des.road_propose", "des.road_layer"))
+        for op in dprov.ROAD_OPERATION_TYPES:
+            with self.subTest(operation=op.op_type):
+                self.assertIn(op.op_type, owned)
+        self.assertIn(dprov.EDIT_ROAD_PROFILES, owned)
+        self.assertEqual(dprov.ROAD_REPRODUCIBLE, ("des.road", "des.road_access", "des.road_propose"))
+        self.assertNotIn("Previstas: rellenos, balsa, pistas grabadas", one_line(section(self.des, "## Datos que posee")))
+
+    def test_every_parameter_family_of_the_017_is_in_section_3_3(self) -> None:
+        """RF-017-01, RF-017-02, RF-017-07, RF-017-24, RF-017-28 (plan 017 §5.2.2; D-2, D-13, D-17; T35): ``formato-proyecto.md`` §3.3
+        nombra **exactamente** las familias de la 017 (26 de la pista, 8 de la accesibilidad y 15 del perfil de pista), cada una con su
+        prefijo (el último segmento solo, con su punto, vale tras la primera de su fila)."""
+        found: set[str] = set()
+        text = section(self.format, "### 3.3 `gb_parameter` y `gb_parameter_history` — parámetros tipados")
+        for table in tables(text):
+            for cells in table:
+                prefix = ""
+                for token in backticked(cells[0]):
+                    if token.startswith("des.") and ("{e}." in token or "{p}." in token):
+                        prefix, last = token.rsplit(".", 1)
+                        found.add(f"{prefix}.{last}")
+                    elif token.startswith(".") and prefix:
+                        found.add(f"{prefix}{token}")
+        wanted = {family.pattern for family in (*dparams.ROAD_FAMILIES, *dparams.ACCESS_FAMILIES, *dparams.ROAD_PROFILE_FAMILIES)}
+        self.assertEqual(len(wanted), 26 + 8 + 15)
+        self.assertEqual(sorted(wanted - found), [], "familias de la 017 que §3.3 no nombra")
+        self.assertEqual(sorted(f for f in found - wanted if f.split(".")[1] in ("road", "access", "roadprofile")), [],
+                         "una familia de la 017 que el código no tiene")
+
+    def test_the_documented_types_and_defaults_are_the_codes(self) -> None:
+        """RF-017-07, RF-017-10, RF-017-24, RF-015-08 (D-2, D-17, T01-a; T35): lo que §3.3 y «Datos que posee» dicen de los valores por
+        defecto de la 017 es lo que declara el código: los ocho parámetros de la ruta y los tres umbrales de la accesibilidad son HIPÓTESIS
+        **sin valor por defecto**; solo el presupuesto de estados (5.000.000) y «descartada» tienen valor en la pista, y el perfil de pista
+        solo el factor de malla (1,0) y la métrica (exacta), todos los demás ADOPTADO y sin valor."""
+        road = values_by_name(dparams.ROAD_ENTITY.families)
+        self.assertEqual({k for k, v in road.items() if v.kind.value == "HIPÓTESIS"}, ROAD_ROUTE_HYPOTHESES)  # type: ignore[attr-defined]
+        self.assertEqual({k: v.default for k, v in road.items() if v.default is not None},  # type: ignore[attr-defined]
+                         {"search_budget": 5_000_000, "discarded": False})
+        access = values_by_name(dparams.ACCESS_ENTITY.families)
+        self.assertEqual({k for k, v in access.items() if v.kind.value == "HIPÓTESIS"}, ACCESS_HYPOTHESES)  # type: ignore[attr-defined]
+        self.assertEqual({k: v.default for k, v in access.items() if v.default is not None}, {"discarded": False})  # type: ignore[attr-defined]
+        profile = values_by_name(dparams.ROAD_PROFILE_FAMILIES)
+        self.assertEqual({v.kind.value for v in profile.values()}, {"ADOPTADO"})  # type: ignore[attr-defined]
+        self.assertEqual({k: v.default for k, v in profile.items() if v.default is not None},  # type: ignore[attr-defined]
+                         {"mesh_factor": 1.0, "metric": "exact"})
+        self.assertEqual(road["mode"].choices, dprov.ROAD_MODES)  # type: ignore[attr-defined]
+        for text in (section(self.format, "### 3.3 `gb_parameter` y `gb_parameter_history` — parámetros tipados"),
+                     section(self.des, "## Datos que posee")):
+            with self.subTest(place=text[:30]):
+                self.assertIn("HIPÓTESIS", text)
+                self.assertIn("5.000.000", text)
+
+    def test_tables_grids_and_roles_of_the_017_are_in_the_format(self) -> None:
+        """RF-017-01, RF-017-23, RF-017-24, RF-017-25, RF-017-27, RF-017-28 (plan 017 §5.2.3; T35): §3.11 nombra las siete tablas
+        (el SQL, frente al código, lo comprueba ``test_tables_as_in_the_code``) y los papeles de lo que lee cada consumidor, §4.2 la
+        rejilla de lo alcanzable, y dice que la capa propuesta es la **única editable en QGIS** de las siete."""
+        named = inline_tokens(section(self.format, "### 3.11 Tablas de los módulos"))
+        for family in dprov.ROAD_DATA_FAMILIES:
+            if not family.extension:
+                shown = dprov.dataset_locator(family.code, "Mi nombre" if family.named else "", "V01").replace(
+                    "mi_nombre", "<nombre>").replace("v01", "<vNN>")
+                with self.subTest(table=family.code):
+                    self.assertTrue(any(shown in token for token in named), shown)
+        self.assertIn(roadprofiles().TABLE, named)
+        rasters = inline_tokens(section(self.format, "### 4.2 `rasters/` — GeoTIFF"))
+        self.assertIn(raster_pattern("acc", folder=False), rasters)
+        for role in (dprov.ROAD_AXIS_ROLE, dprov.ROAD_LAYER_ROLE, dprov.ROUTE_LAYER_ROLE, dprov.ROAD_ACCESS_ROLE,
+                     dprov.ROAD_ACCESS_BERMS_ROLE, dprov.ROAD_ACCESS_PLATFORMS_ROLE, dprov.ROAD_ACCESS_ZONES_ROLE,
+                     dprov.ACCESS_ENTRIES_ROLE, dprov.ACCESS_FINAL_ROLE, dprov.ROAD_OTHER_DESIGN_ROLE):
+            with self.subTest(role=role):
+                self.assertIn(role, named | rasters)
+        editable = [family.code for family in dprov.ROAD_DATA_FAMILIES if family.qgis_editable]
+        self.assertEqual(editable, ["rpl"])
+        text = one_line(section(self.format, "### 3.11 Tablas de los módulos"))
+        for fact in ("**Las tablas y la rejilla de las pistas y de la accesibilidad** (spec 017", "**El esquema del proyecto no cambia**",
+                     "`des_rpl_<nombre>_<vNN>` **sí es editable en QGIS**", "la única de las siete", "`des_road_profile`",
+                     "la rasante a CSV"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+        self.assertEqual(dexport.ROAD_EXPORTS, ("surface", "gradient", "reach"))
+        self.assertEqual(len(dexport.CSV_COLUMNS), 6)
+        self.assertNotIn("La comprobará R-40", self.format)  # §3.9: «requiere acceso» ya lo comprueba la accesibilidad (T18)
+
+    def test_the_card_says_where_the_017_is_and_names_the_real_modules(self) -> None:
+        """Definición de hecho §3.7 (T35; plan 017 §5.1; los nombres que las tareas cambiaron): la cabecera de ``des.md`` dice que la 017
+        (R-40) está hecha en ``main``, sin publicar, con sus trece módulos nuevos en §4.5; §4.5 existe y la «API prevista» pasó a §4.6
+        **sin** el ``design.roads.Road`` del plan; §1.9 nombra los módulos con sus nombres **reales** (``road_gradient``, no
+        ``road_grade``, que el glosario §14 prohíbe, y ``road_card``) y §2.4 dice que las reglas de la rampa las aplica ya la pista."""
+        head = one_line(self.des[:self.des.index("## Responsabilidad")])
+        for fact in ("**Desde la spec 017**", "pistas y rampas, R-40", "sin ADR nuevo", "trece módulos nuevos (§4.5)", "hecha en `main`, sin publicar",
+                     "la T35b", "el H3"):
+            with self.subTest(head=fact):
+                self.assertIn(fact, head)
+        self.assertNotIn("§1.8 en adelante", head)
+        self.assertIn("### 4.5 Lo que entrega la spec 017 (R-40)", self.des)
+        self.assertIn("### 4.6 API prevista (otras entradas del roadmap)", self.des)
+        for stale in ("design.roads.Road", "route_3d(", "grade_profile(", "`engrave(surface, road)`"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, self.des)
+        self.assertIsNone(re.search(r"design\.road_grade\b", self.des))
+        text = one_line(section(self.des, "### 1.9 Pistas y rampas (DIS-19)"))
+        for name in ("road_profiles", "road_model", "road_net", "road_route", "road_axis", "road_gradient", "road_section", "road_engrave",
+                     "road_store", "road_access", "access_store", "road_layer", "road_card"):
+            with self.subTest(module=name):
+                self.assertIn(f"design.{name}", text)  # que existe y que su fila nombra lo público: ``ModuleCardDocTest``
+        for fact in ("`RDW-001`", "`ACC-001`", "**tres modos**", "16 rumbos", "**el pasillo es una holgura y no un ancho**",
+                     "**La accesibilidad no es una entidad con cadena**", "`des.road_propose`", "RF-017-19", "no declara restricciones",
+                     "**Lo que no hace todavía.**", "H2-2"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+        self.assertIn("la pista de la 017 (§1.9)", one_line(section(self.des, "### 2.4 Rampas")))
+        row = re.search(r"^\| 017-des-pistas-y-rampas .*$", self.des, re.MULTILINE)
+        self.assertIsNotNone(row)
+        assert row is not None
+        for fact in ("R-40", "hecha en `main`, sin publicar", "T01 a T35"):
+            with self.subTest(row=fact):
+                self.assertIn(fact, row.group(0))
+        self.assertIsNone(re.search(r"^\| Pistas y rampas \(R-40\) \| 1\.9 y las reglas de rampa de 2\.4 \| R-33 \|$", self.des, re.MULTILINE))
+
+    def test_the_card_tells_what_the_017_adds_to_the_other_modules(self) -> None:
+        """RF-017-01, RF-017-23, RF-017-24, RF-017-27, RF-017-28 (T35): §4.5 dice, para los trece módulos nuevos y para ``params``,
+        ``provenance``, ``preview``, ``steps``, ``export``, ``reproduce``, ``entities``, ``entity_store``, ``report`` y ``store``, lo
+        que la 017 añade; y que ``reserves`` importa ``design.access_store`` y no ``design.road_*``."""
+        text = one_line(section(self.des, "### 4.5 Lo que entrega la spec 017 (R-40)"))
+        for fact in ("`design.road_gradient`", "`design.road_card`", "`design.access_store`", "`road_compute_steps`",
+                     "`des.roadprofile.{p}.*`", "`des.road_propose`", "no importa `reserves`",
+                     "`reserves.compliance_store` importa `design.access_store`", "no importa `design.road_*`",
+                     "`AXIS_REFERENCE`", "`RDW-001@100,5`", "`design.report.max_tangents`", "`ChainStage.ROAD_LAYER`",
+                     "módulos pesados"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+        owned_module = one_line(section(self.des, "## Dependencias permitidas"))
+        self.assertIn("`design.access_store.accessibilities_on`", owned_module)
+
+    def test_the_bar_and_the_context_panels_tell_the_017(self) -> None:
+        """RF-017-29, RF-017-27, RF-017-28, RF-015-25, RF-015-28 (BS §8.7 y PC §3.11; T35): la barra superior dice las seis órdenes con su
+        clase real (las del código y las del catálogo) y que las tres provisionales de R-40 desaparecen; los paneles contextuales, lo que
+        enseña la barra N de una pista (``design.road_card``) y de una accesibilidad (``DESIGN`` con ``des_acc_``) y que esta no se trae."""
+        source = DES_OPS_PATH.read_text(encoding="utf-8")
+        classes = set(re.findall(r"^class (GEOBLENDER_OT_des_\w+)", source, re.MULTILINE))
+        cat = catalog.load()
+        bar = one_line(docs.read(BS_RELPATH))
+        for name, cls in zip(ROAD_COMMANDS, ROAD_CLASSES, strict=True):
+            with self.subTest(order=name):
+                self.assertIn(cls, classes)
+                self.assertIn(f"geoblender.{name}", cat.commands)
+                self.assertIn(f"`{name}`", bar)
+                self.assertIn(f"`{cls}`", bar)
+        for gone in GONE_COMMANDS:
+            with self.subTest(gone=gone):
+                self.assertNotIn(f"geoblender.{gone}", cat.commands)
+                self.assertIn(f"`{gone}`", bar)
+        for fact in ("**desaparecen del catálogo**", "**Calcular**", "**Vista previa**", "«Exportar pista…» no es una operación",
+                     "`des_save_road_profile`", "**el destino por cota**", "la rampa", "**tres modos**"):
+            with self.subTest(bar=fact):
+                self.assertIn(fact, bar)
+        panels = one_line(docs.read(PC_RELPATH))
+        for fact in ("**Desde la 017, lo propio de la pista y de la accesibilidad:**", "`design.road_card`", "`read_road_facts`",
+                     "`read_access_facts`", "`des_acc_`", "no tiene cadena ni huella", "el objeto es `DESIGN`",
+                     "no se trae a otra versión", "«Pista…»"):
             with self.subTest(panels=fact):
                 self.assertIn(fact, panels)
 

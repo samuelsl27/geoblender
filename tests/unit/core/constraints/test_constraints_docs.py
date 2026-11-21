@@ -78,15 +78,10 @@ CITING_RELPATHS = ("docs/usuario/topografia.md", "docs/usuario/versiones.md",
 # (``core.constraints.declared`` y los nombres nuevos de ``gis.masks`` y de ``core.constraints.styles`` están en
 # ``core.md`` y ``gis.md``), otra vez desde su T47 (``gis.masks.declaring`` y ``declare_pending_steps``, de la T38, están en
 # ``gis.md``) y **desde la T38 de la 016** (``reserves.compliance.lowest_base`` y la base de los acopios de
-# ``reserves.compliance_store``, de la T29 y la T30, están en ``res.md``); una spec posterior los usará con lo suyo.
+# ``reserves.compliance_store``, de la T29 y la T30, están en ``res.md``) y **desde la T35 de la 017** (la selección de la accesibilidad de
+# las pistas de ``reserves.compliance_store``, de la T18, está en ``res.md``); una spec posterior los usará con lo suyo.
 PENDING_015_MODULES: frozenset[str] = frozenset()
-PENDING_015_API: frozenset[str] = frozenset({
-    # La 017, T18 (la verificación de la 012 con la accesibilidad de las pistas, DIFF-017): la tarea de documentación de la 017
-    # (T35) los lleva a ``res.md`` y vacía este conjunto.
-    "reserves.compliance_store.AccessSelection", "reserves.compliance_store.AccessUse",
-    "reserves.compliance_store.SkippedAccess", "reserves.compliance_store.access_role",
-    "reserves.compliance_store.read_communicated", "reserves.compliance_store.select_access",
-})
+PENDING_015_API: frozenset[str] = frozenset()
 # Los módulos de gis y de reserves de la 012 cuya API pública tiene que nombrar su ficha.
 GIS_MODULES = ("gis.search", "gis.polygons", "gis.coverage",
                *(f"gis.masks.{info.name}" for info in pkgutil.iter_modules(masks.__path__)
