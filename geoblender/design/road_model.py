@@ -43,7 +43,7 @@ import numbers
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -64,7 +64,10 @@ from .preview import Notice
 from .supported_requests import _int_or_none, _named
 
 if TYPE_CHECKING:
+    from .road_axis import Axis
+    from .road_engrave import Engraved
     from .road_profiles import RoadProfile
+    from .road_route import Arrival
 
 __all__ = [
     "DEFAULT_SEARCH_BUDGET",
@@ -86,6 +89,7 @@ __all__ = [
     "RoadOutcome",
     "RoadRequest",
     "RouteParams",
+    "RouteReport",
     "ZoneReach",
 ]
 
@@ -553,13 +557,39 @@ class RoadJob:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class RouteReport:
+    """La ruta 3D de una pista «trazar» como la dice el resumen (spec 017, T20; RF-017-10, RF-017-12; plan 017 §5.8 H-10): la malla (``mesh_m``, m), **la holgura del pasillo** (``margin_m``, m: la
+    ruta cambia con ella, H-10) y los nodos que tiene el pasillo (``corridor_nodes``), la cota inferior de la longitud de la red 2D (``lower_bound_m``, m: de la malla, no una cifra de la pista), los
+    nodos de la ruta (``nodes``), los estados expandidos y vistos de la búsqueda (``expanded`` y ``seen``) con su presupuesto (``budget``), el coste de la búsqueda (``cost``: una cifra de búsqueda, no una
+    longitud: RF-017-09), los rumbos cambiados (``turns``) y el destino alcanzado (``arrival``: lugar y cota, y si cabe en la tolerancia de llegada: ``road_route.Arrival``)."""
+
+    mesh_m: float
+    margin_m: float
+    corridor_nodes: int
+    lower_bound_m: float | None
+    nodes: int
+    expanded: int
+    seen: int
+    budget: int
+    cost: float
+    turns: int
+    arrival: Arrival
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class RoadOutcome:
     """El cálculo de una pista (RF-017-01, RF-017-23; plan 017 §5.3.1): su ``name``, el ``code`` de la entidad, el ``mode``,
     la ventana de trabajo de la rejilla (``window``: filas y columnas), la superficie resultante (``surface``, m, float64) y
     la huella de la sección (``footprint``: booleana) en esa ventana, las ``figures`` de RF-017-23 (CALCULADO, con su unidad
     y su ámbito: ``provenance.road_figures``) y los ``notices`` en orden estable. Los arrays son de la forma de la ventana y
     de solo lectura. Lo demás que necesiten quienes calculan el eje, la rasante, la sección y el grabado (T10 a T13) y la
-    orden (T20) lo añaden ellas, compatible hacia atrás."""
+    orden (T20) lo añaden ellas, compatible hacia atrás.
+
+    **Lo que añade ``road_store.road_compute_steps``** (T20; todo opcional): el eje con curvas (``axis``: ``road_axis.Axis``), el terreno de partida bajo sus estaciones (``terrain``, m, una cota por
+    estación) y la rasante en ellas (``levels``, m), el grabado entero (``engraved``: ``road_engrave.Engraved``, con las celdas que las máscaras no dejan mover y los grupos de la calzada que no
+    queda en su rasante, de los que la T20b arma la confirmación de RF-017-22 y los avisos con la restricción que lo impide), la ruta con la holgura del pasillo (``route``; ``None`` fuera de
+    «trazar»), **los nombres de los otros diseños** de la versión cuya superficie difiere de la de partida en la huella (``other_designs``: RF-017-05 (b); la T21 los registra como entradas de la pista) y
+    si la pendiente media pasa de la pendiente media máxima del perfil (``mean_exceeded``: RF-017-17; la confirmación y el motivo los pide la orden, T20b)."""
 
     name: str
     code: str
@@ -569,6 +599,13 @@ class RoadOutcome:
     footprint: np.ndarray
     figures: tuple[FigureSpec, ...] = ()
     notices: tuple[Notice, ...] = ()
+    axis: Axis | None = None
+    terrain: np.ndarray | None = None
+    levels: np.ndarray | None = None
+    engraved: Engraved | None = None
+    route: RouteReport | None = None
+    other_designs: tuple[str, ...] = ()
+    mean_exceeded: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _label(self.name, "el nombre de una pista"))
@@ -581,6 +618,46 @@ class RoadOutcome:
         object.__setattr__(self, "footprint", _readonly(self.footprint, shape, np.bool_, "la huella de la sección"))
         object.__setattr__(self, "figures", _tuple_of(self.figures, FigureSpec, "las cifras de una pista"))
         object.__setattr__(self, "notices", _tuple_of(self.notices, Notice, "los avisos de una pista"))
+        stations = None if self.axis is None else (int(self.axis.stations.shape[0]),)
+        for attr, what in (("terrain", "el terreno bajo el eje"), ("levels", "la rasante")):
+            found = getattr(self, attr)
+            if found is None:
+                continue
+            if stations is None:
+                raise ValueError(f"{what} es de las estaciones del eje: sin eje no hay estaciones")
+            object.__setattr__(self, attr, _readonly(found, stations, np.float64, what))
+        names = tuple(_label(name, "el nombre de otro diseño") for name in self.other_designs)
+        object.__setattr__(self, "other_designs", names)
+        object.__setattr__(self, "mean_exceeded", _flag(self.mean_exceeded, "«mean_exceeded» de una pista"))
+
+    @property
+    def off_level(self) -> tuple[Any, ...]:
+        """Los grupos de celdas de la calzada que no quedan en su rasante (RF-017-22; ``road_engrave.OffLevelGroup``: su área, su diferencia máxima, su lugar y su causa); vacío si el grabado no los
+        tiene o no se grabó. Con alguno hace falta la confirmación expresa de la persona antes de crear (la pide la T20b)."""
+        return () if self.engraved is None else tuple(self.engraved.off_level)
+
+    @property
+    def message(self) -> str:
+        """El mensaje de la operación (spec 017, T20): lo que dice el resumen de lo calculado, en español: la pista, su código, la longitud de su eje y el desmonte y el terraplén de la sección y del borde
+        juntos. Es lo que recibe ``DesignWriter.commit`` al crearla (``Calculation.message``)."""
+        found = {figure.key: figure.value for figure in self.figures}
+        head = f"Pista «{self.name}» ({self.code}) calculada"
+        if "des.road_length_m" not in found:
+            return head
+        cut = (found.get("des.road_cut_m3") or 0.0) + (found.get("des.road_edge_cut_m3") or 0.0)
+        fill = (found.get("des.road_fill_m3") or 0.0) + (found.get("des.road_edge_fill_m3") or 0.0)
+        return (f"{head}: {format_value(round(float(found['des.road_length_m']), 2))} m de eje, desmonte {format_value(round(cut, 2))} m³ y terraplén "
+                f"{format_value(round(fill, 2))} m³ (sección y borde)")
+
+    def compose(self, start: np.ndarray) -> np.ndarray:
+        """La superficie entera que deja la pista: una rejilla **nueva** igual a ``start`` (la superficie de partida, de la rejilla entera) con la ventana de trabajo sustituida por :attr:`surface`.
+        ``ValueError`` si ``start`` no es una rejilla que contenga la ventana."""
+        whole = np.array(start, dtype=np.float64, copy=True)
+        rows, cols = self.window
+        if whole.ndim != 2 or rows.stop > whole.shape[0] or cols.stop > whole.shape[1]:
+            raise ValueError(f"la superficie de partida {whole.shape} no contiene la ventana de la pista ({rows}, {cols})")
+        whole[rows, cols] = self.surface
+        return whole
 
 
 # --- La accesibilidad: lo que se pide --------------------------------------------------------------------------------------

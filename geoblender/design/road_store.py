@@ -4,8 +4,9 @@ plan 017 §5.1, §5.2.1 a §5.2.3, §5.3.1, §5.7 P-1, P-5 y P-14; D-3, D-13 y D
 
 El homólogo, para la pista (``des.road``: una entidad **con cadena**, ``RDW-001``: una red de pistas es una cadena y cada ramal parte de la superficie que deja la anterior, D-16),
 de ``design.entity_store.prepare_platform_units``: **solo lee**. Nada se escribe en el proyecto (RF-015-03) salvo las máscaras de la versión si no estaban al día (una operación
-propia, RF-013-04, y solo si no se dan cargadas). Calcular por pasos y el resumen son de la T20; crear, de la T21; recalcular, reproducir y traer, de la T22; los modos «sobre un eje» y
-«eje 3D» con su cálculo, de la T23.
+propia, RF-013-04, y solo si no se dan cargadas). **Calcular por pasos** (:func:`road_compute_steps`, T20 (a): la orquestación por modos, las cifras de RF-017-23 y el ``RoadOutcome``, sin proyecto
+y sin escribir nada); la ``Calculation``, las dos confirmaciones y el resumen son de la T20b; crear, de la T21; recalcular, reproducir y traer, de la T22; los modos «sobre un eje» y «eje 3D» con su
+lectura y su contrato, de la T23.
 
 - :func:`prepare_road_units` y :func:`prepare_road` (de una vez): la versión editable (RF-009-21), el código ``RDW-nnn`` y el nombre únicos, **la partida** (RF-017-05, D-3: la persona
   la elige; sin ella, :func:`default_start`: la de explotación de la cantera de la 014 de la versión y, si no, la última de la cadena de entidades) con la cadena (una pista por
@@ -34,7 +35,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
@@ -54,13 +55,37 @@ from ..gis.masks import access
 from ..gis.masks.combine import ClassBit
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
-from . import entities, entity_store, pipeline, provenance, road_access, road_net, road_profiles, road_route, road_section
+from . import (
+    entities,
+    entity_store,
+    pipeline,
+    provenance,
+    road_access,
+    road_axis,
+    road_engrave,
+    road_gradient,
+    road_net,
+    road_profiles,
+    road_route,
+    road_section,
+)
 from .compose import admitted_pair
 from .entities import EntityKind, EntityRegistry, EntityState
 from .entity_store import EntityParamRow
 from .messages import DesignError
-from .params import RoadParam, RoadProfileParam, check_entity_param, entity_key, entity_params, road_profile_key
+from .params import (
+    VERIFY_MIN_THICKNESS,
+    WARNING_RATIO,
+    RoadParam,
+    RoadProfileParam,
+    check_entity_param,
+    entity_key,
+    entity_params,
+    road_profile_key,
+)
+from .platform import QuarryOrder, _project_number, _window_grid, magnitude_notices
 from .preview import Notice
+from .report import Previous, _thickness
 from .road_model import (
     AccessJob,
     AccessRequest,
@@ -70,20 +95,24 @@ from .road_model import (
     RoadGeometry,
     RoadJob,
     RoadMode,
+    RoadOutcome,
     RoadRequest,
     RouteParams,
+    RouteReport,
 )
 from .sectors import design_sectors, refuse_pending
-from .seeds import sector_layout
+from .seeds import pace_progress, sector_layout
 from .store import OperationStart, _loaded_masks, _start, require_version
 from .stockpiles import runs_cells
 from .surfaces import project_frame, read_surface_steps, read_surface_window
 from .zones import polygons_cells
 
 __all__ = [
+    "COMPUTE_PHASE",
     "AxisReference",
     "DefaultStart",
     "EntityReference",
+    "OtherReader",
     "PointReference",
     "PreparedRoad",
     "avoid_weight",
@@ -94,6 +123,7 @@ __all__ = [
     "parse_reference",
     "prepare_road",
     "prepare_road_units",
+    "road_compute_steps",
     "road_values",
     "start_is_final_notice",
     "untouchable_cells",
@@ -1001,3 +1031,242 @@ def prepare_road(project: StoreProject, request: RoadRequest, *, version: str | 
             result: PreparedRoad = stop.value
             return result
 
+
+# --- Calcular por pasos (spec 017, T20 (a); RF-017-23, 17, 12, 05 (b), 06, 14, 16; RF-015-03, 09, 13, 29; RNF-017-04, 06, 07; plan 017 §5.3.2, §5.4 A0, §5.7 P-4, P-14, §5.8 H-10) -----------------
+
+COMPUTE_PHASE = "road_compute"
+"""La fase de los pasos propios de :func:`road_compute_steps` (la malla, el eje, la rasante, los otros diseños y el resultado); la red 2D, la ruta, la sección y el grabado llevan la suya
+(``road_net``, ``road_route``, ``road_section`` y ``road_engrave``)."""
+_STAGES = 8
+"""Las etapas de los pasos propios (el ``total`` de sus ``Progress``): la malla, la red 2D, la ruta, el eje y la rasante, la sección, el grabado, los otros diseños y el resultado."""
+_SECTION_PHASE = "road_section"
+OtherReader = Callable[[str, tuple[slice, slice]], np.ndarray]
+"""Lo que lee la superficie de **otro diseño** de la versión (RF-017-05 (b)) en una ventana de la rejilla: su nombre (el del dato) y la ventana de trabajo (filas y columnas de la rejilla) →
+la superficie de esa ventana (m, float64, de su forma). Lo da quien calcula con el proyecto (T20b y T21: ``surfaces.read_surface_window``); el cálculo no lleva proyecto."""
+
+
+def _stage(done: int, text: str) -> Progress:
+    return Progress(COMPUTE_PHASE, done, _STAGES, text)
+
+
+def _in_layer(job: RoadJob) -> str:
+    """El objeto de un rechazo de la pista de ``job``: nombra la pista y su capa (RF-017-04)."""
+    return f"Pista «{job.request.name}» de la capa «{job.request.layer}»"
+
+
+def _no_data_error(job: RoadJob, shown: str, rows: np.ndarray, columns: np.ndarray) -> DesignError:
+    """RF-015-09: ``des.entity_nodata`` de la pista de ``job`` por las celdas (filas y columnas de **la rejilla entera**, de norte a sur y de oeste a este) de la superficie de partida ``shown`` que no
+    tienen dato bajo su sección o su eje: el área (m²) y el centro de la primera. **Sin ocultarlo con un valor.**"""
+    grid = job.grid
+    return DesignError("des.entity_nodata", obj=_in_layer(job), field=entity_key(job.code, RoadParam.START), value=shown, layer=job.request.layer, entity=job.request.name,
+                       area=round(int(rows.size) * grid.cell_area, 2), surface=shown, role=_START_ROLE, x=float(grid.west + (int(columns[0]) + 0.5) * grid.dx),
+                       y=float(grid.north - (int(rows[0]) + 0.5) * grid.dy))
+
+
+def _route_steps(job: RoadJob, budget_s: float) -> Generator[Progress, None, tuple[road_route.Route, road_net.Corridor]]:
+    """A1 y A2 de «trazar» (RF-017-09 a 12; P-14), por pasos: la malla de la ruta (con lo intocable y el peso de «preferible no afectar»), la red 2D desde el destino y desde el origen, el pasillo con la
+    holgura de la ruta y la ruta 3D con su presupuesto de estados. Si no hay ruta, el rechazo de RF-017-12 (``des.road_no_route_network``, ``des.road_no_route_corridor`` o ``des.road_budget``: **la
+    tercera causa no es «no hay ruta»**) con la capa, la pista, el campo y el valor; nada se registra ni se relaja un límite por su cuenta. ``des.road_dest_level_out_of_zone`` si el destino por cota
+    no lo alcanza ningún nodo de su zona."""
+    params = job.route
+    assert params is not None and job.geometry.origin is not None
+    pd, height = job.profile.max_gradient_pct / 100.0, params.max_cut_fill_m
+    yield _stage(0, f"Preparando la malla de la ruta de «{job.request.name}»…")
+    mesh = road_net.route_mesh(job.grid, job.start, params.mesh_m, job.untouchable, avoid_weight=job.avoid_weight)
+    target = road_route.route_target(job, mesh)
+    net_dest = yield from pipeline.forward(road_net.network_steps(mesh, target, pd, height, budget_s=budget_s))
+    net_origin = yield from pipeline.forward(road_net.network_steps(mesh, mesh.node_of(*job.geometry.origin), pd, height, budget_s=budget_s))
+    corridor = road_net.corridor(net_origin, net_dest, params.margin_m)
+    found = yield from pipeline.forward(road_route.route_steps(job, corridor, budget_s=budget_s))
+    if not found.ok:
+        raise road_route.no_route(job, net_origin, net_dest, found).error(job)
+    return found, corridor
+
+
+def _form_axis(job: RoadJob, route: road_route.Route | None, arrival: road_route.Arrival | None) -> road_axis.Axis:
+    """El eje con curvas de la pista (A4; RF-017-13, RF-017-14): en «trazar», la ruta simplificada con el origen y el destino **exactos** (el punto de la capa; con un destino por cota, el centro del
+    nodo de llegada); en «sobre un eje», la línea dibujada y en «eje 3D», la línea con su Z, **sin modificarlas**. Si el radio que cabe es menor que Rmín, el rechazo de RF-017-14
+    (``des.road_radius_below_min``) con la capa, la pista y el perfil; en «eje 3D», que no rechaza (la línea es una entrada: el radio es un aviso, RF-017-18)."""
+    profile, geometry = job.profile, job.geometry
+    radii = (profile.curve_radius_m, profile.min_radius_m, profile.station_step_m)
+    try:
+        if job.mode is RoadMode.TRACE:
+            assert route is not None and arrival is not None and job.route is not None
+            destination = (arrival.x, arrival.y) if isinstance(geometry.destination, LevelDestination) else geometry.destination
+            return road_axis.axis_of(route.centers, *radii, simplify_m=job.route.simplify_m, origin=geometry.origin, destination=destination)
+        return road_axis.axis_of(geometry.line, *radii, reject_below_minimum=job.mode is not RoadMode.AXIS_3D)
+    except road_axis.RadiusBelowMinimum as error:
+        raise error.error(layer=job.request.layer, entity=job.request.name, profile=profile) from None
+
+
+def _terrain_on(job: RoadJob, axis: road_axis.Axis, shown: str) -> np.ndarray:
+    """La superficie de partida bajo cada estación del eje (m): la interpolación bilineal de la 011 (``road_section.sample_terrain``) o, donde falta un vecino (una celda sin dato junto al eje o a menos
+    de media celda del borde de la rejilla), la de **su propia celda** —como las cotas de inicio y de fin por defecto de la preparación—; si esa tampoco tiene dato, ``des.entity_nodata`` (RF-015-09).
+    No se elige otra cota por la persona."""
+    grid = job.grid
+    x, y = axis.points[:, 0], axis.points[:, 1]
+    found = np.array(road_section.sample_terrain(job.start, grid, x, y), dtype=np.float64)
+    missing = ~np.isfinite(found)
+    if not bool(missing.any()):
+        return found
+    column = np.floor((x[missing] - grid.west) / grid.dx).astype(np.int64)
+    row = np.floor((grid.north - y[missing]) / grid.dy).astype(np.int64)
+    inside = (row >= 0) & (row < grid.nrows) & (column >= 0) & (column < grid.ncols)
+    if not bool(inside.all()):
+        raise ValueError("el eje de la pista sale de la rejilla del proyecto: la preparación rechazó antes el origen, el destino y los vértices que caen fuera (RF-017-04)")
+    own = job.start[row, column]
+    if not bool(np.isfinite(own).all()):
+        bad = ~np.isfinite(own)
+        cells = np.unique(row[bad] * grid.ncols + column[bad])
+        raise _no_data_error(job, shown, cells // grid.ncols, cells % grid.ncols)
+    found[missing] = own
+    return found
+
+
+def _line_z(axis: road_axis.Axis, line: np.ndarray) -> np.ndarray:
+    """La Z de la línea de «eje 3D» en las estaciones del eje (RF-017-18): la de la línea según la abscisa **proporcional** a lo largo de su poligonal (exacta en una recta, donde el eje y la línea miden
+    lo mismo; con esquinas, el eje con sus curvas es más corto y la Z se reparte proporcionalmente). **El contrato con R-35 y la lectura de esa Z los fija la T23**: esto no los decide."""
+    chord = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(line[:, :2], axis=0).T))))
+    return np.asarray(np.interp(axis.stations / axis.length_m * chord[-1], chord, line[:, 2]), dtype=np.float64)
+
+
+def _levels(job: RoadJob, axis: road_axis.Axis, terrain: np.ndarray) -> np.ndarray:
+    """La rasante en las estaciones del eje (A5; RF-017-15, RF-017-16): en «eje 3D» la Z de la línea, **sin recalcularla**; en los demás modos, la rasante acotada de ``gradient_line`` entre la cota de
+    inicio y la de fin (las del trabajo o, sin ellas, el terreno y, con un destino por cota, la pedida). ``des.road_drop_too_steep`` si el desnivel pasa de pd por la longitud del eje."""
+    if job.mode is RoadMode.AXIS_3D:
+        assert job.geometry.line is not None
+        return _line_z(axis, job.geometry.line)
+    destination = job.geometry.destination
+    start = float(terrain[0]) if job.start_level_m is None else job.start_level_m
+    if job.end_level_m is not None:
+        end = job.end_level_m
+    elif isinstance(destination, LevelDestination):
+        end = destination.level_m
+    else:
+        end = float(terrain[-1])
+    try:
+        return road_gradient.gradient_line(axis.stations, terrain, job.profile.max_gradient_pct / 100.0, start, end)
+    except road_gradient.DropTooSteep as error:
+        raise error.error(layer=job.request.layer, entity=job.request.name, profile=job.profile) from None
+
+
+def _axis_notices(job: RoadJob, axis: road_axis.Axis, levels: np.ndarray) -> tuple[tuple[Notice, ...], bool]:
+    """Los avisos del eje y de la rasante, en orden, y si la pendiente media pasa de la media máxima del perfil: los radios que bajaron del de diseño (RF-017-14) y, en «eje 3D», la comprobación de la línea
+    (RF-017-18: un aviso por tramo que pasa de pd, la media y cada curva por debajo de Rmín) o, en los demás, el aviso de la media (RF-017-17: la media, el límite y los tramos de mayor pendiente con su
+    abscisa y su lugar). La confirmación expresa y su motivo no son de este cálculo."""
+    name = job.request.name
+    found = [*axis.notices(name)]
+    if job.mode is RoadMode.AXIS_3D:
+        checked = road_gradient.check_axis_3d(axis, levels, job.profile, name)
+        found.extend(checked)
+        return tuple(found), any(notice.code == "des.road_mean_gradient" for notice in checked)
+    mean = road_gradient.mean_gradient_notice(axis, levels, job.profile, name)
+    if mean is not None:
+        found.append(mean)
+    return tuple(found), mean is not None
+
+
+def _road_figures(job: RoadJob, axis: road_axis.Axis, levels: np.ndarray, engraved: road_engrave.Engraved) -> tuple[Any, ...]:
+    """Las veintitrés cifras CALCULADO de RF-017-23 (``provenance.road_figures``, con su unidad y el ámbito de la pista): las del eje y la rasante —la longitud, las cotas de inicio y de fin, el desnivel
+    (``z_fin − z_inicio``, con signo), la pendiente media (Σ|Δcota| / S, D-7) y la máxima con su abscisa, el radio mínimo (no existe sin curvas), el número de curvas y las anchuras de la calzada y de la
+    sección— y las del grabado (``Engraved.figure_values``: el área grabada, el corte y el relleno de la sección y del borde por separado y el neto, la pared, las alturas máximas y la afección de
+    «preferible no afectar»)."""
+    stations = axis.stations
+    steps = np.abs(np.diff(levels)) / np.diff(stations)
+    top = int(np.argmax(steps))
+    widths = road_profiles.derived(job.profile)
+    values: dict[str, float | None] = {
+        "des.road_length_m": axis.length_m, "des.road_z_start_m": float(levels[0]), "des.road_z_end_m": float(levels[-1]), "des.road_drop_m": float(levels[-1] - levels[0]),
+        "des.road_gradient_mean_pct": road_gradient.mean_gradient(stations, levels) * 100.0, "des.road_gradient_max_pct": float(steps[top]) * 100.0,
+        "des.road_gradient_max_station_m": float(stations[top]), "des.road_radius_min_m": axis.min_radius_m, "des.road_curves": int(axis.curve_count),
+        "des.road_width_m": widths.carriageway_m, "des.road_section_m": widths.section_m, **engraved.figure_values()}
+    return provenance.road_figures(job.request.name, job.code, values)
+
+
+def road_compute_steps(job: RoadJob, common: Mapping[str, object], *, surface: str | None = None, others: Sequence[str] = (), read_other: OtherReader | None = None,
+                       quarry: QuarryOrder | None = None, previous: Previous | None = None, operation: str = "", budget_s: float = road_net.STEP_BUDGET_S
+                       ) -> Generator[Progress, None, RoadOutcome]:
+    """Los pasos que calculan la pista de ``job`` (RF-017-23, RF-015-03, RF-015-29; plan 017 §5.3.2: el ``road_compute_steps`` que **comparten «Calcular», el recálculo y la reproducción**, como
+    ``entity_store.platform_compute_steps``), **sin proyecto y sin escribir nada** (``yield from``; cerrar el generador, Esc, no deja nada ni cambia ninguna entrada): devuelve (valor de ``StopIteration``)
+    el :class:`~.road_model.RoadOutcome`, por pasos de ``budget_s`` como mucho (RNF-017-06).
+
+    **Por modo** (P-14): «trazar» encadena A1 a A9 —la red 2D desde el destino y desde el origen, el pasillo, la ruta 3D con su presupuesto de estados (``road_net`` y ``road_route``; sin ruta, el rechazo
+    de RF-017-12), el eje con curvas (A4), la rasante acotada (A5), la ventana de trabajo (A0), la sección (A6 y A7) y el grabado con su borde (A8 y A9)—; «sobre un eje», de A4 a A9 (la línea
+    dibujada, sin ruta ni red 2D); «eje 3D», la comprobación de A5 (la Z de la línea es la rasante y no se recalcula: un aviso por incumplimiento) y de A6 a A9. **Una ventana de trabajo** por pista
+    (A0: :func:`~.road_engrave.engrave_window`, la caja de la sección ampliada por el alcance del borde y dos celdas): la sección y el borde se miden en ella, la rejilla entera solo se lee y se escribe
+    una vez (quien crea, T21; ``RoadOutcome.compose``).
+
+    Los rechazos de la persona salen como ``DesignError`` al avanzar, con la capa, la pista, el campo y el valor (RF-017-04) y **sin registrar nada ni elegir un valor por ella**: sin ruta (RF-017-12:
+    ``des.road_no_route_network``, ``des.road_no_route_corridor`` y ``des.road_budget``), el radio que cabe menor que Rmín (RF-017-14), el desnivel que pasa de pd por la longitud (RF-017-16) y la
+    **falta de dato** en la superficie de partida bajo la sección (RF-015-09: ``des.entity_nodata``; bajo el borde, lo que llega a celdas sin dato es el aviso de RF-015-13, como en la plataforma).
+
+    ``common`` son los parámetros del proyecto que lee el cálculo (``provenance.PLATFORM_COMMON_PARAMS``, ya resueltos: la tolerancia de cara, el umbral de la magnitud, el espesor mínimo y el salto
+    creado); ``surface``, el nombre del dato de la superficie de partida (para el rechazo por falta de dato; por defecto, el de la petición); ``quarry``, la otra superficie de la cantera de la 014 si la
+    pista parte de una de las dos (RF-015-14); ``previous`` y ``operation``, los de la magnitud de RF-013-30 (como ``platform_outcome``). **Los otros diseños** (RF-017-05 (b): ``others`` son los
+    nombres de los datos de :attr:`PreparedRoad.others` y ``read_other``, quien lee su superficie **en la ventana de trabajo**, una a una): si en la huella de la pista (la sección y lo que su borde
+    alcanza) la partida difiere de alguno en más del espesor mínimo, el aviso de :func:`other_design_notices` y el nombre en ``RoadOutcome.other_designs`` (lo que la T21 registra como entrada de la
+    pista, con su hash: si cambia, la pista queda obsoleta con su causa); sin ninguno que difiera, no hay nada que registrar. **No** arma la confirmación de la media por encima de pm ni la de la calzada
+    fuera de su rasante, ni el resumen: son de la T20b (``RoadOutcome.mean_exceeded`` y ``RoadOutcome.off_level`` dan lo que decide)."""
+    if not isinstance(job, RoadJob):
+        raise TypeError(f"el trabajo de una pista es RoadJob, no {job!r}")
+    names = tuple(others)
+    if names and read_other is None:
+        raise ValueError("las superficies de otros diseños (RF-017-05 (b)) se leen con read_other: el cálculo no lleva proyecto")
+    name, grid, profile = job.request.name, job.grid, job.profile
+    shown = job.request.start if surface is None else surface
+    ratio = _project_number(common, WARNING_RATIO)
+    thickness = _thickness(_project_number(common, VERIFY_MIN_THICKNESS))
+    yield _stage(0, f"Calculando la pista «{name}»…")
+    route: road_route.Route | None = None
+    corridor: road_net.Corridor | None = None
+    arrival: road_route.Arrival | None = None
+    if job.mode is RoadMode.TRACE:
+        route, corridor = yield from _route_steps(job, budget_s)
+        arrival = road_route.arrival_of(job, route)
+    yield _stage(3, f"Formando el eje y la rasante de «{name}»…")
+    axis = _form_axis(job, route, arrival)
+    terrain = _terrain_on(job, axis, shown)
+    levels = _levels(job, axis, terrain)
+    found, exceeded = _axis_notices(job, axis, levels)
+    yield _stage(4, f"Midiendo la sección de «{name}»…")
+    window = road_engrave.engrave_window(axis, profile, grid)  # A0: la ventana de trabajo de la pista
+    carriageway = road_profiles.derived(profile).carriageway_m
+    section = yield from pipeline.forward(pace_progress(
+        road_section.section_steps(axis, carriageway, profile.shoulder_m, profile.berm_m, job.start, grid, window), budget_s, phase=_SECTION_PHASE,
+        running=f"Midiendo la sección de «{name}»…", finished=f"Sección de «{name}» medida"))
+    empty = section.cells & ~np.isfinite(job.start[window])  # RF-015-09: ninguna celda de la sección sin dato en la superficie de partida
+    if bool(empty.any()):
+        rows, columns = np.nonzero(empty)
+        raise _no_data_error(job, shown, rows + window[0].start, columns + window[1].start)
+    levels_by_cell = section.levels(axis.stations, levels)
+    yield _stage(5, f"Grabando la pista «{name}»…")
+    engraved = yield from pipeline.forward(road_engrave.engrave_steps(job, section, levels_by_cell, common, budget_s=budget_s, quarry=quarry))
+    differing: list[str] = []
+    others_found: list[Notice] = []
+    if names:
+        assert read_other is not None
+        yield _stage(6, f"Comparando la partida de «{name}» con otros diseños…")
+        influence = engraved.footprint | engraved.in_reach  # la huella de la pista: la sección y lo que su borde alcanza
+        here = job.start[window]
+        sub = _window_grid(grid, window)
+        for other in names:
+            values = np.asarray(read_other(other, window), dtype=np.float64)
+            if values.shape != here.shape:
+                raise ValueError(f"la superficie de «{other}» es de la forma {values.shape} y la ventana de trabajo de la pista, {here.shape}")
+            differs = other_design_notices(name, sub, influence, here, {other: values}, thickness)
+            if differs:
+                differing.append(other)
+                others_found.extend(differs)
+            yield _stage(6, f"Comparada la partida de «{name}» con «{other}»")
+    yield _stage(7, f"Cifras de la pista «{name}»…")
+    figures = _road_figures(job, axis, levels, engraved)
+    notices = (*found, *others_found, *engraved.notices, *magnitude_notices(engraved.cut_m3, engraved.fill_m3, previous, ratio, operation))
+    summary = None
+    if route is not None and corridor is not None and arrival is not None:
+        assert job.route is not None and route.cost is not None
+        summary = RouteReport(route.mesh.mesh_m, job.route.margin_m, corridor.nodes, corridor.lower_bound_m, len(route.nodes), route.expanded, route.seen, route.budget, float(route.cost),
+                              route.turns, arrival)
+    outcome = RoadOutcome(name, job.code, job.mode, window, engraved.surface, engraved.footprint, figures, notices, axis=axis, terrain=terrain, levels=levels, engraved=engraved,
+                          route=summary, other_designs=tuple(differing), mean_exceeded=exceeded)
+    yield _stage(_STAGES, f"Pista «{name}» calculada")
+    return outcome
