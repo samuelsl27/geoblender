@@ -33,6 +33,11 @@ explotación de la cantera) y, tras calcular, **las listas** de tramos de berma,
 (:func:`summary_lines`) lleva la cabecera, las cotas, el área y los avisos y **no repite lo que no se comunica**, que dicen las listas (y, en el informe de la orden,
 :func:`access_report_lines`).
 
+**Proponer el trazado…** (spec 017, T33 (a); HU-017-1; RF-017-28, RF-017-17, RF-017-29; comprobación manual M6): el resumen de «Calcular» de ``geoblender.des_propose_road`` (:func:`_propose_lines`, que
+llama :func:`summary_lines`) lleva el perfil, la longitud, las cotas de inicio y de fin, las pendientes con su abscisa y su lugar, el radio mínimo y que es una capa de líneas 3D editable en QGIS que no
+cambia ninguna superficie; la **pendiente media por encima de pm solo avisa** (en ámbar, sin pedir confirmación) y todos los avisos con su lugar siguen al resumen. Sus listas de capas, perfiles y
+partida son las de «Pista…» (:func:`refresh_road_choices`).
+
 Los derivados y la marca de la rejilla **no se calculan aquí**: son los de
 ``design.model.BenchProfile`` (``avance_m``, ``general_deg``, ``unresolved_by``). **Nada se lee al
 dibujar**: :func:`fill_profiles` regenera la vista desde el proyecto (al abrir la ventana y tras
@@ -2030,6 +2035,15 @@ def _road_mode_text(mode: object) -> str:
     return names.get(str(mode), str(mode))
 
 
+def _curves_line(radius_min_m: float | None, curves: int) -> tuple[str, bool]:
+    """La línea de las curvas de un eje (la de una pista y la de una propuesta del trazado): sin curvas, «el eje es una recta»; con ellas, el radio mínimo y cuántas hay."""
+    if radius_min_m is None:
+        return tr("No curves: the axis is a straight line"), False
+    if curves == 1:
+        return tr("Minimum radius {radius} m in 1 curve", radius=_number(radius_min_m, 1)), False
+    return tr("Minimum radius {radius} m in {curves} curves", radius=_number(radius_min_m, 1), curves=_number(curves)), False
+
+
 def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de una pista calculada (``design.preview.RoadSummary``; spec 017, T29b; RF-017-23, RF-017-17, RF-017-22; M1): su modo, su perfil, su longitud y las
     cotas de inicio y de fin, la pendiente media y la máxima con su abscisa y su lugar, el radio mínimo y las curvas, el corte y el relleno de la sección y del
@@ -2049,13 +2063,7 @@ def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
                  mean=_number(summary.gradient_mean_pct, 2), max=_number(summary.gradient_max_pct, 2),  # type: ignore[union-attr]
                  station=_number(summary.gradient_max_station_m, 1), x=_number(summary.gradient_max_x, 1),  # type: ignore[union-attr]
                  y=_number(summary.gradient_max_y, 1)), False)]  # type: ignore[union-attr]
-    if summary.radius_min_m is None:  # type: ignore[union-attr]
-        lines.append((tr("No curves: the axis is a straight line"), False))
-    elif summary.curves == 1:  # type: ignore[union-attr]
-        lines.append((tr("Minimum radius {radius} m in 1 curve", radius=_number(summary.radius_min_m, 1)), False))  # type: ignore[union-attr]
-    else:
-        lines.append((tr("Minimum radius {radius} m in {curves} curves", radius=_number(summary.radius_min_m, 1),  # type: ignore[union-attr]
-                         curves=_number(summary.curves)), False))  # type: ignore[union-attr]
+    lines.append(_curves_line(summary.radius_min_m, summary.curves))  # type: ignore[union-attr]
     lines.append((tr("Section and edge: cut {cut} m³ · fill {fill} m³ · net {net} m³", cut=_number(summary.cut_m3), fill=_number(summary.fill_m3),  # type: ignore[union-attr]
                      net=_number(summary.net_m3)), False))  # type: ignore[union-attr]
     if calculation.needs_mean_confirmation:
@@ -2065,6 +2073,28 @@ def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     if calculation.needs_carriageway_confirmation:
         lines.append((tr("{area} m² of the carriageway do not end up on the level profile of the road (see the warnings): the road is not created without your "
                          "express confirmation; the button that creates it confirms it", area=_number(summary.carriageway_area_m2)), True))  # type: ignore[union-attr]
+    return lines
+
+
+def _propose_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de una propuesta del trazado calculada (``design.road_store.ProposalSummary``; spec 017, T33; RF-017-28, RF-017-17): su perfil, la longitud y las cotas de inicio y de fin, la pendiente media y la
+    máxima con su abscisa y su lugar, el radio mínimo y las curvas y que es **una capa de líneas con Z editable en QGIS que no toca ninguna superficie**. **La pendiente media por encima de la del perfil solo avisa**
+    (en ámbar y sin pedir confirmación: no graba ninguna superficie). Los avisos con su lugar (la holgura del pasillo, los radios que bajaron del de diseño y los tramos de mayor pendiente) los añade
+    :func:`summary_lines` (son los ``notices`` del cálculo)."""
+    summary = calculation.summary
+    lines = [(tr("Proposed route «{name}» · profile «{profile}»: length {length} m · elevation {start} m at the start and {end} m at the end",
+                 name=calculation.name, profile=summary.profile,  # type: ignore[union-attr]
+                 length=_number(summary.length_m, 1), start=_number(summary.start_level_m, 2),  # type: ignore[union-attr]
+                 end=_number(summary.end_level_m, 2)), False),  # type: ignore[union-attr]
+             (tr("Gradient: mean {mean} % · maximum {max} % at the abscissa {station} m, at ({x}, {y})",
+                 mean=_number(summary.gradient_mean_pct, 2), max=_number(summary.gradient_max_pct, 2),  # type: ignore[union-attr]
+                 station=_number(summary.gradient_max_station_m, 1), x=_number(summary.gradient_max_x, 1),  # type: ignore[union-attr]
+                 y=_number(summary.gradient_max_y, 1)), False),  # type: ignore[union-attr]
+             _curves_line(summary.radius_min_m, summary.curves)]  # type: ignore[union-attr]
+    if summary.mean_exceeded:  # type: ignore[union-attr]
+        lines.append((tr("The mean gradient, {mean} %, passes the {limit} % of the profile: it is only a warning, the route is created without confirmation because it changes no surface",
+                         mean=_number(summary.gradient_mean_pct, 2), limit=_number(summary.mean_limit_pct, 2)), True))  # type: ignore[union-attr]
+    lines.append((tr("It is created as a layer of 3D lines that you can edit in QGIS: it changes no surface and is not an entity"), False))
     return lines
 
 
@@ -2205,6 +2235,8 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
         lines.extend(_buttress_lines(calculation))
     elif calculation.op_type == design_provenance.ROAD:
         lines.extend(_road_lines(calculation))
+    elif calculation.op_type == design_provenance.ROAD_PROPOSE:
+        lines.extend(_propose_lines(calculation))
     elif calculation.op_type == design_provenance.ROAD_ACCESS:
         return _access_lines(calculation)  # sus avisos ya son su resumen (sin lo que no se comunica, que dicen las listas): no se añaden otra vez
     elif calculation.op_type in design_provenance.STOCKPILE_DETECT_TYPES:
@@ -2355,6 +2387,8 @@ def show_summary(calculation: Calculation | None) -> None:
         title = tr("Buttress «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.ROAD:
         title = tr("Road «{name}» in {version}", name=calculation.name, version=calculation.version)
+    elif calculation.op_type == design_provenance.ROAD_PROPOSE:
+        title = tr("Proposed route «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.ROAD_ACCESS:
         title = tr("Accessibility «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.STOCKPILE_DETECT:

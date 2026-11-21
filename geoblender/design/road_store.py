@@ -13,7 +13,8 @@ y sin escribir nada); **el resumen, las dos confirmaciones y con qué se compara
 :func:`frozen_geometry`; la función de reproducir es ``design.reproduce.reproduce_road``); traer a otra versión y «Cambiar parámetro…», de la T22b; los modos «sobre un eje» y «eje 3D», de la T23: la línea con su Z de una línea de rotura o de la capa propuesta
 (:class:`Lines3D`, :func:`read_layer_3d`, :func:`read_lines_3d` y :func:`line_3d`), la Z de cada estación en la abscisa de la línea y el radio de su planta medido en las estaciones
 (``road_axis.plan_of_line``, ``road_gradient.check_axis_3d``); **«Proponer el trazado»** (T27, al final: ``des.road_propose``, la ruta y la rasante de «trazar» sin la sección, como una capa de líneas con Z editable
-en QGIS, ``des_rpl_``: :func:`prepare_propose_units`, :func:`propose_compute_steps`, :func:`create_propose_steps`, :func:`run_propose` y :func:`recompute_propose`).
+en QGIS, ``des_rpl_``: :func:`prepare_propose_units`, :func:`propose_compute_steps`, :func:`create_propose_steps`, :func:`run_propose` y :func:`recompute_propose`; y, de la T33, **su resumen y lo que lee**
+para «Calcular» y «Crear» de la orden, :class:`ProposalSummary`, :func:`propose_summary` y :func:`propose_values`: la ``Calculation`` es ``design.steps.road_propose_run``).
 
 - :func:`prepare_road_units` y :func:`prepare_road` (de una vez): la versión editable (RF-009-21), el código ``RDW-nnn`` y el nombre únicos, **la partida** (RF-017-05, D-3: la persona
   la elige; sin ella, :func:`default_start`: la de explotación de la cantera de la 014 de la versión y, si no, la última de la cadena de entidades) con la cadena (una pista por
@@ -162,6 +163,7 @@ __all__ = [
     "PointReference",
     "PreparedProposal",
     "PreparedRoad",
+    "ProposalSummary",
     "ResolvedLevel",
     "RoadConfirmed",
     "avoid_weight",
@@ -192,6 +194,8 @@ __all__ = [
     "read_layer_3d",
     "propose_compute_steps",
     "propose_layer_rows",
+    "propose_summary",
+    "propose_values",
     "read_lines_3d",
     "recompute_propose",
     "recompute_road",
@@ -2574,6 +2578,61 @@ def propose_layer_rows(outcome: ProposalOutcome) -> tuple[road_layer.RouteLayerR
     return (road_layer.RouteLayerRow(outcome.name, np.column_stack([outcome.axis.points, outcome.levels])),)
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class ProposalSummary:
+    """El resumen de «Calcular» una propuesta del trazado (spec 017, T33; RF-017-28, RF-017-17; **puro**: sin proyecto): el ``name`` de la propuesta, el código de su ``version``, el nombre
+    del perfil (``profile``) y lo que dice de su eje y su rasante: la longitud, las cotas de inicio y de fin, la pendiente media y la máxima (con su abscisa y su lugar), el radio mínimo y las
+    curvas, la holgura del pasillo de la ruta (``margin_m``: la ruta cambia con ella, H-10) y si la pendiente media pasa de la media máxima del perfil (``mean_exceeded``, con su límite
+    ``mean_limit_pct``): **avisa y no pide confirmación**, porque la propuesta no graba ninguna superficie. ``notices``, los avisos **en el orden en que se enseñan**: la nota de la ruta y los del
+    eje y la rasante (cada uno con su abscisa y su lugar)."""
+
+    name: str
+    version: str
+    profile: str
+    length_m: float
+    start_level_m: float
+    end_level_m: float
+    gradient_mean_pct: float
+    gradient_max_pct: float
+    gradient_max_station_m: float
+    gradient_max_x: float
+    gradient_max_y: float
+    radius_min_m: float | None
+    curves: int
+    margin_m: float | None
+    mean_exceeded: bool
+    mean_limit_pct: float
+    notices: tuple[Notice, ...]
+
+
+def propose_summary(outcome: ProposalOutcome, *, version: str, profile: road_profiles.RoadProfile) -> ProposalSummary:
+    """El resumen de «Calcular» la propuesta de ``outcome`` (RF-017-28, RF-017-17; **puro**: sin proyecto) como :class:`ProposalSummary`: la longitud, las cotas de inicio y de fin, la pendiente
+    media (D-7) y la máxima con su abscisa y su lugar, el radio mínimo y las curvas, la holgura del pasillo y, **en el orden en que se enseñan**, los avisos: la nota de la ruta y los del cálculo
+    (``outcome.notices``: los radios que bajaron del de diseño y la pendiente media por encima de pm, con sus tramos; **este último con el texto de la propuesta**, ``des.propose_mean_gradient``, que no dice
+    que haga falta confirmar: el de la pista sí lo dice, y una propuesta no lo pide). ``version`` es el código de la versión y ``profile``, el perfil de la propuesta.
+    Una propuesta no tiene confirmaciones ni lo que quedará obsoleto: no graba ninguna superficie ni nada se apoya en ella. ``TypeError`` si ``outcome`` no es un ``ProposalOutcome``."""
+    if not isinstance(outcome, ProposalOutcome):
+        raise TypeError(f"el resumen de una propuesta sale de un ProposalOutcome, no {outcome!r}")
+    axis, levels = outcome.axis, outcome.levels
+    found = {figure.key: figure.value for figure in outcome.figures}
+    top = int(np.argmax(np.abs(np.diff(levels)) / np.diff(axis.stations)))
+    route = outcome.route
+    notes = () if route is None else (Notice("des.road_route_margin", {"entity": outcome.name, "mesh": route.mesh_m, "margin": route.margin_m, "expanded": route.expanded, "budget": route.budget}),)
+    shown = tuple(Notice("des.propose_mean_gradient", item.values) if item.code == "des.road_mean_gradient" else item for item in outcome.notices)  # el de la pista pide confirmar; el de la propuesta, no
+    return ProposalSummary(
+        outcome.name, version, profile.name, axis.length_m, float(levels[0]), float(levels[-1]), road_gradient.mean_gradient(axis.stations, levels) * 100.0,
+        float(found["des.road_gradient_max_pct"]), float(axis.stations[top]), float(axis.points[top, 0]), float(axis.points[top, 1]), axis.min_radius_m, int(axis.curve_count),
+        None if route is None else route.margin_m, bool(outcome.mean_exceeded), float(profile.max_mean_gradient_pct), (*notes, *shown))
+
+
+def propose_values(prepared: PreparedProposal) -> dict[str, object]:
+    """Lo que leyó el cálculo de una propuesta de los parámetros del proyecto y de la versión (RF-013-17, D-14: ``Calculation`` comprueba antes de crear que siguen valiendo lo mismo): **los valores
+    del perfil de pista** que anota la operación (``provenance.propose_params``: los que cambian el resultado, sin su clase normativa), por su clave. Una propuesta no tiene parámetros de entidad."""
+    profile = prepared.profile
+    keys = set(provenance.propose_params(profile.code))
+    return {key: getattr(profile, param.value) for param in RoadProfileParam if param is not RoadProfileParam.CLASS and (key := road_profile_key(profile.code, param)) in keys}
+
+
 def create_propose_steps(project: StoreProject, writer: DesignWriter, prepared: PreparedProposal, outcome: ProposalOutcome, *, budget_s: float = road_net.STEP_BUDGET_S
                          ) -> Generator[Progress, None, Stored]:
     """**«Crear» una propuesta del trazado** por pasos (spec 017, T27; RF-017-28, RF-015-29, P-8, D-19): prepara la capa propuesta en su temporal (``des_rpl_``, :func:`propose_layer_rows`) y la
@@ -2618,8 +2677,7 @@ def _refuse_edited_proposal(project: StoreProject, prepared: PreparedProposal, s
 def _check_recorded_proposal(handle: OperationHandle, prepared: PreparedProposal) -> None:
     """Los parámetros que anotó la operación al empezar son los que leyó el cálculo al prepararse (como :func:`_check_recorded`): los del perfil; si uno cambió entre las dos cosas, el resultado
     ya no le corresponde (``des.input_changed``, con el parámetro)."""
-    profile = prepared.profile
-    read = {road_profile_key(profile.code, param): getattr(profile, param.value) for param in RoadProfileParam if param is not RoadProfileParam.CLASS}
+    read = propose_values(prepared)
     for param in handle.params:
         if param.key in read and param.value != read[param.key]:
             raise DesignError("des.input_changed", obj=f"Parámetro «{param.key}»", field="parámetros", value=param.key)

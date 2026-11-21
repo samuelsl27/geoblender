@@ -67,7 +67,10 @@ no deja nada.
 terreno, cota de la rasante y pendiente, **en m y en %**), con la convención del CSV de la cubicación (``reserves.export``): UTF-8 con BOM, «;» de separador, filas acabadas en CRLF y los números con **coma
 decimal**, sin separador de miles ni exponente, el decimal más corto que vuelve al mismo float64; la primera celda no es «ID». Como exportar a GeoTIFF **no es una operación** (D-29 de la 011): se escribe desde lo
 registrado, con el proyecto en solo lectura si el destino está fuera de él y desde una versión que ya no es editable, y **no modifica nada del proyecto**; mismo destino (:func:`check_target`, con la extensión de
-un CSV), mismo temporal con ``fsync`` y ``os.replace``. Python puro (nivel 8).
+un CSV), mismo temporal con ``fsync`` y ``os.replace``.
+
+**Qué se exporta de una pista o una accesibilidad** (spec 017, T33; RF-017-27, RF-017-29; :func:`stored_road_export`): de **una pista**, su superficie (``des_psf_``, GeoTIFF) o su rasante (``des_rdx_``, CSV); de
+**una accesibilidad**, lo que alcanza (``des_acc_``, GeoTIFF de códigos con su leyenda). Se elige por el código o el nombre de la entidad de la versión. Python puro (nivel 8).
 """
 
 from __future__ import annotations
@@ -98,6 +101,7 @@ from ..gis.messages import GisError
 from ..gis.provenance import export_locator, inside_project
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, project_references
+from . import entities
 from . import provenance as declared
 from .messages import DesignError
 from .model import CellClass
@@ -115,6 +119,7 @@ __all__ = [
     "PART_THICKNESS",
     "PROJECT_VERSION",
     "QUARRY_GRIDS",
+    "ROAD_EXPORTS",
     "ROAD_GRIDS",
     "SUFFIXES",
     "SUPPORTED_GRIDS",
@@ -131,6 +136,7 @@ __all__ = [
     "road_csv_bytes",
     "stored_grid",
     "stored_road",
+    "stored_road_export",
     "thickness_between",
 ]
 
@@ -612,6 +618,41 @@ def stored_road(project: ExportProject, name: str, *, version: str) -> StoredRoa
     if record is None or not record.live or record.status.value != "current":
         raise DesignError("des.export_road_unknown", obj=shown, field=_FIELD_ROAD, value=shown, version=found.code, dataset=dataset)
     return StoredRoad(record, record.name[len(declared.FAMILIES_BY_CODE[declared.ROAD_AXIS_TABLE].prefix):], found.uid, found.code)
+
+
+ROAD_EXPORTS: tuple[str, ...] = ("surface", "gradient", "reach")
+"""Lo que se exporta de una pista o una accesibilidad (:func:`stored_road_export`; T33; RF-017-27): la **superficie** de una pista (GeoTIFF), su **rasante** (CSV, :func:`export_road_csv`) y lo que **alcanza**
+una accesibilidad (GeoTIFF de códigos)."""
+
+
+def stored_road_export(project: ExportProject, what: str, ref: str, *, version: str) -> StoredGrid | StoredRoad:
+    """Lo que se exporta de la pista o de la accesibilidad ``ref`` (su código o su nombre) de la versión ``version`` (uid o código; spec 017, T33; RF-017-27): con ``what`` ``"surface"``, la **superficie** de la pista
+    (``des_psf_``, un :class:`StoredGrid`); con ``"gradient"``, **su rasante** (``des_rdx_``, un :class:`StoredRoad`: :func:`export_road_csv`) y con ``"reach"``, **lo que alcanza una accesibilidad**
+    (``des_acc_``, un :class:`StoredGrid` de la familia de lo alcanzable): por el código o el nombre de la accesibilidad o, de no serlo, el de su dato (``ref`` el uid o el nombre de ``des_acc_``, como lo da el objeto
+    de la vista). ``DesignError`` ``des.export_road_unknown`` si la versión no tiene esa pista **calculada** y viva (``surface`` y ``gradient``) y ``des.export_not_grid`` si ``ref`` no es lo alcanzable de una accesibilidad
+    viva (``reach``); ``VersionError`` ``core.version_unknown``; ``ValueError`` si ``what`` no es de :data:`ROAD_EXPORTS` o la versión es vacía; ``TypeError`` si ``ref`` o ``version`` no son textos. **No escribe nada.**"""
+    if what not in ROAD_EXPORTS:
+        raise ValueError(f"lo que se exporta de una pista es una de {ROAD_EXPORTS}, no {what!r}")
+    if not isinstance(ref, str) or not ref.strip():
+        raise TypeError(f"una pista o una accesibilidad se indica por su código o su nombre, no {ref!r}")
+    found = _version(project, version)
+    if found is None:
+        raise ValueError("lo que se exporta de una pista es de una versión: la versión no puede ser vacía")
+    entry = entities.registry(project, found.uid).get(ref.strip())
+    if what == "reach":
+        if entry is not None and entry.record.kind == entities.EntityKind.ACCESS:
+            grid = stored_grid(project, declared.dataset_name(declared.ACCESS_GRID, entry.record.name), version=found.uid)
+        else:
+            grid = stored_grid(project, ref.strip(), version=found.uid)
+        if grid.family != declared.ACCESS_GRID:
+            raise DesignError("des.export_not_grid", obj=ref, field=_FIELD_GRID, value=ref)
+        return grid
+    if entry is None or entry.record.kind != entities.EntityKind.ROAD or entry.operation_uid is None:
+        raise DesignError("des.export_road_unknown", obj=ref, field=_FIELD_ROAD, value=ref, version=found.code,
+                          dataset=declared.dataset_name(declared.ROAD_AXIS_TABLE, entry.record.name if entry is not None else ref))
+    if what == "surface":
+        return stored_grid(project, declared.dataset_name(declared.ENTITY_SURFACE_GRID, entry.record.name), version=found.uid)
+    return stored_road(project, entry.record.name, version=found.uid)
 
 
 def _discard(temporary: Path) -> None:

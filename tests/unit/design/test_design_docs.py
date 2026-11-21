@@ -194,6 +194,8 @@ PENDING_015_API: frozenset[str] = frozenset({
     # La 017, T31 (el eje por estaciones de una pista que dibuja la vista, ``design.entity_store.read_road_axis``; la superficie de una accesibilidad, ``design.access_store.read_access_surface``,
     # es de un módulo pendiente):
     "read_road_axis",
+    # La 017, T33 (a) («Proponer el trazado…»: ``steps.road_propose_run``, y «Exportar pista…»: ``export.stored_road_export``; lo demás es de ``design.road_store``, un módulo pendiente):
+    "road_propose_run", "stored_road_export",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 017, T04 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):

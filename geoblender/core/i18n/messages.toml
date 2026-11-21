@@ -11392,3 +11392,119 @@ es = "Cota mínima alcanzable sobre la superficie final «{final}» de la canter
 
 ["Communicated · berm stretches: {berms} of {berms_total} · platforms: {platforms} of {platforms_total} · zones that require access: {zones} of {zones_total}"]
 es = "Comunicado · tramos de berma: {berms} de {berms_total} · plataformas: {platforms} de {platforms_total} · zonas «requiere acceso»: {zones} de {zones_total}"
+
+# Proponer el trazado… y Exportar pista… (spec 017, T33)
+
+["Proposed route «{name}» · profile «{profile}»: length {length} m · elevation {start} m at the start and {end} m at the end"]
+es = "Trazado propuesto «{name}» · perfil «{profile}»: longitud de {length} m · cota de {start} m al inicio y de {end} m al final"
+
+["The mean gradient, {mean} %, passes the {limit} % of the profile: it is only a warning, the route is created without confirmation because it changes no surface"]
+es = "La pendiente media, del {mean} %, pasa del {limit} % del perfil: es solo un aviso, el trazado se crea sin confirmación porque no cambia ninguna superficie"
+
+["It is created as a layer of 3D lines that you can edit in QGIS: it changes no surface and is not an entity"]
+es = "Se crea como una capa de líneas 3D que puede editar en QGIS: no cambia ninguna superficie y no es una entidad"
+
+["Proposed route «{name}» in {version}"]
+es = "Trazado propuesto «{name}» en {version}"
+
+["Proposed route"]
+es = "Trazado propuesto"
+
+["Elevations (empty: those of the start surface)"]
+es = "Cotas (vacías: las de la superficie de partida)"
+
+["Write the name of the proposed route"]
+es = "Escriba el nombre del trazado propuesto"
+
+["Choose the layer of the route: there is none of points in the project"]
+es = "Elija la capa del trazado: no hay ninguna de puntos en el proyecto"
+
+["Choose the start surface of the route"]
+es = "Elija la superficie de partida del trazado"
+
+["Showing the preview of the proposed route «{name}»"]
+es = "Enseñando la vista previa del trazado propuesto «{name}»"
+
+["Route «{name}» proposed in {version}: the layer «{layer}» is editable in QGIS"]
+es = "Trazado «{name}» propuesto en {version}: la capa «{layer}» se puede editar en QGIS"
+
+["Saving the proposal of the route… {percent} % · Esc: cancel"]
+es = "Guardando la propuesta del trazado… {percent} % · Esc: cancelar"
+
+["Computing the proposal of the route… {percent} % · Esc: cancel"]
+es = "Calculando la propuesta del trazado… {percent} % · Esc: cancelar"
+
+["Creation cancelled: the route has not been proposed and the calculation has been discarded; nothing has been left half-done"]
+es = "Creación cancelada: el trazado no se ha propuesto y el cálculo se ha descartado; no queda nada a medias"
+
+["Name of the proposed route, unique in the active version: the layer of 3D lines is called after it"]
+es = "Nombre del trazado propuesto, único en la versión activa: la capa de líneas 3D se llama como él"
+
+["Layer of points of the project with the origin and the destination of the route"]
+es = "Capa de puntos del proyecto con el origen y el destino del trazado"
+
+["Road of the active version whose axis the origin is on: the proposal becomes stale if it changes"]
+es = "Pista de la versión activa en cuyo eje está el origen: la propuesta queda obsoleta si cambia"
+
+["Whether the route ends at a point of the layer, on a platform of the active version or where it reaches an elevation inside a zone"]
+es = "Si el trazado termina en un punto de la capa, en una plataforma de la versión activa o donde alcanza una cota dentro de una zona"
+
+["Platform of the active version the route ends at: its destination is the point of the layer that falls on its footprint, at the level of its surface"]
+es = "Plataforma de la versión activa en la que termina el trazado: su destino es el punto de la capa que cae en su huella, a la cota de su superficie"
+
+["Elevation in metres the route has to reach: it ends at the first point of the zone whose start surface differs from it by less than the arrival tolerance"]
+es = "Cota en metros que el trazado tiene que alcanzar: termina en el primer punto de la zona cuya superficie de partida difiere de ella en menos de la tolerancia de llegada"
+
+["Surface the route is searched on: by default, the exploitation surface of the quarry and, without it, the last of the chain"]
+es = "Superficie sobre la que se busca el trazado: por defecto, la superficie de explotación de la cantera y, si no, la última de la cadena"
+
+["Elevation of the level profile at the start of the route in metres (empty: the one of the start surface at that point)"]
+es = "Cota de la rasante al inicio del trazado en metros (vacía: la de la superficie de partida en ese punto)"
+
+["Elevation of the level profile at the end of the route in metres (empty: the one of the start surface at that point or of the platform of the destination)"]
+es = "Cota de la rasante al final del trazado en metros (vacía: la de la superficie de partida en ese punto o la de la plataforma del destino)"
+
+["Surface of the road"]
+es = "Superficie de la pista"
+
+["The surface the road leaves in its version, as a deliverable GeoTIFF"]
+es = "La superficie que deja la pista en su versión, como GeoTIFF entregable"
+
+["Level profile of the road"]
+es = "Rasante de la pista"
+
+["The abscissa, the x and y, the ground elevation, the level profile elevation and the gradient of each station of the axis of the road, in m and in %, as a CSV for a spreadsheet"]
+es = "La abscisa, la x y la y, la cota del terreno, la cota de la rasante y la pendiente de cada estación del eje de la pista, en m y en %, como CSV para una hoja de cálculo"
+
+["What an accessibility reaches"]
+es = "Lo que alcanza una accesibilidad"
+
+["The cells a walker reaches from the entry points of an accessibility, as a deliverable GeoTIFF of codes with its legend"]
+es = "Las celdas que se alcanzan a pie desde los puntos de entrada de una accesibilidad, como GeoTIFF entregable de códigos con su leyenda"
+
+["What to export"]
+es = "Qué exportar"
+
+["The surface of a road (GeoTIFF), its level profile (CSV) or what an accessibility reaches (GeoTIFF)"]
+es = "La superficie de una pista (GeoTIFF), su rasante (CSV) o lo que alcanza una accesibilidad (GeoTIFF)"
+
+["Road or accessibility"]
+es = "Pista o accesibilidad"
+
+["Code or name of the road or of the accessibility of the active version to export (empty: the one of the object selected in the 3D view)"]
+es = "Código o nombre de la pista o de la accesibilidad de la versión activa que se exporta (vacío: la del objeto seleccionado en la Vista 3D)"
+
+["Choose the road or the accessibility to export: select its object in the 3D view or give its code or name"]
+es = "Elija la pista o la accesibilidad que exportar: seleccione su objeto en la Vista 3D o dé su código o su nombre"
+
+["There is no active version: make the version of the road the active one first"]
+es = "No hay versión activa: haga activa antes la versión de la pista"
+
+["Level profile of the road exported to «{file}»"]
+es = "Rasante de la pista exportada a «{file}»"
+
+["What the accessibility reaches exported to «{file}»"]
+es = "Lo que alcanza la accesibilidad, exportado a «{file}»"
+
+["Surface of the road exported to «{file}»"]
+es = "Superficie de la pista exportada a «{file}»"

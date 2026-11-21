@@ -350,7 +350,7 @@ guion, quien la lanza, con ``mean_reason``). El resumen del cálculo (``des_pane
 los avisos de la pista con su lugar** (los de la partida, la holgura del pasillo, el eje, la huella recortada, los otros diseños, el salto creado, la calzada con la restricción
 que impide moverla, lo que no se mueve y lo que quedará obsoleto). **Tras crear, encadena** ``entity_store.after_entity_change`` (:class:`_ChainsEntityLayer`): la pista no
 declara restricciones (D-15), pero la capa de entidades y la de ejes se ponen al día, por pasos con el avance y Esc. Disponible con el proyecto en escritura y la versión activa
-editable y, si no, desactivada con su motivo (RF-017-29, RF-015-28: :class:`DesignCommandAware`). «Proponer el trazado…» (``des_propose_road``) es de la T33.
+editable y, si no, desactivada con su motivo (RF-017-29, RF-015-28: :class:`DesignCommandAware`). «Proponer el trazado…» (``des_propose_road``) es de la T33 (abajo).
 
 **Accesibilidad de las pistas…** (spec 017, T30; HU-017-3; RF-017-29, RF-017-24, RF-017-25, RF-017-30, RF-015-28; plan 017 §5.3.3 y §5.5; comprobación manual M3):
 :class:`GEOBLENDER_OT_des_road_access` (``geoblender.des_road_access``, interna e interina de «R-40» hasta que la T33 la ponga en el menú) calcula ``des.road_access`` de la versión activa con
@@ -375,6 +375,20 @@ pasos de calcular o de crear **no deja nada** (ni operación, ni dato, ni parám
 entidad creada y lo que sigue sin hacer (cada etapa es una operación y una transacción propias: la que Esc cierra queda cancelada y sin salidas; las máscaras, con su causa, y las capas se ponen al día con la orden de
 entidades siguiente o «Recalcular lo obsoleto»). Desde un guion (sin ventana), «Crear» es de una vez, con el mismo resultado bit a bit; desactivar Geoblender cancela el modal como Esc
 (:func:`bl.ops.core.cancel_running`) y ``register()`` y ``unregister()`` quitan todo lo de la 017, también lo de las ventanas, las listas y los ajustes de «Cambiar parámetro…».
+
+**Proponer el trazado… y Exportar pista…** (spec 017, T33 (a); HU-017-1, HU-017-4; RF-017-28, RF-017-27, RF-017-29, RF-017-30, RF-015-28; H-9; plan 017 §5.3.3 y §5.5; comprobación manual M6):
+:class:`GEOBLENDER_OT_des_propose_road` (``geoblender.des_propose_road``, interna e interina de «R-40» hasta que la T33b la ponga en el menú) calcula ``des.road_propose`` de la versión activa con
+``design.steps.road_propose_run``: **lo mismo que la pista «trazar» hasta la ruta y la rasante** (A1 a A5, sin A6 a A9) y deja **una capa de líneas con Z, editable en QGIS** (``des_rpl_<nombre>``), **sin tocar
+ninguna superficie** y sin ser una entidad (no hay código, ni cadena, ni capa de entidades o de ejes, ni declaración). Su diálogo es el de «Pista…» en el modo «trazar» (la capa de puntos, el origen y el
+destino, el perfil, la partida, las cotas y los nueve parámetros de la ruta con su tipo: :func:`_road_points`, :func:`_route_changes`, :func:`_draw_trace_points` y :func:`_draw_route_params`) y su
+**vista previa** es la de la pista (el origen, el destino y el pasillo de la ruta: :func:`_redraw_road_preview`). El resumen de «Calcular» (``des_panels._propose_lines``) lleva la longitud, las pendientes con su
+abscisa y su lugar, el radio mínimo y todos los avisos con su lugar; **la pendiente media por encima de pm solo avisa, sin pedir confirmación** (no graba ninguna superficie). **«Crear» es por pasos** desde la
+interfaz, con el avance y Esc (:class:`_CreatesInSteps`, con su propio :meth:`~GEOBLENDER_OT_des_propose_road._creation_steps`: la capa en su temporal y la transacción final, y **nada de lo que sigue a crear una
+entidad**), y de una vez desde un guion. Con el proyecto en escritura y la versión activa editable, y si no, desactivada con su motivo (:class:`DesignCommandAware`).
+:class:`GEOBLENDER_OT_des_export_road` (``geoblender.des_export_road``, interna e interina de «R-40») escribe, desde lo registrado y **sin escribir nada en el proyecto** (exportar no es una operación, H-9),
+**la superficie de una pista** o **lo que alcanza una accesibilidad** como GeoTIFF y **la rasante de una pista a CSV** (``design.export.stored_road_export``, ``export_grid_steps`` y ``export_road_csv``): el
+diálogo es el selector de ficheros de Blender (qué exportar y de qué pista o accesibilidad, en su panel; ``exports/<dato>_<V01>.tif`` o ``.csv`` propuesto), por pasos con el avance y Esc (la rasante, de
+una vez) y sobre un fichero que ya existe pregunta antes de sustituirlo; vale con el proyecto en solo lectura (fuera de él) y con la versión superada. Dice en el informe qué escribió y dónde.
 
 **El menú «Entidad ▾» e insertar antes o después** (spec 015, T31; HU-015-2, HU-015-3; RF-015-28, RF-015-05, RF-015-15; D-11,
 D-14; plan 015 §5.3.3 y §5.5; comprobación manual M5): el menú contextual de las entidades
@@ -8213,13 +8227,19 @@ def _refresh_road_preview(self: Any, _context: Any) -> None:
     """El ``update`` de cada campo de «Pista…» (T29b; RF-017-26, RF-015-26): con la vista previa **de esa pista** activa (la de una pista de la versión no), la
     redibuja con lo que dice ahora el diálogo (``EntityPlan(road=RoadAsk(request=…))``: antes de calcular, el origen, el destino y el pasillo). Un diálogo a
     medias (un campo sin escribir, un número que no lo es) no la cambia: sigue la última completa. Solo lee."""
+    _redraw_road_preview(self, GEOBLENDER_OT_des_create_road._request)
+
+
+def _redraw_road_preview(self: Any, build: Callable[[Any], Any]) -> None:
+    """Lo de :func:`_refresh_road_preview` con la petición que arma ``build`` de lo que dice el diálogo ``self`` (su ``_request``: la de «Pista…» o la de «Proponer el trazado…», T33, que
+    comparten la vista previa de la pista: el origen, el destino y el pasillo de la ruta)."""
     loaded = _entity_preview_loaded()
     if loaded is None or not loaded.enabled() or loaded.plan() is None or loaded.plan().road is None or loaded.plan().road.request is None:
         return
     from ...design.preview import RoadAsk  # al usarlo: habilitar no carga el cálculo
 
     try:
-        request = GEOBLENDER_OT_des_create_road._request(self)
+        request = build(self)
     except (ProfileFormError, GeoblenderError, sqlite3.Error, OSError, ValueError):
         return
     if loaded.plan().road.request == request:
@@ -8267,6 +8287,78 @@ def _road_points(self: Any) -> dict[str, Any]:
     else:
         found["destination"] = self.destination_point.strip() or None
     return found
+
+
+def _route_changes(self: Any) -> dict[str, Any]:
+    """Los nueve parámetros de la ruta de lo que dice el diálogo ``self`` (de «Pista…» en «trazar» y de «Proponer el trazado…»; RF-017-10) como los pide ``RoadRequest``: cada uno tecleado con coma o punto
+    decimal, **vacío sin cifra** (lo rechaza el cálculo con su nombre, RF-015-08) y el presupuesto de estados, un número entero (``ComputeFormError`` si no lo es)."""
+    changes: dict[str, Any] = {}
+    for prop, param, label in _route_rows():
+        number = typed_number(getattr(self, prop), label)
+        if param == "search_budget" and number is not None:
+            if number != int(number):
+                raise ComputeFormError(tr("«{value}» is not a whole number (field «{field}»)", value=getattr(self, prop).strip(), field=label))
+            number = int(number)
+        changes[param] = number
+    return changes
+
+
+def _propose_trace_values(self: Any, context: Any, project: Any) -> None:
+    """Lo que proponen los diálogos de «Pista…» y de «Proponer el trazado…» si quien los lanza no lo dio (plan 017 §5.3.3): la primera capa del modo, el primer perfil, la primera pista, plataforma y zona que
+    ofrecen y **la partida: la superficie de explotación de la cantera de la 014 y, si no hay o ya parte de ella otra entidad, la última de la cadena** (RF-017-05, D-3) o, sin ninguna, el terreno
+    (``surface_proposal.ground_item``, con lo seleccionado en la vista). Ninguna cifra minera se propone: los parámetros de la ruta, las cotas y el destino por cota quedan vacíos."""
+    given = self.properties.is_property_set
+
+    def first(items: Any, none: str) -> str | None:
+        offered = [item[0] for item in items(self, None) if item[0] != none]
+        return offered[0] if offered else None
+
+    for prop, items, none in (("layer", des_panels.road_layer_items, des_panels.NO_LAYER), ("profile", des_panels.road_profile_items, des_panels.NO_ZONE),
+                              ("origin_road", des_panels.road_road_items, des_panels.NO_ZONE),
+                              ("destination_entity", des_panels.road_platform_items, des_panels.NO_ZONE),
+                              ("dest_zone", des_panels.road_zone_items, des_panels.NO_LAYER)):
+        found = first(items, none)
+        if found is not None and not given(prop):
+            setattr(self, prop, found)
+    if not given("start"):
+        offered = {item[0] for item in des_panels.platform_start_items(None, None)}
+        start = des_panels.road_default_start()
+        if start is None or start not in offered:
+            items = [identifier for identifier in offered if identifier != des_panels.NO_ZONE and not identifier.startswith("entity:")]
+            start = surface_proposal.ground_item(context, project, sorted(items), des_panels.surface_choice) if items else None
+        if start is not None:
+            self.start = start
+
+
+def _draw_trace_points(box: Any, self: Any) -> None:
+    """El origen y el destino de «trazar» en el diálogo ``self`` (de «Pista…» y de «Proponer el trazado…»): **el origen** (un punto de la capa o el eje de otra pista a una abscisa) y **el destino** (un
+    punto, una plataforma o una cota con su zona y su tolerancia), dibujados en ``box``."""
+    box.prop(self, "origin_from", text=tr("The origin is"), translate=False)
+    if self.origin_from == "ROAD":
+        box.prop(self, "origin_road", text=tr("Road of the origin"), translate=False)
+        box.prop(self, "origin_station", text=tr("Abscissa of the origin (m)"), translate=False)
+    else:
+        box.prop(self, "origin_point", text=tr("Origin point"), translate=False)
+    box.prop(self, "destination_to", text=tr("It ends at"), translate=False)
+    if self.destination_to == "ENTITY":  # el destino es el punto de la capa que cae en su huella: no se elige otro
+        box.prop(self, "destination_entity", text=tr("Platform of the destination"), translate=False)
+    elif self.destination_to == "LEVEL":
+        box.prop(self, "dest_level", text=tr("Elevation of the destination (m)"), translate=False)
+        box.prop(self, "dest_tol", text=tr("Arrival tolerance of the elevation (m)"), translate=False)
+        box.prop(self, "dest_zone", text=tr("Zone of the destination"), translate=False)
+        box.prop(self, "dest_zone_feature", text=tr("Polygon of the zone"), translate=False)
+    else:
+        box.prop(self, "destination_point", text=tr("Destination point"), translate=False)
+
+
+def _draw_route_params(layout: Any, self: Any) -> None:
+    """Los nueve parámetros de la ruta de «trazar» en el diálogo ``self``, **cada uno con su tipo** (HIPÓTESIS sin valor por defecto y el presupuesto con el suyo: :func:`_route_text`)."""
+    route = layout.box()
+    route.label(text=tr("Search of the route: the type of each value is shown"), translate=False)
+    for prop, param, label in _route_rows():
+        row = route.row()
+        row.prop(self, prop, text=label, translate=False)
+        row.label(text=_route_text(param), translate=False)
 
 
 class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
@@ -8444,32 +8536,12 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
         cantera de la 014 y, si no hay o ya parte de ella otra entidad, la última de la cadena** (RF-017-05, D-3) o, sin ninguna, el terreno
         (``surface_proposal.ground_item``, con lo seleccionado en la vista). Ninguna cifra minera se propone: los parámetros de la ruta, las cotas y el destino por
         cota quedan vacíos."""
-        given = self.properties.is_property_set
-
-        def first(items: Any, none: str) -> str | None:
-            offered = [item[0] for item in items(self, None) if item[0] != none]
-            return offered[0] if offered else None
-
         if not self.name.strip():
             taken, number = set(des_panels.platform_names()), 1
             while f"{tr('Road')} {number}" in taken:
                 number += 1
             self.name = f"{tr('Road')} {number}"
-        for prop, items, none in (("layer", des_panels.road_layer_items, des_panels.NO_LAYER), ("profile", des_panels.road_profile_items, des_panels.NO_ZONE),
-                                  ("origin_road", des_panels.road_road_items, des_panels.NO_ZONE),
-                                  ("destination_entity", des_panels.road_platform_items, des_panels.NO_ZONE),
-                                  ("dest_zone", des_panels.road_zone_items, des_panels.NO_LAYER)):
-            found = first(items, none)
-            if found is not None and not given(prop):
-                setattr(self, prop, found)
-        if not given("start"):
-            offered = {item[0] for item in des_panels.platform_start_items(None, None)}
-            start = des_panels.road_default_start()
-            if start is None or start not in offered:
-                items = [identifier for identifier in offered if identifier != des_panels.NO_ZONE and not identifier.startswith("entity:")]
-                start = surface_proposal.ground_item(context, project, sorted(items), des_panels.surface_choice) if items else None
-            if start is not None:
-                self.start = start
+        _propose_trace_values(self, context, project)
 
     def draw(self, context: Any) -> None:
         """Arriba el nombre y el modo; la capa y, en «trazar», **el origen** (un punto de la capa o el eje de otra pista a una abscisa) y **el destino** (un punto,
@@ -8491,22 +8563,7 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
         box.prop(self, "layer", text=tr("Layer"), translate=False)
         box.prop(self, "name_field", text=tr("Name field"), translate=False)
         if trace:
-            box.prop(self, "origin_from", text=tr("The origin is"), translate=False)
-            if self.origin_from == "ROAD":
-                box.prop(self, "origin_road", text=tr("Road of the origin"), translate=False)
-                box.prop(self, "origin_station", text=tr("Abscissa of the origin (m)"), translate=False)
-            else:
-                box.prop(self, "origin_point", text=tr("Origin point"), translate=False)
-            box.prop(self, "destination_to", text=tr("It ends at"), translate=False)
-            if self.destination_to == "ENTITY":  # el destino es el punto de la capa que cae en su huella: no se elige otro
-                box.prop(self, "destination_entity", text=tr("Platform of the destination"), translate=False)
-            elif self.destination_to == "LEVEL":
-                box.prop(self, "dest_level", text=tr("Elevation of the destination (m)"), translate=False)
-                box.prop(self, "dest_tol", text=tr("Arrival tolerance of the elevation (m)"), translate=False)
-                box.prop(self, "dest_zone", text=tr("Zone of the destination"), translate=False)
-                box.prop(self, "dest_zone_feature", text=tr("Polygon of the zone"), translate=False)
-            else:
-                box.prop(self, "destination_point", text=tr("Destination point"), translate=False)
+            _draw_trace_points(box, self)
         else:
             box.prop(self, "feature", text=tr("Line of the layer"), translate=False)
         layout.prop(self, "profile", text=tr("Road profile"), translate=False)
@@ -8518,12 +8575,7 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
             levels.prop(self, "start_level", text=tr("Start level (m)"), translate=False)
             levels.prop(self, "end_level", text=tr("End level (m)"), translate=False)
         if trace:
-            route = layout.box()
-            route.label(text=tr("Search of the route: the type of each value is shown"), translate=False)
-            for prop, param, label in _route_rows():
-                row = route.row()
-                row.prop(self, prop, text=label, translate=False)
-                row.label(text=_route_text(param), translate=False)
+            _draw_route_params(layout, self)
         _draw_entity_preview_button(layout, self, CREATE_ROAD, _road_dialog_fields())  # «Vista previa» (RF-017-26)
 
     # --- Lo pedido ----------------------------------------------------------------------------
@@ -8552,13 +8604,7 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
         support = None if self.support in ("", des_panels.NO_ZONE) else self.support
         if mode == "TRACE":
             changes.update(_road_points(self))
-            for prop, param, label in _route_rows():
-                number = typed_number(getattr(self, prop), label)
-                if param == "search_budget" and number is not None:
-                    if number != int(number):
-                        raise ComputeFormError(tr("«{value}» is not a whole number (field «{field}»)", value=getattr(self, prop).strip(), field=label))
-                    number = int(number)
-                changes[param] = number
+            changes.update(_route_changes(self))
         else:
             changes["feature"] = self.feature.strip() or None
         if mode != "AXIS_3D":
@@ -8959,6 +9005,560 @@ class GEOBLENDER_OT_des_road_access(_CreatesInSteps, _ChainsEntityLayer, _Calcul
         return found
 
 
+# --- Proponer el trazado… (spec 017, T33; HU-017-1, HU-017-4; RF-017-28, RF-017-29, RF-017-30, RF-015-28; plan 017 §5.3.3 y §5.5; comprobación manual M1) ------------------------------------------
+
+PROPOSE_ROAD = provenance.PROPOSE_COMMAND
+_PROPOSE_HIDDEN = frozenset({"confirm", "in_steps", "preview"})
+"""Las propiedades ocultas de «Proponer el trazado…»: las pone quien la lanza (o su ventana de confirmar)."""
+
+
+def _propose_dialog_fields() -> tuple[str, ...]:
+    """Los campos del diálogo de «Proponer el trazado…» que pasan a su vista previa: sus propiedades no ocultas."""
+    return tuple(name for name in GEOBLENDER_OT_des_propose_road.__annotations__ if name not in _PROPOSE_HIDDEN)
+
+
+def _refresh_propose_preview(self: Any, _context: Any) -> None:
+    """El ``update`` de cada campo de «Proponer el trazado…» (T33; RF-017-26): como el de «Pista…» (:func:`_refresh_road_preview`), con la petición del diálogo de la propuesta: la vista previa de la
+    pista (antes de calcular, el origen, el destino y el pasillo de la ruta; sin sección: la propuesta no la tiene)."""
+    _redraw_road_preview(self, GEOBLENDER_OT_des_propose_road._request)
+
+
+class GEOBLENDER_OT_des_propose_road(_ClearsEntityPreview, _CreatesInSteps, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal, bpy.types.Operator):
+    """Proposal of the route of a haul road of the active version, from an origin to a destination: its axis and its level profile as a layer of 3D lines that you can edit in QGIS; it changes no surface and is not an entity"""
+
+    bl_idname = PROPOSE_ROAD
+    bl_label = "Propose the route…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.ROAD_PROPOSE
+    COMMAND = PROPOSE_ROAD
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the proposed route, unique in the active version: the layer of 3D lines is called after it", options=_FIELD)
+    layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer",
+        description="Layer of points of the project with the origin and the destination of the route", items=des_panels.road_layer_items, options=_FIELD,
+        update=_refresh_propose_preview)
+    name_field: StringProperty(  # type: ignore[valid-type]
+        name="Name field",
+        description="Field of the layer with the name of each geometry (empty: the field «nombre» or «name» or, without it, the number (fid))", options=_FIELD,
+        update=_refresh_propose_preview)
+    origin_from: EnumProperty(  # type: ignore[valid-type]
+        name="The origin is",
+        description="Whether the origin is a point of the layer or a point of the axis of another road, at an abscissa", items=ROAD_ORIGIN_ITEMS, default="POINT",
+        options=_FIELD, update=_refresh_propose_preview)
+    origin_point: StringProperty(  # type: ignore[valid-type]
+        name="Origin point",
+        description="Name or number (fid) of the point of the layer that is the origin of the road", options=_FIELD, update=_refresh_propose_preview)
+    origin_road: EnumProperty(  # type: ignore[valid-type]
+        name="Road of the origin",
+        description="Road of the active version whose axis the origin is on: the proposal becomes stale if it changes",
+        items=des_panels.road_road_items, options=_FIELD, update=_refresh_propose_preview)
+    origin_station: StringProperty(  # type: ignore[valid-type]
+        name="Abscissa of the origin (m)",
+        description="Distance along the axis of the other road, from its start, of the point where the new road starts, in metres", options=_FIELD,
+        update=_refresh_propose_preview)
+    destination_to: EnumProperty(  # type: ignore[valid-type]
+        name="It ends at",
+        description="Whether the route ends at a point of the layer, on a platform of the active version or where it reaches an elevation inside a zone",
+        items=ROAD_DESTINATION_ITEMS, default="POINT", options=_FIELD, update=_refresh_propose_preview)
+    destination_point: StringProperty(  # type: ignore[valid-type]
+        name="Destination point",
+        description="Name or number (fid) of the point of the layer that is the destination of the road", options=_FIELD, update=_refresh_propose_preview)
+    destination_entity: EnumProperty(  # type: ignore[valid-type]
+        name="Platform of the destination",
+        description="Platform of the active version the route ends at: its destination is the point of the layer that falls on its footprint, at the level of its "
+                    "surface", items=des_panels.road_platform_items, options=_FIELD, update=_refresh_propose_preview)
+    dest_level: StringProperty(  # type: ignore[valid-type]
+        name="Elevation of the destination (m)",
+        description="Elevation in metres the route has to reach: it ends at the first point of the zone whose start surface differs from it by less than the arrival "
+                    "tolerance", options=_FIELD, update=_refresh_propose_preview)
+    dest_tol: StringProperty(  # type: ignore[valid-type]
+        name="Arrival tolerance of the elevation (m)",
+        description="How much the start surface may differ from the elevation of the destination where the road ends, in metres", options=_FIELD,
+        update=_refresh_propose_preview)
+    dest_zone: EnumProperty(  # type: ignore[valid-type]
+        name="Zone of the destination",
+        description="Layer of polygons of the project with the zone where the elevation has to be reached", items=des_panels.road_zone_items, options=_FIELD,
+        update=_refresh_propose_preview)
+    dest_zone_feature: StringProperty(  # type: ignore[valid-type]
+        name="Polygon of the zone",
+        description="Name or number (fid) of the polygon of the layer that is the zone (empty: all the polygons of the layer)", options=_FIELD,
+        update=_refresh_propose_preview)
+    profile: EnumProperty(  # type: ignore[valid-type]
+        name="Road profile",
+        description="Profile of the road: its vehicle, its carriageway, its gradients, its radii and its slopes; create or complete them with «Road profile…»",
+        items=des_panels.road_profile_items, options=_FIELD, update=_refresh_propose_preview)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface the route is searched on: by default, the exploitation surface of the quarry and, without it, the last of the chain",
+        items=des_panels.platform_start_items, options=_FIELD, update=_refresh_propose_preview)
+    start_level: StringProperty(  # type: ignore[valid-type]
+        name="Start level (m)",
+        description="Elevation of the level profile at the start of the route in metres (empty: the one of the start surface at that point)", options=_FIELD,
+        update=_refresh_propose_preview)
+    end_level: StringProperty(  # type: ignore[valid-type]
+        name="End level (m)",
+        description="Elevation of the level profile at the end of the route in metres (empty: the one of the start surface at that point or of the platform of the "
+                    "destination)", options=_FIELD, update=_refresh_propose_preview)
+    mesh: StringProperty(  # type: ignore[valid-type]
+        name="Mesh of the route (m)",
+        description="Side of the blocks of the grid in which the route is searched, in metres: a whole multiple of the step of the project; a hypothesis without "
+                    "default value", options=_FIELD, update=_refresh_propose_preview)
+    level_step: StringProperty(  # type: ignore[valid-type]
+        name="Elevation step (m)",
+        description="Step of the elevations the route can take above or below the ground, in metres; a hypothesis without default value", options=_FIELD,
+        update=_refresh_propose_preview)
+    max_cut_fill: StringProperty(  # type: ignore[valid-type]
+        name="Maximum cut and fill height (m)",
+        description="Most the level profile of the route may be above or below the ground, in metres; a hypothesis without default value", options=_FIELD,
+        update=_refresh_propose_preview)
+    lambda_weight: StringProperty(  # type: ignore[valid-type]
+        name="Weight of the earthworks (1/m)",
+        description="How much the cost of the route grows with the height of cut and fill, in 1/m; a hypothesis without default value", options=_FIELD,
+        update=_refresh_propose_preview)
+    turn: StringProperty(  # type: ignore[valid-type]
+        name="Turn penalty (m)",
+        description="Length added to the cost of the route for each change of heading, in metres; a hypothesis without default value", options=_FIELD,
+        update=_refresh_propose_preview)
+    margin: StringProperty(  # type: ignore[valid-type]
+        name="Margin of the corridor (m)",
+        description="How much longer than the shortest route the routes inside the corridor can be, in metres: the route changes with it; a hypothesis without "
+                    "default value", options=_FIELD, update=_refresh_propose_preview)
+    simplify: StringProperty(  # type: ignore[valid-type]
+        name="Simplification tolerance (m)",
+        description="Most the simplified axis may separate from the route, in metres; a hypothesis without default value", options=_FIELD,
+        update=_refresh_propose_preview)
+    arrival_tol: StringProperty(  # type: ignore[valid-type]
+        name="Arrival tolerance of the route (m)",
+        description="How far from the destination elevation the route may end, in metres; a hypothesis without default value", options=_FIELD,
+        update=_refresh_propose_preview)
+    search_budget: StringProperty(  # type: ignore[valid-type]
+        name="Budget of states",
+        description="Most states the search of the route may expand before it stops saying so: a whole number (empty: the default value, shown)", options=_FIELD,
+        update=_refresh_propose_preview)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez. «Vista previa» (T28): la pone el
+    # botón del diálogo. Una propuesta no pide confirmación: no graba ninguna superficie (la pendiente media por encima de pm solo avisa).
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    preview: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    _saved = False
+    """Si lo que llega al modal es lo guardado de la propuesta (y no el cálculo)."""
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué. Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las listas leídas de nuevo (las superficies,
+        las capas, los perfiles de pista, las pistas y las plataformas de la versión), la propuesta (un nombre, la primera capa de puntos, el primer perfil y la partida) y el diálogo del cálculo: Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            des_panels.refresh_platform_choices(project)
+            des_panels.refresh_road_choices(project)
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label), confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio: un nombre que no repite el de ninguna capa propuesta de la versión («Ruta propuesta 1»…) y lo de «Pista…» (:func:`_propose_trace_values`: la
+        primera capa de puntos, el primer perfil y la partida). Ninguna cifra minera se propone."""
+        if not self.name.strip():
+            version = scene_versions.active()
+            taken = set() if version is None else set(des_panels._proposed_routes(project, version.uid))
+            number = 1
+            while provenance.dataset_name(provenance.ROUTE_LAYER_TABLE, f"{tr('Proposed route')} {number}") in taken:
+                number += 1
+            self.name = f"{tr('Proposed route')} {number}"
+        _propose_trace_values(self, context, project)
+
+    def draw(self, context: Any) -> None:
+        """Arriba el nombre; la capa de puntos y **el origen** (un punto de la capa o el eje de otra pista a una abscisa) y **el destino** (un punto, una plataforma o una cota con su zona y su tolerancia); el perfil
+        y la partida; las cotas de inicio y de fin; **los parámetros de la ruta, cada uno con su tipo**; y «Vista previa». En la confirmación de crear, el resumen."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        box = layout.box()
+        box.label(text=tr("Geometry of the road"), translate=False)
+        box.prop(self, "layer", text=tr("Layer"), translate=False)
+        box.prop(self, "name_field", text=tr("Name field"), translate=False)
+        _draw_trace_points(box, self)
+        layout.prop(self, "profile", text=tr("Road profile"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        levels = layout.box()
+        levels.label(text=tr("Elevations (empty: those of the start surface)"), translate=False)
+        levels.prop(self, "start_level", text=tr("Start level (m)"), translate=False)
+        levels.prop(self, "end_level", text=tr("End level (m)"), translate=False)
+        _draw_route_params(layout, self)
+        _draw_entity_preview_button(layout, self, PROPOSE_ROAD, _propose_dialog_fields())  # «Vista previa» (RF-017-26)
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _request(self) -> Any:
+        """Lo pedido en el diálogo como la ``design.road_model.RoadRequest`` de «trazar» (RF-017-28, RF-017-02, RF-017-10), comprobado sin escribir ni calcular nada: el origen es un punto de la capa (por su nombre o
+        su ``fid``) o ``RDW-001@s`` (el eje de otra pista a la abscisa ``s``) y el destino, un punto, ``entity:PLT-001`` (una plataforma) o una cota con su zona y su tolerancia. Lo que se deja vacío (las cotas de
+        inicio y de fin, los parámetros de la ruta, el presupuesto de estados) lo resuelve el dominio: la cota de la superficie de partida, el valor por defecto de su parámetro o, si no lo tiene, el rechazo de
+        RF-015-08 con su nombre. :class:`ComputeFormError` si falta algo que el diálogo necesita para armar la petición."""
+        from ...design import road_model  # al usarlo: habilitar no carga el cálculo
+
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the proposed route"))
+        if self.layer in ("", des_panels.NO_LAYER):
+            raise ComputeFormError(tr("Choose the layer of the route: there is none of points in the project"))
+        if self.profile in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the profile of the road: create one with «Road profile…»"))
+        if self.start in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the start surface of the route"))
+        changes: dict[str, Any] = {**_road_points(self), **_route_changes(self)}
+        changes["start_level_m"] = typed_number(self.start_level, tr("Start level (m)"))
+        changes["end_level_m"] = typed_number(self.end_level, tr("End level (m)"))
+        return road_model.RoadRequest(name, road_model.LayerFields(self.layer, self.name_field.strip() or None), "trace", self.profile, self.start, **changes)
+
+    # --- Calcular y crear ---------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Con ``preview``, activa la vista previa de lo pedido (:meth:`_show_preview`). Si no, comprueba lo pedido (sin escribir nada si falta algo), pasa
+        por la puerta de la 008 y calcula la propuesta por pasos con ``design.steps.road_propose_run`` —compila las máscaras antes si no están al día—, sin registrar nada (RF-015-03): desde la interfaz, en el modal
+        con el avance y Esc (RF-015-29, RF-017-30); desde un guion, de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos (la capa y sus puntos, el perfil y su valor, la
+        partida, los parámetros de la ruta que faltan, un sector con la búsqueda pendiente, el nombre repetido, una ruta que no existe y por qué) y todas las cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        if self.preview:
+            return self._show_preview()
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.road_propose_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _show_preview(self) -> set[str]:
+        """«Vista previa» (RF-017-26, RF-015-26): comprueba lo pedido como al calcular (:meth:`_request`, sin escribir ni calcular nada) y activa con ello la vista previa de la pista (``bl.draw.entity``: antes de
+        calcular, el origen, el destino y el pasillo de la ruta); la que hubiera activa se cambia por la nueva. Lo que rechazaría «Calcular» sale en la propia vista previa, como aviso. Se quita al cancelar la orden,
+        al Esc a mitad del cálculo, al crearla, con su control y al conmutar a la interfaz de Blender."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        from ...design.preview import RoadAsk  # al usarlo: habilitar no carga el cálculo
+
+        preview = _entity_preview()
+        try:
+            preview.enable(preview.EntityPlan(road=RoadAsk(request=request)))
+        except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, tr("The preview of the entity could not be shown: {detail}", detail=design_error_text(exc)))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Showing the preview of the proposed route «{name}»", name=request.name))
+        return {"FINISHED"}
+
+    def _finished(self, context: Any, opened: Any) -> set[str]:
+        """Con lo guardado llegando (:meth:`_creation_steps`), acaba: la propuesta ya está creada. Si no, como las demás (:meth:`_CalculateAndCreate._finished`): deja el cálculo abierto con su resumen y pide
+        confirmar."""
+        if self._saved:
+            self._saved = False
+            return {"FINISHED"}
+        return _CalculateAndCreate._finished(self, context, opened)
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear» (RF-017-28, RF-015-02): registra la propuesta —**la capa de líneas con Z editable en QGIS** y la operación, en una transacción— sin más confirmación que el botón (no graba ninguna superficie: la
+        pendiente media por encima de pm solo avisa). Desde la interfaz, **por pasos** con el avance y Esc (:class:`_CreatesInSteps`: ``Calculation.create_steps``, la transacción final como último paso); desde un
+        guion, de una vez, con el mismo resultado. **Una propuesta no es una entidad**: no encadena la capa de entidades ni la de ejes, no declara ni compila nada. Quita la vista previa en cuanto existe."""
+        opened = calculation()
+        if opened is None or opened.op_type != self.provenance_op_type:
+            self.report({"ERROR"}, tr("There is no open calculation: compute first"))
+            return {"CANCELLED"}
+        started = self._create_in_steps(context, opened)
+        if started is not None:  # desde la interfaz, por pasos
+            return started
+        created = _CalculateAndCreate._create(self, context)
+        if "FINISHED" in created:
+            _entity_preview_off()  # la propuesta ya existe: ya no se prepara (RF-017-26)
+        return created
+
+    def _creation_steps(self, project: Any, opened: Calculation) -> Iterator[Progress]:
+        """Los pasos de «Crear» ``opened`` en el modal: los de ``Calculation.create_steps`` (la capa propuesta, montada y escrita en su temporal por pasos; la transacción final, el último) y, en cuanto lo guardado
+        llega, lo registrado (:meth:`_registered`) y quitar la vista previa; **nada más**: una propuesta no es una entidad, no encadena ``entity_store.after_entity_change``. Cerrar los pasos antes (Esc) o un
+        fallo no dejan nada: ``create_steps`` descarta el cálculo y borra sus temporales."""
+        creating = opened.create_steps(budget_s=self.STEP_BUDGET_S)
+        saved = None
+        try:
+            for step in creating:
+                if step.result is not None:
+                    saved = step
+                    break
+                yield step
+        finally:
+            creating.close()
+        assert saved is not None  # los pasos acaban siempre con lo guardado
+        self._registered(opened)
+        self._after_registered()
+        self._creating, self._saved = False, True
+        yield saved
+
+    def _after_registered(self) -> None:
+        """En cuanto lo guardado llega, quita la vista previa: la propuesta ya existe, ya no se prepara (RF-017-26)."""
+        _entity_preview_off()
+
+    def _created_text(self, opened: Calculation) -> str:
+        from ...design import road_layer  # al usarlo: habilitar no carga el cálculo
+
+        return tr("Route «{name}» proposed in {version}: the layer «{layer}» is editable in QGIS", name=opened.name, version=opened.version,
+                  layer=road_layer.route_layer_table(opened.version, opened.name))
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando la propuesta del trazado… 40 % · Esc: cancelar» o «Guardando la propuesta del trazado… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if self._creating:
+            return tr("Saving the proposal of the route… {percent} % · Esc: cancel", percent=percent)
+        return tr("Computing the proposal of the route… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if self._creating:
+            return tr("Creation cancelled: the route has not been proposed and the calculation has been discarded; nothing has been left half-done")
+        return _CalculateAndCreate._cancelled_text(self)
+
+
+# --- Exportar pista… (spec 017, T33; HU-017-4; RF-017-27, RF-017-29, RF-015-28; H-9; plan 017 §5.3.3 y §5.5; comprobación manual M6) --------------------------------------------------------
+
+EXPORT_ROAD = "geoblender.des_export_road"
+EXPORT_ROAD_ITEMS = [
+    ("SURFACE", "Surface of the road", "The surface the road leaves in its version, as a deliverable GeoTIFF"),
+    ("GRADIENT", "Level profile of the road", "The abscissa, the x and y, the ground elevation, the level profile elevation and the gradient of each station of the axis of the road, in m and in %, as a CSV for a "
+                                              "spreadsheet"),
+    ("REACH", "What an accessibility reaches", "The cells a walker reaches from the entry points of an accessibility, as a deliverable GeoTIFF of codes with its legend")]
+"""Lo que exporta «Exportar pista…» (``design.export.ROAD_EXPORTS``; RF-017-27): la superficie de una pista, su rasante (CSV) y lo que alcanza una accesibilidad."""
+_EXPORT_ROAD_WHAT = {"SURFACE": "surface", "GRADIENT": "gradient", "REACH": "reach"}
+_CSV_SUFFIX = ".csv"
+
+
+class GEOBLENDER_OT_des_export_road(_StepsModal, bpy.types.Operator):
+    """Write the surface of a road or what an accessibility reaches as a deliverable GeoTIFF, or the level profile of a road as a CSV (it is not an operation: it writes nothing in the project, also from a superseded version and, outside the project, in read-only)"""
+
+    bl_idname = EXPORT_ROAD
+    bl_label = "Export road…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    STEP_BUDGET_S = 0.05
+
+    what: EnumProperty(  # type: ignore[valid-type]
+        name="What to export", description="The surface of a road (GeoTIFF), its level profile (CSV) or what an accessibility reaches (GeoTIFF)", items=EXPORT_ROAD_ITEMS, default="SURFACE", options=_FIELD)
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Road or accessibility",
+        description="Code or name of the road or of the accessibility of the active version to export (empty: the one of the object selected in the 3D view)", options=_FIELD)
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="File", subtype="FILE_PATH", options={"SKIP_SAVE"})
+    filter_glob: StringProperty(  # type: ignore[valid-type]
+        default="*.tif;*.tiff;*.csv", options={"HIDDEN"})
+    check_existing: BoolProperty(  # type: ignore[valid-type]
+        default=True, options={"HIDDEN", "SKIP_SAVE"})
+    overwrite: BoolProperty(  # type: ignore[valid-type]
+        name="Replace", description="Replace the file if it already exists", options=_FIELD)
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        """Con un proyecto abierto y con procedencia: exportar no es una operación (H-9, D-29 de la 011), así que también en solo lectura (fuera del proyecto) y con la versión SUPERADO."""
+        reason = SESSION.unavailable()
+        if reason is not None:
+            cls.poll_message_set(reason)
+            return False
+        return True
+
+    def _ref(self, context: Any) -> str:
+        """La pista o la accesibilidad que se exporta: la que se tecleó (:attr:`source`: su código o su nombre) o la del objeto seleccionado en la vista (de una pista, su entidad; de una accesibilidad, su rejilla de
+        lo alcanzable). :class:`ValueError` si no hay ninguna o es de otra versión que la activa."""
+        ref = _entity_or_selected(self.source, context)
+        if not ref and self.what == "REACH":
+            ref = des_panels.wanted(context)
+        if not ref:
+            raise ValueError(tr("Choose the road or the accessibility to export: select its object in the 3D view or give its code or name"))
+        return ref
+
+    def _stored(self, ref: str) -> Any:
+        """Lo que se exporta (``design.export.stored_road_export``): una ``StoredGrid`` (la superficie de una pista o lo que alcanza una accesibilidad) o una ``StoredRoad`` (su rasante), de la versión activa. Sin
+        versión activa, :class:`ValueError`; ``DesignError`` si la pista no está calculada o no es lo alcanzable de una accesibilidad."""
+        from ...design import export  # al usarlo: habilitar no lo carga
+
+        active = scene_versions.active()
+        if active is None:
+            raise ValueError(tr("There is no active version: make the version of the road the active one first"))
+        return export.stored_road_export(SESSION.project, _EXPORT_ROAD_WHAT[self.what], ref, version=active.uid)
+
+    def draw(self, context: Any) -> None:
+        """Lo que se exporta y de qué pista o accesibilidad (en el panel del selector de ficheros)."""
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "what", text=tr("What to export"), translate=False)
+        layout.prop(self, "source", text=tr("Road or accessibility"), translate=False)
+
+    def check(self, context: Any) -> bool:
+        """Lo que Blender llama al cambiar una propiedad con el selector de ficheros abierto: la extensión del fichero sigue a lo que se exporta (``.csv`` la rasante; ``.tif`` lo demás)."""
+        if not self.filepath:
+            return False
+        path = Path(self.filepath)
+        rasante = self.what == "GRADIENT"
+        if (path.suffix.lower() == _CSV_SUFFIX) if rasante else (path.suffix.lower() in (".tif", ".tiff")):
+            return False
+        self.filepath = str(path.with_suffix(_CSV_SUFFIX if rasante else GEOTIFF_SUFFIX))
+        return True
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """El diálogo de fichero, con el destino que propone (``exports/<dato>_<V01>.tif`` o ``.csv`` del proyecto); con ``confirm``, la confirmación de sustituir el que ya existe."""
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            self.overwrite = True
+            return context.window_manager.invoke_confirm(
+                self, event, title=tr("Replace the file"), message=tr("«{file}» already exists: replace it?", file=Path(self.filepath).name), confirm_text=tr("Replace"), translate=False)
+        try:
+            ref = self._ref(context)
+            stored = self._stored(ref)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        self.source = ref
+        if not self.filepath:
+            suffix = _CSV_SUFFIX if self.what == "GRADIENT" else GEOTIFF_SUFFIX
+            self.filepath = str(Path(SESSION.project.root, gis_provenance.EXPORTS_FOLDER, f"{stored.record.name}_{stored.version_code}{suffix}"))
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context: Any) -> set[str]:
+        """Escribe el entregable desde lo registrado (``design.export``) y **no escribe nada en el proyecto** (H-9): la superficie de una pista o lo que alcanza una accesibilidad, por pasos con el avance y Esc
+        desde la interfaz (de una vez desde un guion), y la rasante, a CSV, de una vez. Sobre un fichero que ya existe, solo con ``overwrite`` (desde la interfaz, lo pregunta). Dice en el informe qué escribió y dónde."""
+        from ...design import export  # al usarlo: habilitar no lo carga
+
+        blocked = SESSION.unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        shown = self.filepath.strip()
+        steps: Iterator[float] | None = None
+        try:
+            ref = self._ref(context)
+            stored = self._stored(ref)
+            if not shown:
+                raise ValueError(tr("Choose the file to export to"))
+            target = Path(bpy.path.abspath(shown))
+            if self.what == "GRADIENT":
+                export.export_road_csv(SESSION.project, stored.name, target, version=stored.version_uid, read_only=read_only_dirs(), overwrite=bool(self.overwrite))
+            else:
+                steps = export.export_grid_steps(SESSION.project, stored.family, stored.name, target, version=stored.version_uid, read_only=read_only_dirs(), overwrite=bool(self.overwrite))
+        except GisError as exc:
+            interactive = self.in_steps and getattr(context, "window", None) is not None
+            if exc.code == "gis.export_target_exists" and interactive:
+                self.report({"WARNING"}, error_text(exc))
+                _confirm_later({"what": self.what, "source": self.source, "filepath": shown}, idname=EXPORT_ROAD)
+            else:
+                self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        self._file = target.name
+        self.report_log: list[str] = []
+        if steps is None:  # la rasante a CSV: de una vez, ya escrita
+            return self._exported()
+        progress = _export_progress(steps, target.name)
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, progress)
+            return {"RUNNING_MODAL"}
+        try:
+            for step in progress:
+                if step.result is not None:
+                    return self._exported()
+        except (GeoblenderError, OSError) as exc:
+            self._report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return {"CANCELLED"}  # pragma: no cover - los pasos acaban siempre con el fichero
+
+    def _exported(self) -> set[str]:
+        """Lo que dice el informe al exportar: qué se escribió y dónde."""
+        file = getattr(self, "_file", "")
+        if self.what == "GRADIENT":
+            text = tr("Level profile of the road exported to «{file}»", file=file)
+        elif self.what == "REACH":
+            text = tr("What the accessibility reaches exported to «{file}»", file=file)
+        else:
+            text = tr("Surface of the road exported to «{file}»", file=file)
+        self._report({"INFO"}, text)
+        return {"FINISHED"}
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Exporting «{file}»… {percent} % · Esc: cancel", file=getattr(self, "_file", ""), percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Export cancelled: nothing has been written")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return design_error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            return None
+        self._done(context)
+        return self._exported()
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except OSError as exc:  # los pasos cerrados no dejan nada a medias
+            LOGGER.error("La exportación de «%s» se ha parado", getattr(self, "_file", ""), exc_info=exc)
+            return self._fail(context, error_text(exc))
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -8990,7 +9590,9 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_edit_road_profile,
                              GEOBLENDER_OT_des_save_road_profile,
                              GEOBLENDER_OT_des_create_road,
-                             GEOBLENDER_OT_des_road_access)
+                             GEOBLENDER_OT_des_road_access,
+                             GEOBLENDER_OT_des_propose_road,
+                             GEOBLENDER_OT_des_export_road)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -9005,5 +9607,5 @@ y la T43, la interna que lanza «Cambiar parámetro…», sin menú); de la 016,
 de la «Unidad por espesor sobre su apoyo…» de Geología al menú Entidades); la T27 pone «Contrafuerte…», con la clave del catálogo
 ``des_add_buttress``; la T35 pone «Acopio (detectar, retirar)…», «Detectar acopios…» y «Candidatos de los acopios…» y entrega la entrada 016 con
 el menú Diseño ▸ Pistas y entidades ▸ Entidades); de la 017, la T29 pone «Perfil de pista…» (``des_edit_road_profile``) y su interna
-(``des_save_road_profile``), la T29b, «Pista…» (``des_create_road``) y la T30, «Accesibilidad de las pistas…» (``des_road_access``); **aún no están en el menú** (la T33;
-``PENDING_COMMANDS_017``: las que no están en el catálogo))."""
+(``des_save_road_profile``), la T29b, «Pista…» (``des_create_road``), la T30, «Accesibilidad de las pistas…» (``des_road_access``) y la T33 (a), «Proponer el trazado…» (``des_propose_road``) y
+«Exportar pista…» (``des_export_road``); **aún no están en el menú** (la T33b): las cinco son interinas de «R-40» en el catálogo)."""

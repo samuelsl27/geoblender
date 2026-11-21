@@ -759,3 +759,27 @@ description.es = "Accesibilidad de las pistas sobre una superficie del proyecto 
 entry = "R-40"
 action = "D"
 frequency = 1
+
+# «Proponer el trazado…» y «Exportar pista…» (spec 017, T33 (a); HU-017-1, HU-017-4; RF-017-28, RF-017-27, RF-017-29): las dos órdenes que quedaban. **Interinas, de R-40**: la T33b las pasa a la entrada 017 y las pone
+# en Diseño ▸ Pistas y entidades (la de proponer, la segunda del grupo; la de exportar, detrás de «Perfil de pista…»); mientras, no tienen casa (BS §7.2).
+[[command]]
+key = "geoblender.des_propose_road"
+kind = "internal"
+label.en = "Propose the route…"
+label.es = "Proponer el trazado…"
+description.en = "Proposal of the route of a haul road of the active version, from an origin to a destination: its axis and its level profile as a layer of 3D lines that you can edit in QGIS; it changes no surface and is not an entity"
+description.es = "Propuesta del trazado de una pista de la versión activa, de un origen a un destino: su eje y su rasante como una capa de líneas 3D que puede editar en QGIS; no cambia ninguna superficie y no es una entidad"
+entry = "R-40"
+action = "D"
+frequency = 2
+
+[[command]]
+key = "geoblender.des_export_road"
+kind = "internal"
+label.en = "Export road…"
+label.es = "Exportar pista…"
+description.en = "Write the surface of a road or what an accessibility reaches as a deliverable GeoTIFF, or the level profile of a road as a CSV (it is not an operation: it writes nothing in the project, also from a superseded version and, outside the project, in read-only)"
+description.es = "Escribe la superficie de una pista o lo que alcanza una accesibilidad como GeoTIFF entregable, o la rasante de una pista como CSV (no es una operación: no escribe nada en el proyecto, también de una versión superada y, fuera del proyecto, en solo lectura)"
+entry = "R-40"
+action = "D"
+frequency = 1

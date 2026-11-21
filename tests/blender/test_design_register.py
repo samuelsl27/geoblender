@@ -91,9 +91,10 @@ COMMANDS_017: dict[str, str] = {"des.road": "geoblender.des_create_road", "des.r
 """La orden de cada uno (plan 017 §5.3.3). **Aún no están en el catálogo** (las tres provisionales de «Pistas y entidades» las sustituyen las
 tareas de la fase G: D-20): ``OperationDef.commands`` solo comprueba su forma, y la T29 a la T33 las dan de alta y las quitan de
 ``PENDING_COMMANDS_017``."""
-PENDING_COMMANDS_017: frozenset[str] = frozenset(COMMANDS_017.values()) - {"geoblender.des_edit_road_profile", "geoblender.des_create_road", "geoblender.des_road_access"}
-"""Las órdenes de la 017 que las tareas de la fase G todavía no han dado de alta en el catálogo. «Perfil de pista…» (T29), «Pista…» (T29b) y «Accesibilidad de las pistas…» (T30) ya están,
-**interinas y de R-40** (el catálogo exige toda orden real: BS §7.2; la T33 las pasa a la entrada 017 y las pone en el menú)."""
+PENDING_COMMANDS_017: frozenset[str] = frozenset(COMMANDS_017.values()) - {"geoblender.des_edit_road_profile", "geoblender.des_create_road", "geoblender.des_road_access", "geoblender.des_propose_road"}
+"""Las órdenes de la 017 que las tareas de la fase G todavía no han dado de alta en el catálogo. «Perfil de pista…» (T29), «Pista…» (T29b), «Accesibilidad de las pistas…» (T30) y «Proponer el trazado…» (T33 (a)) ya
+están, **interinas y de R-40** (el catálogo exige toda orden real: BS §7.2; la T33b las pasa a la entrada 017 y las pone en el menú). «Exportar pista…» (T33 (a)) no es de ningún tipo de operación (exportar no lo es: H-9),
+así que no está en ``COMMANDS_017``."""
 PLATFORM_COMMAND = "geoblender.des_create_platform"
 """La orden de los tres: la «Plataforma…» de la entrada 015 (T15: la clave definitiva, que sustituyó a
 ``des_draw_platform``). Tiene su clase real; la entrada la entrega la T31."""
@@ -135,9 +136,9 @@ PREVIEW_NAME = "Preview of seeds, domains and constraints"
 PREVIEW_ABOUT = "Show the seeds, domains and constraints before computing"
 GROUP = "GEOBLENDER_PG_des_panels"
 ENTITY_PANEL = "GEOBLENDER_PT_des_entity"
-CLASSES_017 = ("GEOBLENDER_OT_des_edit_road_profile", "GEOBLENDER_OT_des_save_road_profile", "GEOBLENDER_OT_des_create_road", "GEOBLENDER_OT_des_road_access")
-"""Las cuatro órdenes de la 017 que tienen su clase real (T29, T29b y T30: «Perfil de pista…» y la interna que lo guarda, «Pista…» y «Accesibilidad de las pistas…»; «Proponer el trazado…» y «Exportar pista…» son
-de la T33)."""
+CLASSES_017 = ("GEOBLENDER_OT_des_edit_road_profile", "GEOBLENDER_OT_des_save_road_profile", "GEOBLENDER_OT_des_create_road", "GEOBLENDER_OT_des_road_access", "GEOBLENDER_OT_des_propose_road",
+               "GEOBLENDER_OT_des_export_road")
+"""Las seis órdenes de la 017 que tienen su clase real (T29, T29b, T30 y T33 (a): «Perfil de pista…» y la interna que lo guarda, «Pista…», «Accesibilidad de las pistas…», «Proponer el trazado…» y «Exportar pista…»)."""
 CLASSES_017_UI = ("GEOBLENDER_PG_des_road_profile", "GEOBLENDER_UL_des_road_profiles", "GEOBLENDER_PT_des_road_profiles")
 """El grupo de propiedades, la lista y la ventana de los perfiles de pista (T29). Un grupo de propiedades no es un atributo de ``bpy.types``: se mira por su clase."""
 STATUS_MSGID = "Recomputing «{name}»… {percent} %"

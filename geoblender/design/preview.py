@@ -161,6 +161,7 @@ _CODE_DECIMALS: Mapping[str, Mapping[str, int]] = MappingProxyType({
     "des.preview_buttress_crown": MappingProxyType({"crown": 2}),
     "des.removal_kept": MappingProxyType({"volume": 0}),
     "des.road_mean_gradient": MappingProxyType({"mean": 2, "limit": 2}),
+    "des.propose_mean_gradient": MappingProxyType({"mean": 2, "limit": 2}),
     "des.road_axis3d_gradient": MappingProxyType({"limit": 2}),
     "des.road_axis3d_radius": MappingProxyType({"radius": 2, "minimum": 2}),
     "des.road_start_level_followed": MappingProxyType({"old": 2, "new": 2}),

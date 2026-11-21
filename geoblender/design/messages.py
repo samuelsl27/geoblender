@@ -3364,6 +3364,17 @@ CATALOG: tuple[Message, ...] = (
         "registrados.",
         "warning",
     ),
+    # RF-017-17, RF-017-28: la pendiente media de una **propuesta del trazado** por encima de la del perfil: solo avisa (no graba ninguna superficie: no pide confirmación ni motivo). Spec 017, T33.
+    Message(
+        "des.propose_mean_gradient",
+        "Proposed route «{entity}»: its mean gradient ({mean} %) is more than the maximum mean gradient of its profile "
+        "({limit} %); the steepest stretches are: {stretches}; it is only a warning: the proposal changes no surface and "
+        "is created without confirmation.",
+        "Trazado propuesto «{entity}»: su pendiente media ({mean} %) pasa de la pendiente media máxima de su perfil "
+        "({limit} %); los tramos más empinados son: {stretches}; es solo un aviso: la propuesta no cambia ninguna "
+        "superficie y se crea sin confirmación.",
+        "warning",
+    ),
     # Cada tramo de la lista de arriba (``preview.Named``): su abscisa, su lugar y su pendiente (spec 017, T11).
     Message(
         "des.road_stretch",
