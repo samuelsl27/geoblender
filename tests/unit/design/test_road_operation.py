@@ -15,14 +15,21 @@ Todo en la rejilla de 2 m de la cantera sintética (200 × 200 celdas; ``rd.grid
 motivo, RF-017-17, y la calzada que no queda en su rasante, RF-017-22— con lo que se registra de quién y cuándo, la restricción o la entidad que impide mover la calzada, y el resumen con las cifras, la
 holgura del pasillo (H-10) y los avisos en su orden. La ``Calculation`` (``steps.road_run``) con el proyecto —Calcular no escribe, cerrar a mitad no deja nada, la causa de un «sin ruta», las confirmaciones
 sobre la ``Calculation``— es de ``milestone_road_calculate``.
+
+**La parte de la T21** (crear), **sin proyecto**: lo que guarda «Crear» —el eje por estaciones (``des_rdx_``), la fila de la huella (``des_epr_``), el informe (``des_prp_``) y el hash de la geometría— como
+funciones puras del resultado (lo repite la reproducción, T22), lo que anota la operación (las entradas de los otros diseños que difieren y lo confirmado) y que **no se declara nada** (RF-017-01, D-15).
+«Crear» con el proyecto es de ``milestone_road_create``.
 """
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import dataclasses
 import datetime as dt
 import json
+import math
+import pathlib
 import sqlite3
 import time
 import unittest
@@ -39,8 +46,10 @@ from tests.support.package import import_geoblender
 from tests.unit.design.test_road_no_route import strip_case
 
 access = import_geoblender("gis.masks.access")
+entity_store = import_geoblender("design.entity_store")
 masks_zones = import_geoblender("gis.masks.zones")
 messages = import_geoblender("design.messages")
+operations = import_geoblender("core.provenance.operations")
 params = import_geoblender("design.params")
 platform = import_geoblender("design.platform")
 preview = import_geoblender("design.preview")
@@ -54,6 +63,7 @@ road_net = import_geoblender("design.road_net")
 road_profiles = import_geoblender("design.road_profiles")
 road_section = import_geoblender("design.road_section")
 road_store = import_geoblender("design.road_store")
+store = import_geoblender("design.store")
 
 TOL = 1e-9
 GRID = rd.grid_of(2.0)
@@ -1048,6 +1058,229 @@ class ObsoleteTest(unittest.TestCase):
         kind = preview.ObsoleteKind.DEPENDENT
         self.assertEqual(road_store.road_obsolete(self.project(), prepared, supersedes="op-road"),
                          (preview.Obsolete(kind, "Cubicación", "des.volume", "op-vol"), preview.Obsolete(kind, "Plano", "des.plan", "op-plan")))
+
+
+# --- Crear (T21): lo que guarda la pista, como funciones puras de su resultado --------------------------------------------------------------
+
+
+class RoadRowsTest(unittest.TestCase):
+    """RF-017-01, RF-017-03, RF-017-23, RF-015-01 y RF-015-02 (T21): lo que «Crear» escribe de una pista son funciones **puras** de su resultado (lo repite la reproducción desde lo congelado, T22): el eje
+    por estaciones (``des_rdx_``), la fila de la huella (``des_epr_``), el informe (``des_prp_``) y el hash de la geometría de origen."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.job = ramp_job()
+        cls.outcome = last(road_store.road_compute_steps(cls.job, COMMON))
+        cls.corner_job = axis_job(rd.CORNER_LONG)
+        cls.corner = last(road_store.road_compute_steps(cls.corner_job, COMMON))
+        cls.step = last(road_store.road_compute_steps(axis_job(rd.STEP_AXIS, terrain=rd.step_terrain(GRID)), COMMON))
+        cls.downhill = last(road_store.road_compute_steps(axis_job((rd.RAMP_DESTINATION, rd.RAMP_ORIGIN)), COMMON))
+        cls.a15 = last(road_store.road_compute_steps(a15_job(), COMMON))
+        cls.restricted = last(road_store.road_compute_steps(restricted_job(), COMMON, previous=report.Previous(ENTITY, "V01.r1", 1.0, 1.0), operation=ENTITY))
+
+    @staticmethod
+    def by_quantity(rows: list[Any]) -> dict[str, list[tuple[Any, Any, Any]]]:
+        """Las filas de un informe largo por su cantidad: ``quantity`` → lista de ``(valor, unidad, nota)``."""
+        found: dict[str, list[tuple[Any, Any, Any]]] = {}
+        for quantity, value, unit, note in rows:
+            found.setdefault(quantity, []).append((value, unit, note))
+        return found
+
+    def test_a_the_axis_has_one_row_per_station_with_its_terrain_its_level_and_its_gradient(self) -> None:
+        """RF-017-03, RF-017-23, RF-015-02: ``des_rdx_`` tiene **una fila por estación** del eje, en el orden de la abscisa, con su lugar absoluto, la cota del terreno de partida y la de la rasante
+        (las del resultado, bit a bit) y la pendiente del tramo que empieza en ella en % (con signo; la última repite la del último tramo); en la rampa recta de CE-017-01 sube de 104 m a 4 % y no
+        tiene curvas (radio vacío y curva 0). Es lo que lee una pista que parte de este eje (``RDW-001@s``)."""
+        rows = road_store.road_axis_rows(self.outcome)
+        axis = self.outcome.axis
+        self.assertEqual(len(rows), len(axis.stations))
+        self.assertEqual(len(rows[0]), len(store.columns_of(provenance.ROAD, provenance.ROAD_AXIS_TABLE)))
+        table = np.array([row[:6] for row in rows], dtype=np.float64)
+        np.testing.assert_array_equal(table[:, 0], axis.stations)
+        np.testing.assert_array_equal(table[:, 1:3], axis.points)
+        np.testing.assert_array_equal(table[:, 3], self.outcome.terrain)
+        np.testing.assert_array_equal(table[:, 4], self.outcome.levels)
+        np.testing.assert_allclose(table[:, 4], 104.0 + 0.04 * table[:, 0], rtol=0.0, atol=TOL)  # a mano: de 104 m a 4 %
+        np.testing.assert_allclose(table[:, 5], 4.0, rtol=0.0, atol=TOL)
+        self.assertEqual({(row[6], row[7]) for row in rows}, {(None, 0)})
+        self.assertTrue(all(isinstance(row[7], int) for row in rows))
+        down = road_store.road_axis_rows(self.downhill)  # la misma rampa en sentido contrario: baja a 4 % (pendiente negativa) y cada cota es la del terreno
+        self.assertEqual({round(row[5], 9) for row in down}, {-4.0})
+        np.testing.assert_allclose([row[4] for row in down], 112.0 - 0.04 * np.array([row[0] for row in down]), rtol=0.0, atol=TOL)
+        stepped = road_store.road_axis_rows(self.step)  # donde la rasante no es el terreno (el escalón), cada fila guarda las dos cotas
+        terrain, level = np.array([row[3] for row in stepped]), np.array([row[4] for row in stepped])
+        np.testing.assert_array_equal(terrain, self.step.terrain)
+        np.testing.assert_array_equal(level, self.step.levels)
+        self.assertGreater(float(np.abs(terrain - level).max()), 1.0)
+
+    def test_b_the_radius_and_the_number_of_the_curve_are_those_of_the_arc_the_station_is_in(self) -> None:
+        """RF-017-23, RF-017-13: en la esquina de CE-017-02 (dos rectas de 40 m y R = 20 m) el arco empieza a 20 m (la tangente, R·tan 45°) y mide π·20/2 = 31,416 m: las estaciones de 20 a 51 m
+        (cada 1 m) son de la curva 1, de radio 20 m, y las demás, rectas (radio vacío y curva 0)."""
+        rows = road_store.road_axis_rows(self.corner)
+        (curve,) = self.corner.axis.curves
+        self.assertAlmostEqual(curve.station_m, 20.0, delta=TOL)
+        inside = {index for index, row in enumerate(rows) if row[7] == 1}
+        self.assertEqual(inside, set(range(20, 52)))
+        for index, row in enumerate(rows):
+            self.assertEqual((row[6], row[7]), (20.0, 1) if index in inside else (None, 0), index)
+
+    def test_b2_a_station_exactly_at_the_end_of_an_arc_is_already_a_straight(self) -> None:
+        """RF-017-23, RF-017-13: una estación es de un arco entre su comienzo (incluido) y su final (**excluido**): con R = 12/(π/2 − 1) = 21,0245 m el arco de la esquina de CE-017-02 acaba justo en la
+        estación 52 m (40 + R·(π/2 − 1)) y empieza a 18,98 m: las estaciones de 19 a 51 son de la curva y la 52 ya es recta."""
+        radius = 12.0 / (np.pi / 2.0 - 1.0)
+        outcome = last(road_store.road_compute_steps(axis_job(rd.CORNER_LONG, profile=rd.profile_with(reach_m=12.5, curve_radius_m=radius)), COMMON))
+        (curve,) = outcome.axis.curves
+        self.assertAlmostEqual(curve.station_m + curve.length_m, 52.0, delta=1e-9)
+        rows = road_store.road_axis_rows(outcome)
+        inside = [index for index, row in enumerate(rows) if row[7] == 1]
+        self.assertEqual((inside[0], inside[-1], len(inside)), (19, 51, 33))
+        self.assertEqual((rows[52][6], rows[52][7], rows[18][7]), (None, 0, 0))
+
+    def test_c_the_entity_row_has_the_attributes_the_footprint_in_runs_and_the_points_of_the_axis(self) -> None:
+        """RF-015-01, RF-015-02, RF-017-23: ``des_epr_`` tiene **una** fila con los atributos de la entidad (su código, su nombre, el tipo ``road``, los datos de su partida y de su apoyo, la capa y
+        el ``fid`` de su geometría, el hash de esa geometría, el modo y las celdas), su ventana de trabajo, **la huella de la sección en tramos de fila** (la máscara que dicen es la huella del resultado
+        en la ventana, bit a bit, y no hay nada fuera) y los puntos del eje (absolutos, float64, exactos)."""
+        (row,) = road_store.road_entity_rows(self.job, self.outcome, fid=5, start_surface="gis_dtm_prueba", support_surface="gis_dtm_apoyo")
+        self.assertEqual(len(row), len(store.columns_of(provenance.ROAD, provenance.ENTITY_TABLE)))
+        code, name, kind, start, support, layer, fid, sha, mode, cells, principal, bounds, footprint, axis = row
+        self.assertEqual((code, name, kind, start, support, layer, fid, mode, principal), (self.job.code, ENTITY, "road", "gis_dtm_prueba", "gis_dtm_apoyo", self.job.request.layer, 5, "trace", 0))
+        self.assertEqual(sha, road_store.road_geometry_sha256(self.job.geometry))
+        window = self.outcome.window
+        self.assertEqual(json.loads(bounds), [window[0].start, window[0].stop, window[1].start, window[1].stop])
+        mask = entity_store.runs_mask(json.loads(footprint), GRID.shape)
+        np.testing.assert_array_equal(mask[window], self.outcome.footprint)
+        self.assertEqual((cells, int(mask.sum())), (int(self.outcome.footprint.sum()),) * 2)
+        self.assertEqual(cells * GRID.cell_area, values_of(self.outcome)["des.road_area_m2"])
+        self.assertEqual(json.loads(axis), self.outcome.axis.points.tolist())
+        (without,) = road_store.road_entity_rows(self.job, self.outcome, fid=0, start_surface="gis_dtm_prueba", support_surface=None)
+        self.assertIsNone(without[4])
+
+    def test_d_the_geometry_hash_follows_every_bit_of_the_geometry_and_its_kind(self) -> None:
+        """RF-017-01, RF-015-01: el hash de la geometría de origen (SHA-256) es el mismo para la misma geometría y cambia con el último bit de un vértice, con el orden de origen y destino, con una línea
+        en lugar de dos puntos, con la cota y la zona de un destino por cota y con la Z de una línea (un cambio de geometría en QGIS deja obsoleta la pista; uno de un campo, no)."""
+        geometry = self.job.geometry
+        sha = road_store.road_geometry_sha256(geometry)
+        self.assertRegex(sha, r"^[0-9a-f]{64}$")
+        self.assertEqual(road_store.road_geometry_sha256(ramp_job().geometry), sha)
+        x, y = geometry.origin
+        line = np.array(self.corner_job.geometry.line)
+        moved = np.array(line)
+        moved[-1, 0] = np.nextafter(moved[-1, 0], np.inf)
+        ring = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 0.0]])
+        other_ring = ring + [0.0, 1.0]
+        hashes = {
+            "base": sha,
+            "last bit": road_store.road_geometry_sha256(road_model.RoadGeometry(origin=(float(np.nextafter(x, np.inf)), y), destination=geometry.destination)),
+            "destination last bit": road_store.road_geometry_sha256(road_model.RoadGeometry(origin=geometry.origin, destination=(float(np.nextafter(geometry.destination[0], np.inf)), geometry.destination[1]))),
+            "swapped": road_store.road_geometry_sha256(road_model.RoadGeometry(origin=geometry.destination, destination=geometry.origin)),
+            "line": road_store.road_geometry_sha256(road_model.RoadGeometry(line=line)),
+            "line last bit": road_store.road_geometry_sha256(road_model.RoadGeometry(line=moved)),
+            "level": road_store.road_geometry_sha256(road_model.RoadGeometry(origin=geometry.origin, destination=road_model.LevelDestination(120.0, 1.0, ((ring,),)))),
+            "other level": road_store.road_geometry_sha256(road_model.RoadGeometry(origin=geometry.origin, destination=road_model.LevelDestination(121.0, 1.0, ((ring,),)))),
+            "other tolerance": road_store.road_geometry_sha256(road_model.RoadGeometry(origin=geometry.origin, destination=road_model.LevelDestination(120.0, 2.0, ((ring,),)))),
+            "other zone": road_store.road_geometry_sha256(road_model.RoadGeometry(origin=geometry.origin, destination=road_model.LevelDestination(120.0, 1.0, ((other_ring,),)))),
+            "line with z": road_store.road_geometry_sha256(road_model.RoadGeometry(line=np.column_stack([line, np.arange(len(line), dtype=np.float64)]))),
+        }
+        self.assertEqual(len(set(hashes.values())), len(hashes), "cada geometría tiene el suyo")
+
+    def test_e_the_report_has_the_counts_the_axis_the_engraving_and_every_notice_but_those_that_depend_on_what_the_operation_does_not_consume(self) -> None:
+        """RF-017-23, RF-015-02, RF-015-13: ``des_prp_`` (formato largo: cantidad, valor, unidad y nota) lleva las celdas y el área de la huella, el eje (longitud, estaciones, paso, desviación y una fila por
+        curva), la rasante (cotas y pendientes con el lugar de la máxima y si pasa de pm), la sección y el borde (corte y relleno, celdas, alturas máximas y la pared), **cada grupo de la calzada que no queda
+        en su rasante con su causa, sus celdas, su área y su lugar**, la afección de «preferible no afectar», la ruta (solo «trazar») y, al final, cada aviso con su código y sus valores en JSON, **salvo la
+        magnitud y el orden con la cantera**, que dependen de lo que la operación no consume (la revisión congelada anterior y la otra superficie de la cantera): el informe se reproduce sin el proyecto. Nada
+        es NaN ni infinito."""
+        outcome = self.restricted
+        rows = road_store.road_report_rows(outcome)
+        self.assertTrue(all(len(row) == 4 for row in rows))
+        for quantity, value, _unit, _note in rows:
+            self.assertTrue(value is None or math.isfinite(value), quantity)
+        found = self.by_quantity(rows)
+        engraved, axis = outcome.engraved, outcome.axis
+        self.assertEqual(found["footprint_cells"], [(float(engraved.footprint_cells), "-", None)])
+        self.assertEqual(found["area_m2"], [(engraved.area_m2, "m2", None)])
+        self.assertEqual((found["axis_m"][0][0], found["axis_stations"][0][0], found["axis_step_m"][0][0]), (axis.length_m, float(len(axis.stations)), axis.step_m))
+        self.assertEqual((found["section_cut_m3"][0][0], found["section_fill_m3"][0][0]), (engraved.section_cut_m3, engraved.section_fill_m3))
+        self.assertEqual((found["edge_cut_m3"][0][0], found["edge_fill_m3"][0][0]), (engraved.edge_cut_m3, engraved.edge_fill_m3))
+        self.assertEqual((found["z_start_m"][0][0], found["z_end_m"][0][0]), (float(outcome.levels[0]), float(outcome.levels[-1])))
+        self.assertEqual(found["mean_exceeded"], [(0.0, "-", None)])
+        self.assertNotIn("route_expanded", found, "«sobre un eje» no busca ruta")
+        trace = self.by_quantity(road_store.road_report_rows(self.outcome))
+        route = self.outcome.route
+        self.assertEqual([trace[key][0][0] for key in ("route_mesh_m", "route_margin_m", "route_expanded", "route_seen", "route_budget", "route_turns", "route_nodes")],
+                         [route.mesh_m, route.margin_m, float(route.expanded), float(route.seen), float(route.budget), float(route.turns), float(route.nodes)])
+        groups = [json.loads(note) for _value, _unit, note in found["off_level_group"]]
+        self.assertGreaterEqual(len(groups), 1)
+        self.assertEqual([(g["group"], g["cause"], g["cells"], g["area_m2"], g["x"], g["y"]) for g in groups],
+                         [(g.group, g.cause.value, g.cells, g.area_m2, g.x, g.y) for g in outcome.off_level])
+        self.assertEqual([value for value, _unit, _note in found["off_level_group"]], [g.max_m for g in outcome.off_level])
+        notices = [json.loads(note)["code"] for quantity, _value, _unit, note in rows if quantity in ("warning", "note")]
+        outside = {"des.magnitude_cut", "des.magnitude_fill", "des.magnitude_no_reference", "des.entity_quarry_order"}
+        self.assertTrue(outside & {notice.code for notice in outcome.notices}, "el resultado tiene avisos de la magnitud: no van al informe")
+        self.assertEqual(notices, [notice.code for notice in outcome.notices if notice.code not in outside])
+        self.assertEqual(road_store.road_report_rows(outcome), rows, "el mismo resultado da el mismo informe")
+
+    def test_f_the_mean_over_pm_and_the_curves_are_in_the_report(self) -> None:
+        """RF-017-17, RF-017-13, RF-017-23: la media por encima de pm (la «opción A15») queda en el informe (``mean_exceeded`` 1) con su aviso, y cada curva es una fila con su radio y, en la nota, el
+        vértice, el radio de diseño, el cambio de dirección, la tangente, el largo, la abscisa y el lugar; una pista «sobre un eje» no lleva filas de la ruta."""
+        found = self.by_quantity(road_store.road_report_rows(self.a15))
+        self.assertEqual(found["mean_exceeded"], [(1.0, "-", None)])
+        self.assertAlmostEqual(found["gradient_mean_pct"][0][0], 10.5, delta=1e-6)
+        self.assertIn("warning", found)
+        self.assertNotIn("route_expanded", found)
+        corner = self.by_quantity(road_store.road_report_rows(self.corner))
+        ((radius, unit, note),) = corner["curve"]
+        (curve,) = self.corner.axis.curves
+        self.assertEqual((radius, unit, corner["curves"][0][0]), (20.0, "m", 1.0))
+        self.assertEqual(json.loads(note), {"vertex": curve.vertex, "design_radius_m": curve.design_radius_m, "deflection_rad": curve.deflection, "tangent_m": curve.tangent_m,
+                                            "length_m": curve.length_m, "station_m": curve.station_m, "x": curve.x, "y": curve.y})
+
+    def test_g_the_operation_adds_the_other_designs_that_differ_as_inputs_and_what_was_confirmed_to_its_settings(self) -> None:
+        """RF-017-05 (b), RF-017-17, RF-017-22, CE-017-05: lo que anota la operación de la pista además de lo que preparó: los **otros diseños que difieren** (``RoadOutcome.other_designs``) como
+        entradas con su papel y **el hash que tenían al prepararla** (``seen`` no cambia: lo midió la preparación), sin repetir una que ya lo era; y **lo confirmado** (quién, cuándo, el motivo) en sus
+        ajustes. Sin nada que añadir, la misma ``OperationStart``; la preparada no se modifica."""
+        used = (operations.Use("gis_fea_pistas_puntos", provenance.ENTITY_LAYER_ROLE), operations.Use("gis_dtm_prueba", provenance.SURFACE_ROLE))
+        start = store.OperationStart(provenance.ROAD, ENTITY, "uid-v1", "V01", {"name": ENTITY, "code": "RDW-001", "fields": {"name_field": "nombre"}}, used, ("des.road.rdw_001.mode",), None,
+                                     {"uid-layer": "hash-layer", "uid-start": "hash-start", "uid-otra": "hash-otra"})
+        self.assertIs(road_store.road_operation_start(start, self.outcome, None), start)
+        outcome = dataclasses.replace(self.outcome, other_designs=("des_exp_otra", "des_fin_otra"))
+        found = road_store.road_operation_start(start, outcome, None)
+        role = provenance.ROAD_OTHER_DESIGN_ROLE
+        self.assertEqual(found.inputs, (*used, operations.Use("des_exp_otra", role), operations.Use("des_fin_otra", role)))
+        self.assertEqual((found.settings, found.seen, found.params, found.supersedes), (start.settings, start.seen, start.params, start.supersedes))
+        self.assertEqual(start.inputs, used)
+        again = dataclasses.replace(start, inputs=(*used, operations.Use("des_exp_otra", role)))
+        self.assertEqual(road_store.road_operation_start(again, outcome, None).inputs, (*used, operations.Use("des_exp_otra", role), operations.Use("des_fin_otra", role)))
+        confirmed = road_store.RoadConfirmed("Ana", "2026-11-21T09:30:00.000Z", 10.5, 10.0, "Opción A15 de la propiedad (N-15)")
+        with_confirmation = road_store.road_operation_start(start, self.outcome, confirmed)
+        self.assertEqual(with_confirmation.settings, {**start.settings, road_store.CONFIRMED: confirmed.settings()})
+        self.assertNotIn(road_store.CONFIRMED, start.settings)
+        self.assertEqual(road_store.confirmed_of(with_confirmation.settings), confirmed)
+        self.assertEqual(with_confirmation.inputs, used)
+
+    def test_h_creating_without_the_confirmation_is_refused_before_touching_the_writer(self) -> None:
+        """RF-017-17, RF-017-22, D-6: ``create_road_steps`` rechaza la pista con la media por encima de pm sin confirmar (``des.road_mean_unconfirmed``) y confirmada sin motivo
+        (``des.road_mean_reason``) y la de la calzada fuera de su rasante sin confirmar (``des.road_carriageway_unconfirmed``) **antes de tocar nada**: ni el escritor ni el proyecto (cualquier
+        acceso a ellos sería un error de la prueba)."""
+        writer = mock.Mock(spec=[])
+        project = mock.Mock(spec=[])
+        prepared = SimpleNamespace(job=SimpleNamespace(request=SimpleNamespace(name=ENTITY)))
+        for outcome, given, expected in ((self.a15, {}, "des.road_mean_unconfirmed"), (self.a15, {"mean": True, "reason": "  "}, "des.road_mean_reason"),
+                                         (self.restricted, {}, "des.road_carriageway_unconfirmed")):
+            with self.subTest(expected=expected), self.assertRaises(messages.DesignError) as caught:
+                next(road_store.create_road_steps(project, writer, prepared, outcome, **given))
+            self.assertEqual(caught.exception.code, expected)
+        with self.assertRaises(TypeError):
+            next(road_store.create_road_steps(project, writer, prepared, object()))
+
+    def test_i_the_road_declares_nothing_and_leaves_no_trace_of_a_declaration(self) -> None:
+        """RF-017-01, RF-015-10, RF-015-12, D-15: la pista **no declara restricción alguna** a los demás operadores: ``road_store`` no nombra ni el tipo de operación ``des.declare_constraints`` ni su
+        escritor (``declared_steps``), y su ajuste de ``protect``/``guard_m`` no existe; y la pista es una entidad con su propio código que deja una superficie (``store._OWN_CODE_TYPES``): lo que
+        apoya al recalcularse no cuenta la superficie de su operación anterior."""
+        tree = ast.parse(pathlib.Path(road_store.__file__).read_text(encoding="utf-8"))
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        self.assertFalse(names & {"DECLARE_CONSTRAINTS", "declared_steps", "declare_constraints", "after_entity_change", "declare_steps"}, names & {"DECLARE_CONSTRAINTS", "declared_steps"})
+        self.assertNotIn("protect", {param.value for param in params.RoadParam})
+        self.assertNotIn("guard_m", {param.value for param in params.RoadParam})
+        self.assertIn(provenance.ROAD, store._OWN_CODE_TYPES)
 
 
 if __name__ == "__main__":

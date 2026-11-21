@@ -6,8 +6,9 @@ El homólogo, para la pista (``des.road``: una entidad **con cadena**, ``RDW-001
 de ``design.entity_store.prepare_platform_units``: **solo lee**. Nada se escribe en el proyecto (RF-015-03) salvo las máscaras de la versión si no estaban al día (una operación
 propia, RF-013-04, y solo si no se dan cargadas). **Calcular por pasos** (:func:`road_compute_steps`, T20 (a): la orquestación por modos, las cifras de RF-017-23 y el ``RoadOutcome``, sin proyecto
 y sin escribir nada); **el resumen, las dos confirmaciones y con qué se compara** (T20b: :func:`road_summary` y :func:`summary_of`, :func:`carriageway_notices`, :func:`road_held_notices`,
-:func:`check_road_confirmed` y :class:`RoadConfirmed`, :func:`road_previous` y :func:`road_obsolete`; la ``Calculation`` es ``design.steps.road_run``); crear, de la T21; recalcular, reproducir y
-traer, de la T22; los modos «sobre un eje» y «eje 3D» con su lectura y su contrato, de la T23.
+:func:`check_road_confirmed` y :class:`RoadConfirmed`, :func:`road_previous` y :func:`road_obsolete`; la ``Calculation`` es ``design.steps.road_run``); **crear** (T21: :func:`create_road_steps` y :func:`create_road`, con lo que guarda —:func:`road_entity_rows`, :func:`road_axis_rows`,
+:func:`road_report_rows` y :func:`road_geometry_sha256`, funciones puras del resultado— y lo que anota la operación, :func:`road_operation_start`); recalcular, reproducir y traer, de la T22; los
+modos «sobre un eje» y «eje 3D» con su lectura y su contrato, de la T23.
 
 - :func:`prepare_road_units` y :func:`prepare_road` (de una vez): la versión editable (RF-009-21), el código ``RDW-nnn`` y el nombre únicos, **la partida** (RF-017-05, D-3: la persona
   la elige; sin ella, :func:`default_start`: la de explotación de la cantera de la 014 de la versión y, si no, la última de la cadena de entidades) con la cadena (una pista por
@@ -33,6 +34,7 @@ Python puro (nivel 8), con numpy. ``design.road_store`` es un módulo pesado de 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -57,6 +59,7 @@ from ..core.versions.model import Version
 from ..gis.grid import Grid
 from ..gis.masks import access
 from ..gis.masks.combine import ClassBit
+from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
 from . import (
@@ -108,7 +111,7 @@ from .road_model import (
 )
 from .sectors import design_sectors, refuse_pending
 from .seeds import pace_progress, sector_layout
-from .store import OperationStart, _loaded_masks, _start, require_version
+from .store import DesignWriter, OperationStart, Stored, _loaded_masks, _real, _seen, _start, _store_steps, require_version
 from .stockpiles import runs_cells
 from .surfaces import project_frame, read_surface_steps, read_surface_window
 from .zones import polygons_cells
@@ -128,17 +131,24 @@ __all__ = [
     "carriageway_notices",
     "check_road_confirmed",
     "confirmed_of",
+    "create_road",
+    "create_road_steps",
     "default_start",
     "other_design_notices",
     "other_designs",
     "parse_reference",
     "prepare_road",
     "prepare_road_units",
+    "road_axis_rows",
     "road_compute_steps",
     "road_confirmation",
+    "road_entity_rows",
+    "road_geometry_sha256",
     "road_held_notices",
     "road_obsolete",
+    "road_operation_start",
     "road_previous",
+    "road_report_rows",
     "road_summary",
     "road_values",
     "start_is_final_notice",
@@ -180,7 +190,8 @@ class PreparedRoad:
     mínimo y el salto creado), los códigos de las entidades en que **se apoya** (``supports``: el eje de otra pista del origen y la entidad de destino; RF-017-03), los nombres de los
     datos de **otros diseños** de la versión que no parten de la partida (``others``, T19-b: con los que compara el aviso de RF-017-05 (b) la T20, cuando tiene la huella) y los
     ``notices`` de la partida (RF-017-05 (a), que no impiden crearla). ``existing``: la entidad ya estaba en su versión (se preparó con su ``code``: recalcularla), así que «Crear» no
-    escribe otra vez sus parámetros."""
+    escribe otra vez sus parámetros. ``fid``: el de la geometría de la capa de la que sale la pista (la línea de «sobre un eje» y «eje 3D»; en «trazar», el primer punto de la capa que usa, el origen
+    o, si este es el eje de otra pista, el destino; 0 si ninguno es de la capa): lo que lleva ``des_epr_`` (``source_fid``)."""
 
     job: RoadJob
     start: OperationStart
@@ -198,6 +209,7 @@ class PreparedRoad:
     others: tuple[str, ...] = ()
     notices: tuple[Notice, ...] = ()
     existing: bool = False
+    fid: int = 0
 
     @property
     def op_type(self) -> str:
@@ -631,6 +643,7 @@ class _Resolved:
     destination_level: tuple[float, str] | None
     supports: tuple[str, ...]
     surfaces: Mapping[str, entity_store.EntitySurface] = MappingProxyType({})
+    fid: int = 0
 
 
 def _terrain_level(grid: Grid, surface: np.ndarray, point: tuple[float, float]) -> float:
@@ -663,6 +676,7 @@ def _resolve_points(project: StoreProject, version: Version, registry: EntityReg
     surfaces: dict[str, entity_store.EntitySurface] = {}
     skip = -1
     taken: list[tuple[float, float]] = []
+    fids: list[int] = []
 
     def point(ref: PointReference, param: RoadParam) -> tuple[float, float]:
         nonlocal skip
@@ -671,6 +685,7 @@ def _resolve_points(project: StoreProject, version: Version, registry: EntityReg
         _check_point(grid, surface, where, request, code, param, ref.name, surface_name)
         if param is RoadParam.ORIGIN:
             skip = found
+        fids.append(int(layer.fids[found]))
         return where
 
     if request.origin is None:
@@ -694,7 +709,7 @@ def _resolve_points(project: StoreProject, version: Version, registry: EntityReg
     taken.append(origin)
     if request.destination is None:
         yield
-        return _Resolved(origin, None, origin_level, None, tuple(supports), MappingProxyType(surfaces))
+        return _Resolved(origin, None, origin_level, None, tuple(supports), MappingProxyType(surfaces), fids[0] if fids else 0)
     destination_ref = parse_reference(request.destination)
     destination_level: tuple[float, str] | None
     if isinstance(destination_ref, EntityReference):
@@ -712,6 +727,7 @@ def _resolve_points(project: StoreProject, version: Version, registry: EntityReg
         if len(inside) > 1:
             raise _reject("des.road_destination_ambiguous", request, code, RoadParam.DESTINATION, request.destination, target=destination_ref.code, points=len(inside))
         destination = _point_of(layer, inside[0])
+        fids.append(int(layer.fids[inside[0]]))
         cell = _cell_of(grid, *destination)
         assert cell is not None
         window = (slice(cell[0], cell[0] + 1), slice(cell[1], cell[1] + 1))
@@ -726,7 +742,7 @@ def _resolve_points(project: StoreProject, version: Version, registry: EntityReg
     if any(abs(destination[0] - other[0]) <= 1e-9 and abs(destination[1] - other[1]) <= 1e-9 for other in taken):
         raise _reject("des.road_origin_is_destination", request, code, RoadParam.DESTINATION, request.destination)
     yield
-    return _Resolved(origin, destination, origin_level, destination_level, tuple(dict.fromkeys(supports)), MappingProxyType(surfaces))
+    return _Resolved(origin, destination, origin_level, destination_level, tuple(dict.fromkeys(supports)), MappingProxyType(surfaces), fids[0] if fids else 0)
 
 
 def _level_destination(project: StoreProject, request: RoadRequest, code: str) -> tuple[LevelDestination, str]:
@@ -917,12 +933,14 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     layer = _layer(project, request.layer)
     _kind(layer, "point" if mode is RoadMode.TRACE else "line", request, chosen)
     line: np.ndarray | None = None
+    fid = 0
     if mode is RoadMode.AXIS_3D:
         raise _reject("des.road_line_no_z", request, chosen, RoadParam.FEATURE, str(request.feature))
     if mode is RoadMode.ON_AXIS:
         if request.feature is None:
             raise _reject("des.entity_param_missing", request, chosen, RoadParam.FEATURE, None)
         index = _feature_index(layer, request.feature, request, chosen, RoadParam.FEATURE)
+        fid = int(layer.fids[index])
         line = _read_line(layer, index, request.feature, request, chosen)
     profile = _profile(project, version, request, chosen)
     yield
@@ -940,6 +958,7 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
         resolved = yield from _resolve_points(project, version, registry, request, chosen, name, layer, grid, values_start, start_name, frame)
         geometry_points: tuple[tuple[float, float], tuple[float, float] | None] = (resolved.origin, resolved.destination)
         supports = resolved.supports
+        fid = resolved.fid
         listed = dict(resolved.surfaces)
         start_level, end_level = resolved.origin_level, resolved.destination_level
         by_level = any(getattr(request, attr) is not None for attr in ("dest_level_m", "dest_tol_m", "dest_zone"))
@@ -1029,9 +1048,13 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     begun = _start(project, provenance.ROAD, name, version, masks, provenance.road_settings(asked, chosen), (*inputs, *extra),
                    provenance.road_params(chosen, mode=mode.value, profile=request.profile, valued=valued, supports=bool(supported), level_destination=destination is not None),
                    supersedes)
+    if others:  # el hash de cada otro diseño al preparar: si difiere en la huella, es una entrada (T21) y ``des.input_changed`` vigila que no cambie hasta crearla
+        with project.read() as conn:
+            seen = _seen(conn, tuple(Use(other, provenance.ROAD_OTHER_DESIGN_ROLE) for other in others), version)
+        begun = replace(begun, seen=MappingProxyType({**begun.seen, **seen}))
     yield
     return PreparedRoad(job, begun, chosen, version, start_name, start_ref, support_name, request.layer, profile, _rows(asked, chosen, values, levels, supported),
-                        MappingProxyType(values), MappingProxyType(common), supported, others, tuple(notices), code is not None)
+                        MappingProxyType(values), MappingProxyType(common), supported, others, tuple(notices), code is not None, fid)
 
 
 def prepare_road(project: StoreProject, request: RoadRequest, *, version: str | None, masks: access.MaskSet | None = None, code: str | None = None,
@@ -1535,3 +1558,259 @@ def road_confirmation(project: Any, outcome: RoadOutcome, *, mean: bool, carriag
         decided_by or project.session.user_host, format_utc(project.clock.now()), None if notice is None else float(notice.values["mean"]), None if notice is None else float(notice.values["limit"]),
         ((reason or "").strip() or None) if asked_mean else None, sum(group.area_m2 for group in groups) if asked_carriageway else None,
         round(max(group.max_m for group in groups), 3) if asked_carriageway else None)
+
+
+# --- Crear: la operación, los datos, la huella y las dependencias (spec 017, T21; RF-017-01, RF-017-03, RF-017-05 (b), RF-017-17, RF-017-22, RF-017-23; RF-015-01, RF-015-02, RF-015-04, RF-015-10, RF-015-12,
+# RF-015-15 y RF-015-29; RNF-017-07 y RNF-017-10; plan 017 §5.2.3, §5.3.2, §5.7 P-1 y P-5; D-15) ---------------------------------------------------------------------------------------------------------
+
+_STORE_PHASE = "road_store"
+_CURVE_TOL_M = 1e-9
+"""Lo que una estación puede quedar antes del comienzo de un arco (o después de su final) y seguir siendo de él: el ruido de la última cifra de una abscisa (m)."""
+Row = tuple[Any, ...]
+
+
+def _json(value: object) -> str:
+    """``value`` como JSON compacto y estable (``allow_nan`` falso: nada que no sea finito)."""
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def _plain(value: object) -> object:
+    """Un valor de un aviso que ``json`` no escribe solo: un escalar de numpy y un texto que se dice en el idioma de quien lee (:class:`~.preview.Named`: su código y sus valores)."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Named):
+        return {"code": value.code, "values": dict(value.values)}
+    raise TypeError(f"el valor {value!r} de un aviso no se puede guardar como JSON")
+
+
+def _notice_text(notice: Notice) -> str:
+    """Un aviso o una nota como en ``des_prp_``: su código y sus valores en JSON (:func:`_plain`: las pistas llevan listas de tramos como ``Named``)."""
+    return json.dumps({"code": notice.code, "values": dict(notice.values)}, sort_keys=True, ensure_ascii=False, allow_nan=False, default=_plain)
+
+
+def _place(x: float | None, y: float | None, what: str) -> str | None:
+    """El lugar absoluto ``x;y`` de una cifra (float64 en texto, como el de la 013, la 014 y la 015), o ``None`` sin él."""
+    if x is None or y is None:
+        return None
+    return f"{_real(what + '.x', x)!r};{_real(what + '.y', y)!r}"
+
+
+def road_geometry_sha256(geometry: RoadGeometry) -> str:
+    """El hash de la geometría de origen de una pista (SHA-256 en hexadecimal; RF-017-01, RF-015-01): el origen y el destino (un punto: su X e Y absolutas en float64, ``<f8``, **tal cual**: el
+    último bit cuenta; o un destino por cota: su cota, su tolerancia y los anillos de su zona) o la línea de su capa (con su Z si la tiene), cada cosa con su etiqueta. Lo que guarda ``des_epr_``
+    (``geometry_sha256``): saber si la geometría de la capa es la de la entidad. **Sin proyecto**: lo repite la reproducción."""
+    digest = hashlib.sha256()
+
+    def feed(tag: str, values: object) -> None:
+        array = np.ascontiguousarray(values, dtype="<f8")
+        digest.update(f"{tag}:{array.shape};".encode())
+        digest.update(array.tobytes())
+
+    if geometry.origin is not None:
+        feed("origin", geometry.origin)
+    destination = geometry.destination
+    if isinstance(destination, LevelDestination):
+        feed("level", (destination.level_m, destination.tolerance_m))
+        digest.update(f"zone:{len(destination.zone)};".encode())
+        for part in destination.zone:
+            digest.update(f"part:{len(part)};".encode())
+            for ring in part:
+                feed("ring", ring)
+    elif destination is not None:
+        feed("destination", destination)
+    if geometry.line is not None:
+        feed("line", geometry.line)
+    return digest.hexdigest()
+
+
+def road_entity_rows(job: RoadJob, outcome: RoadOutcome, *, fid: int, start_surface: str, support_surface: str | None) -> list[Row]:
+    """La fila de ``des_epr_`` (columnas de :data:`~.store.ENTITY_COLUMNS`) de la pista de ``job`` con su ``outcome`` (RF-015-01, RF-017-23): **una**, con los atributos de la entidad —su código, su
+    nombre, su tipo ``road``, los datos de su superficie de partida (``start_surface``) y de apoyo, la capa y el ``fid`` (``fid``) de su geometría de origen y el hash de esa geometría
+    (:func:`road_geometry_sha256`), el modo y las celdas de **la huella de la sección**—, su ventana de trabajo, esa huella en tramos de fila (``entity_store.footprint_runs``: lo que leen la zona
+    declarada de otra entidad, la capa de entidades y lo que se apoya en la pista) y los puntos de su eje (absolutos, float64, exactos). Solo depende de lo que se lee para calcular, no del proyecto:
+    lo repite la reproducción desde lo congelado."""
+    axis = outcome.axis
+    if axis is None:
+        raise ValueError("la fila de la huella de una pista pide su eje: es el del resultado de road_compute_steps")
+    window = outcome.window
+    runs = entity_store.footprint_runs(outcome.footprint, window)
+    return [(job.code, job.request.name, EntityKind.ROAD.value, start_surface, support_surface, job.request.layer, int(fid), road_geometry_sha256(job.geometry), job.mode.value,
+             int(np.count_nonzero(outcome.footprint)), 0, _json([int(window[0].start), int(window[0].stop), int(window[1].start), int(window[1].stop)]), _json([list(run) for run in runs]),
+             _json(axis.points.tolist()))]
+
+
+def road_axis_rows(outcome: RoadOutcome) -> list[Row]:
+    """Las filas de ``des_rdx_`` (columnas de :data:`~.store.ROAD_AXIS_COLUMNS`; RF-017-03, RF-017-23) del resultado ``outcome``: **una por estación** del eje, en el orden de la abscisa, con su lugar
+    absoluto (``x`` e ``y``), la cota del terreno de partida y la de la rasante, la pendiente del tramo que empieza en ella en % (con signo: positiva si sube en el sentido de la marcha; **la última
+    repite la del último tramo**: no tiene tramo que empiece en ella), el radio de la curva en que está (vacío en una recta) y el número de esa curva (desde 1, en el orden del eje; 0 en una recta). Una
+    estación es de un arco si queda entre su comienzo (incluido) y su final (excluido). Es lo que lee **otra pista que parte de este eje** (``RDW-001@s``, :func:`axis_point_at`). Nada es NaN ni
+    infinito (``ValueError``)."""
+    axis, terrain, levels = outcome.axis, outcome.terrain, outcome.levels
+    if axis is None or terrain is None or levels is None:
+        raise ValueError("el eje de una pista por estaciones pide su eje, el terreno y la rasante: son los del resultado de road_compute_steps")
+    stations = axis.stations
+    steps = np.diff(levels) / np.diff(stations) * 100.0
+    gradient = np.append(steps, steps[-1])
+    radius = np.full(stations.shape, np.nan)
+    number = np.zeros(stations.shape, dtype=np.int64)
+    for index, curve in enumerate(axis.curves, start=1):
+        inside = (number == 0) & (stations >= curve.station_m - _CURVE_TOL_M) & (stations < curve.station_m + curve.length_m - _CURVE_TOL_M)
+        radius[inside] = curve.radius_m
+        number[inside] = index
+    rows: list[Row] = []
+    for at, (s, (x, y)) in enumerate(zip(stations.tolist(), axis.points.tolist(), strict=True)):
+        rows.append((_real("station_m", s), _real("x", x), _real("y", y), _real("terrain_m", terrain[at]), _real("level_m", levels[at]), _real("gradient_pct", gradient[at]),
+                     None if number[at] == 0 else _real("radius_m", radius[at]), int(number[at])))
+    return rows
+
+
+def road_report_rows(outcome: RoadOutcome) -> list[Row]:
+    """Las filas de ``des_prp_`` (formato largo: ``quantity, value, unit_code, note``, como ``des_rpt_`` y ``des_qrp_``; RF-017-23, RF-017-17, RF-017-22, RF-015-02, RF-015-13) de la pista ``outcome``,
+    en este orden: la huella (celdas y área), el eje (longitud, estaciones, paso, desviación, curvas, **una fila por curva** con su radio y, en la nota, el vértice, el radio de diseño, el cambio de
+    dirección, la tangente, el largo, la abscisa y el lugar), la rasante (cotas, desnivel, pendientes con el lugar de la máxima, y ``mean_exceeded``: 1 si la media pasa de pm), la sección y el borde
+    (corte y relleno, celdas, alturas máximas, lo que las máscaras no dejan mover, **una fila por grupo de la calzada que no queda en su rasante** con su causa, sus celdas, su área y su lugar, los
+    ángulos, el alcance, la pared con una fila por causa y el salto creado de la 014 con una fila por tramo), la afección de «preferible no afectar», la ruta (solo «trazar») y, al final, **los avisos y
+    notas** (``warning`` y ``note``, con su código y sus valores en JSON) **menos los de** ``entity_store._OUTSIDE_NOTICES``: la magnitud y el orden con la cantera dependen de algo que la
+    operación no consume (la revisión congelada anterior y la otra superficie de la cantera) y el informe se reproduce sin el proyecto. Un valor que no es finito es un error del programa
+    (``ValueError``): nada se escribe. Solo depende del resultado: lo repite la reproducción."""
+    engraved, axis, levels = outcome.engraved, outcome.axis, outcome.levels
+    if engraved is None or axis is None or levels is None:
+        raise ValueError("el informe de una pista pide su eje, su rasante y su grabado: son los del resultado de road_compute_steps")
+    rows: list[Row] = []
+
+    def scalar(key: str, value: float, unit: str, note: str | None = None) -> None:
+        rows.append((key, _real(key, value), unit, note))
+
+    stations = axis.stations
+    steps = np.abs(np.diff(levels)) / np.diff(stations) * 100.0
+    top = int(np.argmax(steps))
+    scalar("footprint_cells", engraved.footprint_cells, "-")
+    scalar("area_m2", engraved.area_m2, "m2")
+    scalar("axis_m", axis.length_m, "m")
+    scalar("axis_stations", len(stations), "-")
+    scalar("axis_step_m", axis.step_m, "m")
+    scalar("axis_deviation_m", axis.deviation_m, "m")
+    scalar("curves", axis.curve_count, "-")
+    for curve in axis.curves:
+        scalar("curve", curve.radius_m, "m", _json({"vertex": curve.vertex, "design_radius_m": curve.design_radius_m, "deflection_rad": curve.deflection, "tangent_m": curve.tangent_m,
+                                                    "length_m": curve.length_m, "station_m": curve.station_m, "x": curve.x, "y": curve.y}))
+    scalar("z_start_m", levels[0], "m")
+    scalar("z_end_m", levels[-1], "m")
+    scalar("drop_m", levels[-1] - levels[0], "m")
+    scalar("gradient_mean_pct", road_gradient.mean_gradient(stations, levels) * 100.0, "%")
+    scalar("gradient_max_pct", steps[top], "%", _place(float(axis.points[top, 0]), float(axis.points[top, 1]), "gradient_max"))
+    scalar("gradient_max_station_m", stations[top], "m")
+    scalar("mean_exceeded", 1.0 if outcome.mean_exceeded else 0.0, "-")
+    for key, value, unit in (("section_cut_m3", engraved.section_cut_m3, "m3"), ("section_fill_m3", engraved.section_fill_m3, "m3"), ("section_cut_cells", engraved.section_cut_cells, "-"),
+                             ("section_fill_cells", engraved.section_fill_cells, "-"), ("cut_height_max_m", engraved.cut_height_max_m, "m"), ("fill_height_max_m", engraved.fill_height_max_m, "m"),
+                             ("cut_denied_cells", int(np.count_nonzero(engraved.cut_denied)), "-"), ("fill_denied_cells", int(np.count_nonzero(engraved.fill_denied)), "-"),
+                             ("too_high_cells", 0 if engraved.too_high is None else int(np.count_nonzero(engraved.too_high)), "-"),
+                             ("off_level_area_m2", math.fsum(group.area_m2 for group in engraved.off_level), "m2"), ("off_level_max_m", max((group.max_m for group in engraved.off_level), default=0.0), "m")):
+        scalar(key, value, unit)
+    for group in engraved.off_level:
+        scalar("off_level_group", group.max_m, "m", _json({"group": group.group, "cause": group.cause.value, "cells": group.cells, "area_m2": _real("off_level.area_m2", group.area_m2),
+                                                          "x": _real("off_level.x", group.x), "y": _real("off_level.y", group.y)}))
+    for key, value, unit in (("cut_angle_deg", engraved.cut_angle_deg, "deg"), ("fill_angle_deg", engraved.fill_angle_deg, "deg"), ("edge_mesh_factor", engraved.mesh_factor, "-"),
+                             ("edge_reach_m", engraved.reach_m, "m"), ("edge_cut_m3", engraved.edge_cut_m3, "m3"), ("edge_fill_m3", engraved.edge_fill_m3, "m3"),
+                             ("edge_cut_cells", engraved.edge_cut_cells, "-"), ("edge_fill_cells", engraved.edge_fill_cells, "-"),
+                             ("edge_changed_cells", int(np.count_nonzero(engraved.changed)), "-"), ("edge_held_cells", engraved.held_cells, "-"), ("edge_steep_cells", engraved.steep_cells, "-"),
+                             ("edge_outside_cells", engraved.outside_cells, "-")):
+        scalar(key, value, unit)
+    if engraved.wall_x is not None:
+        scalar("edge_wall_max_m", engraved.wall_max_m, "m", _place(engraved.wall_x, engraved.wall_y, "edge_wall"))
+    for wall in engraved.walls:
+        scalar("edge_wall", wall.max_deg, "deg", _json({"cause": wall.cause.value, "cells": wall.cells, "area_m2": _real("edge_wall.area_m2", wall.area_m2), "x": _real("edge_wall.x", wall.x),
+                                                        "y": _real("edge_wall.y", wall.y)}))
+    created = engraved.created
+    for key, value, unit in (("created_pairs", created.pairs, "-"), ("created_over_pairs", created.over, "-"), ("created_over_pct", created.over_pct, "%"), ("created_within_pct", created.within_pct, "%")):
+        scalar(key, value, unit)
+    scalar("created_step_max_m", created.maximum_m, "m", _place(created.x, created.y, "created_step"))
+    for key, value, unit in (("created_threshold_m", created.threshold_m, "m"), ("created_min_share_pct", created.min_share_pct, "%"), ("created_min_thickness_m", created.min_thickness_m, "m")):
+        scalar(key, value, unit)
+    for stretch in created.stretches:
+        scalar("created_stretch", stretch.maximum_m, "m", _json({"stretch": stretch.stretch, "pairs": stretch.pairs, "x": _real("created_stretch.x", stretch.x),
+                                                                 "y": _real("created_stretch.y", stretch.y)}))
+    for key, value, unit in (("avoid_cells", engraved.avoid_cells, "-"), ("avoid_m2", engraved.avoid_m2, "m2"), ("avoid_m3", engraved.avoid_m3, "m3"),
+                             ("avoid_weighted_m3", engraved.avoid_weighted_m3, "m3")):
+        scalar(key, value, unit)
+    route = outcome.route
+    if route is not None:
+        for key, value, unit in (("route_mesh_m", route.mesh_m, "m"), ("route_margin_m", route.margin_m, "m"), ("route_corridor_nodes", route.corridor_nodes, "-"), ("route_nodes", route.nodes, "-"),
+                                 ("route_expanded", route.expanded, "-"), ("route_seen", route.seen, "-"), ("route_budget", route.budget, "-"), ("route_turns", route.turns, "-")):
+            scalar(key, value, unit)
+    for notice in outcome.notices:
+        if notice.code not in entity_store._OUTSIDE_NOTICES:
+            rows.append((notice.severity, None, None, _notice_text(notice)))
+    return rows
+
+
+def road_operation_start(start: OperationStart, outcome: RoadOutcome, confirmed: RoadConfirmed | None) -> OperationStart:
+    """Lo que anota la operación de la pista al crearla, además de lo que preparó (``start``: :func:`prepare_road_units`): **los otros diseños de la versión que difieren en su huella**
+    (``outcome.other_designs``, RF-017-05 (b), CE-017-05) como entradas con el papel :data:`~.provenance.ROAD_OTHER_DESIGN_ROLE` —su hash es el que tenían al preparar la pista (``start.seen``: la
+    preparación lo midió; si cambia hasta crearla, ``des.input_changed``)—, de modo que **si cambian, la pista queda obsoleta con su causa**; sin repetir uno que ya lo era; y **lo confirmado**
+    (``confirmed``: quién, cuándo y el motivo de la media por encima de pm; el área y la diferencia de la calzada fuera de su rasante: RF-017-17, RF-017-22) en sus ajustes, bajo :data:`CONFIRMED`. Una
+    ``OperationStart`` es inmutable: da otra y no cambia la que recibe; sin nada que añadir, la misma. **La pista no declara nada** (RF-017-01, D-15): ni ``protect`` ni una declaración."""
+    found = start
+    have = {(use.item, str(use.role)) for use in start.inputs}
+    extra = tuple(Use(name, provenance.ROAD_OTHER_DESIGN_ROLE) for name in outcome.other_designs if (name, provenance.ROAD_OTHER_DESIGN_ROLE) not in have)
+    if extra:
+        found = replace(found, inputs=(*found.inputs, *extra))
+    if confirmed is not None:
+        found = replace(found, settings={**found.settings, CONFIRMED: confirmed.settings()})
+    return found
+
+
+def create_road_steps(project: StoreProject, writer: DesignWriter, prepared: PreparedRoad, outcome: RoadOutcome, *, mean: bool = False, carriageway: bool = False, reason: str | None = None,
+                      decided_by: str | None = None, budget_s: float = road_net.STEP_BUDGET_S) -> Generator[Progress, None, Stored]:
+    """**«Crear» una pista** por pasos (spec 017, T21; RF-017-01, RF-017-03, RF-017-23, RF-015-01, RF-015-02, RF-015-04, RF-015-15, RF-015-29; RNF-017-06, RNF-017-07 y RNF-017-10): prepara cada salida en su
+    temporal —**la superficie entera** (la de partida con la ventana de trabajo sustituida por el resultado, ``RoadOutcome.compose``; comprimida) y las tres tablas: la huella de la sección
+    (``des_epr_``, :func:`road_entity_rows`), el eje por estaciones (``des_rdx_``, :func:`road_axis_rows`) y el informe (``des_prp_``, :func:`road_report_rows`)—, cada una montada y escrita por pasos
+    de ``budget_s`` como mucho, y las registra en **una** transacción (:meth:`~.store.DesignWriter.commit` de ``writer``, el de «Calcular»): **los parámetros de la entidad** —todas sus filas, con su
+    origen y el decisor ``decided_by`` (por defecto quien tiene abierto el proyecto)—, la operación (:func:`road_operation_start`: sus entradas —la capa de origen, la partida, las máscaras, **lo que
+    pisa** (``supported_on``: el eje de otra pista y la entidad de destino, con la tabla de su huella) y los otros diseños que difieren— y sus ajustes, con lo confirmado), los datos, las cifras con el
+    ámbito de la entidad y las que el gancho de las dependencias mide (``des.supported_m3`` de lo que rellena sobre otras entidades: RF-015-15) y el mensaje. **No se crea sin la confirmación
+    expresa** de la pendiente media por encima de pm (``mean``, con su ``reason``, que no la bloquea) ni de la calzada que no queda en su rasante (``carriageway``): :func:`check_road_confirmed`,
+    **antes de tocar nada**. Una entidad que ya estaba en su versión (``prepared.existing``) no vuelve a escribir sus parámetros. Si algo falla, o lo que consume cambió desde que se calculó
+    (``des.input_changed``), no queda nada y el error sigue; **no modifica la capa de origen ni la superficie de partida y no declara ninguna restricción** (RF-017-01, D-15: la pista no llama a
+    ``des.declare_constraints``). Cerrar el generador antes de que termine borra los temporales. Devuelve lo guardado (:class:`~.store.Stored`)."""
+    if not isinstance(outcome, RoadOutcome):
+        raise TypeError(f"se crea la pista de un RoadOutcome, no {outcome!r}")
+    check_road_confirmed(outcome, mean=mean, carriageway=carriageway, reason=reason)
+    job = prepared.job
+    name = job.request.name
+    yield Progress(_STORE_PHASE, 0, 1, f"Guardando la pista «{name}»…")
+
+    def grid_units() -> Generator[None, None, Any]:
+        whole = outcome.compose(job.start)
+        yield
+        return (yield from writer.grid_steps(provenance.ENTITY_SURFACE_GRID, Raster(job.grid, whole, writer.crs, writer.vertical)))
+
+    yield from pipeline.forward(_store_steps(grid_units(), budget_s, "la superficie de la pista"))
+    tables: tuple[tuple[str, Callable[[], list[Row]], str], ...] = (
+        (provenance.ENTITY_TABLE, lambda: road_entity_rows(job, outcome, fid=prepared.fid, start_surface=prepared.start_surface, support_surface=prepared.support_surface), "la huella de la pista"),
+        (provenance.ROAD_AXIS_TABLE, lambda: road_axis_rows(outcome), "el eje de la pista"), (provenance.ENTITY_REPORT_TABLE, lambda: road_report_rows(outcome), "el informe de la pista"))
+    for family, make, what in tables:
+        yield from pipeline.forward(_store_steps(writer.table_steps(family, make()), budget_s, what))
+    start = road_operation_start(prepared.start, outcome, road_confirmation(project, outcome, mean=mean, carriageway=carriageway, reason=reason, decided_by=decided_by))
+    yield Progress(_STORE_PHASE, 1, 1, f"Registrando la pista «{name}»…")
+
+    def parameters(conn: sqlite3.Connection) -> None:
+        if prepared.existing:
+            if ParameterStore(project).get(entity_key(prepared.code, RoadParam.NAME), version=prepared.version_uid, conn=conn) is None:
+                raise ValueError(f"la entidad {prepared.code} no tiene sus parámetros en su versión: no está en ella (se prepara sin su código)")
+        else:
+            entity_store.set_entity_params(project, prepared.rows, version=prepared.version_uid, decided_by=decided_by, conn=conn)
+
+    return writer.commit(start, figures=outcome.figures, message=outcome.message, before_begin=parameters)
+
+
+def create_road(project: StoreProject, writer: DesignWriter, prepared: PreparedRoad, outcome: RoadOutcome, *, mean: bool = False, carriageway: bool = False, reason: str | None = None,
+                decided_by: str | None = None) -> Stored:
+    """:func:`create_road_steps` de una vez (sin ceder el hilo): lo guardado (:class:`~.store.Stored`), con los mismos rechazos y la misma transacción."""
+    work = create_road_steps(project, writer, prepared, outcome, mean=mean, carriageway=carriageway, reason=reason, decided_by=decided_by)
+    while True:
+        try:
+            next(work)
+        except StopIteration as stop:
+            result: Stored = stop.value
+            return result

@@ -416,6 +416,7 @@ __all__ = [
     "ROAD_DATA_FAMILIES",
     "ROAD_FIGURES",
     "ROAD_OPERATION_TYPES",
+    "ROAD_OTHER_DESIGN_ROLE",
     "ROAD_PROFILE_COMMAND",
     "ROAD_PROFILE_OPERATIONS",
     "ROAD_PROPOSE",
@@ -737,6 +738,10 @@ ROAD_ACCESS_ZONES_ROLE = "access_zones"
 la diferencia de cota a lo alcanzable más próximo): **lo que lee la verificación de la 012** (``reserves``) por su papel, sin importar
 ``design.entities`` ni ``design.road_*`` (DIFF-017; el nivel de ``reserves`` puede importar este módulo, como la 016 hace con
 :data:`STOCKPILE_BASE_ROLE`)."""
+ROAD_OTHER_DESIGN_ROLE = "other_design"
+"""El papel de la superficie de **otro diseño** de la versión que difiere de la de partida en la huella de una pista (spec 017, T21; RF-017-05 (b), CE-017-05): la pista **no la tiene en cuenta** (un relleno que
+no parte de su partida) y la anota como entrada con su hash, de modo que si cambia, la pista queda obsoleta con su causa. No es :data:`SURFACE_ROLE` (el grafo hacia atrás de las superficies de partida no pasa
+por ella: no es un ancestro) ni :data:`SUPPORTED_ON_ROLE` (no se apoya en ella)."""
 ACCESS_ENTRIES_ROLE = "access_entries"
 """El papel de la capa de los puntos de entrada que consume ``des.road_access`` (su geometría y su hash: un cambio de geometría en
 QGIS deja obsoleta la accesibilidad, uno de un campo no)."""

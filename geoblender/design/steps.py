@@ -399,13 +399,18 @@ class Calculation:
         **Una accesibilidad** (spec 017, T17b; RF-017-24, RF-015-02) se registra del mismo modo con :func:`~.access_store.create_access_steps`: la rejilla de lo alcanzable y las
         cuatro tablas se preparan y se escriben en su temporal, y una sola transacción registra los parámetros de la entidad, la operación con sus entradas, los datos y las cifras.
 
+        **Una pista** (spec 017, T21; RF-017-01, RF-017-03, RF-017-23, RF-015-02) se registra del mismo modo con :func:`~.road_store.create_road_steps`: la superficie entera y las tres tablas
+        (la huella de la sección, el eje por estaciones y el informe) se preparan y se escriben en su temporal y una sola transacción registra los parámetros de la entidad, la operación con sus entradas
+        y sus ajustes (con lo confirmado, :meth:`confirm_road`), los datos y las cifras; **no declara ninguna restricción**. Sin la confirmación de la pendiente media o de la calzada, se rechaza
+        (``des.road_mean_unconfirmed``, ``des.road_mean_reason``, ``des.road_carriageway_unconfirmed``) **antes de escribir nada y sin cerrar el cálculo**.
+
         **Una detección de acopios** (spec 016, T13; RF-016-02, RF-015-02) se registra con
         :func:`~.stockpile_store.create_detection_steps`, la misma en el proyecto (``des.stockpile_detect_project``) y en una
         versión (``des.stockpile_detect``): las tablas y las rejillas dispersas se preparan y se escriben en su temporal, y
         una sola transacción registra los parámetros de la entidad, la operación, los datos y las cifras. Es
         :meth:`create_steps` llevado hasta el final. ``decided_by``: el decisor de los parámetros de la entidad (por defecto,
         quien tiene abierto el proyecto)."""
-        if isinstance(self.entity, stockpile_store.PreparedDetection | access_store.PreparedAccess):
+        if isinstance(self.entity, stockpile_store.PreparedDetection | access_store.PreparedAccess | road_store.PreparedRoad):
             stored: store.Stored | None = None
             for step in self.create_steps(decided_by=decided_by):
                 if step.result is not None:
@@ -414,8 +419,6 @@ class Calculation:
             return stored
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
-        if isinstance(self.entity, road_store.PreparedRoad):
-            return self._create_road(self.entity, decided_by)
         if isinstance(self.entity, supported_store.PreparedRemoval):
             return self._create_removal(self.entity, decided_by)
         if isinstance(self.entity, supported_store.PreparedBody):
@@ -463,14 +466,6 @@ class Calculation:
         self._state = _CREATED
         return stored
 
-    def _create_road(self, found: road_store.PreparedRoad, decided_by: str | None) -> store.Stored:
-        """**«Crear» una pista** (spec 017, T20b y T21; RF-017-17, RF-017-22, RF-015-02): sin la confirmación expresa de la pendiente media (con su motivo) o de la calzada que no queda en su rasante
-        (:meth:`confirm_road`), se rechaza (``des.road_mean_unconfirmed``, ``des.road_mean_reason``, ``des.road_carriageway_unconfirmed``) **antes de escribir nada y sin cerrar el cálculo**: se confirma y
-        se vuelve a crear. **Escribir la pista** (la superficie entera, la huella, el eje, el informe, las cifras, la operación con sus entradas y ajustes —entre ellos lo confirmado, con quién y cuándo:
-        ``road_store.road_confirmation``— y sus dependencias) es de la T21: hasta entonces, ``NotImplementedError``."""
-        self.ensure_road_creatable()
-        raise NotImplementedError(f"crear la pista «{found.job.request.name}» (la operación, los datos, la huella y sus dependencias: RF-017-01, RF-015-01, RF-015-02) es de la T21 de la spec 017")
-
     def _create_body(self, found: supported_store.PreparedBody, decided_by: str | None) -> store.Stored:
         """**«Crear» un cuerpo apoyado** (spec 016, T25; RF-016-20, RF-015-02): lo registra :func:`~.supported_store.create_body` en una
         sola transacción (el espesor, la superficie o la base, la huella, el informe, los parámetros de su entidad y las cifras). No pide
@@ -505,23 +500,32 @@ class Calculation:
 
     def create_steps(self, *, decided_by: str | None = None, budget_s: float = STEP_BUDGET_S
                      ) -> Generator[Progress, None, None]:
-        """**«Crear» una detección de acopios o una accesibilidad por pasos** (spec 016, T13; RF-016-02, RNF-016-03 y 05; spec 017, T17b;
-        RF-017-24, RF-017-30): lo que hace :meth:`create`, con cada llamada del hilo de Blender de ``budget_s`` como mucho (montar y escribir
+        """**«Crear» una detección de acopios, una accesibilidad o una pista por pasos** (spec 016, T13; RF-016-02, RNF-016-03 y 05; spec 017, T17b y T21;
+        RF-017-24, RF-017-30, RF-017-01): lo que hace :meth:`create`, con cada llamada del hilo de Blender de ``budget_s`` como mucho (montar y escribir
         cada rejilla y cada tabla en su temporal, por pasos) y la transacción final como último paso; el último ``Progress`` lleva lo
         guardado (:class:`~.store.Stored`) en ``result``. Cerrar el generador antes (Esc), un fallo o lo que consume cambiado
         desde que se calculó (``des.input_changed``) **no dejan nada** y descartan el cálculo. ``RuntimeError`` si ya no está
-        abierto; ``TypeError`` si no es una detección de acopios ni una accesibilidad."""
+        abierto; ``TypeError`` si no es una detección de acopios, una accesibilidad ni una pista. **Una pista** sin la confirmación expresa de la pendiente media o de la calzada
+        (:meth:`ensure_road_creatable`) se rechaza **antes de escribir nada y sin cerrar el cálculo**: se confirma (:meth:`confirm_road`) y se vuelve a crear."""
         found = self.entity
-        if not isinstance(found, stockpile_store.PreparedDetection | access_store.PreparedAccess):
-            raise TypeError(f"solo una detección de acopios o una accesibilidad se crea por pasos, no «{self.op_type}»")
+        if not isinstance(found, stockpile_store.PreparedDetection | access_store.PreparedAccess | road_store.PreparedRoad):
+            raise TypeError(f"solo una detección de acopios, una accesibilidad o una pista se crea por pasos, no «{self.op_type}»")
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
         outcome = self.outcome
+        if isinstance(found, road_store.PreparedRoad):
+            self.ensure_road_creatable()  # sin cerrar el cálculo: se confirma y se vuelve a crear
         try:
             self._check_parameters()
-            if isinstance(found, access_store.PreparedAccess):
+            if isinstance(found, road_store.PreparedRoad):
+                assert isinstance(outcome, RoadOutcome)
+                mean, carriageway, reason = self._road_confirmed
+                stored: store.Stored = yield from road_store.create_road_steps(
+                    self._project, self._writer, found, outcome, mean=mean, carriageway=carriageway, reason=reason, decided_by=decided_by, budget_s=budget_s)
+                done = f"Pista «{self.name}» guardada"
+            elif isinstance(found, access_store.PreparedAccess):
                 assert isinstance(outcome, AccessOutcome)
-                stored: store.Stored = yield from access_store.create_access_steps(
+                stored = yield from access_store.create_access_steps(
                     self._project, self._writer, found, outcome, decided_by=decided_by, budget_s=budget_s)
                 done = f"Accesibilidad «{self.name}» guardada"
             else:

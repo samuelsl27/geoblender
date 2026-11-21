@@ -1376,10 +1376,10 @@ _SURFACE_ROLES = (provenance.DESIGN_SURFACE_ROLE, provenance.ENTITY_SURFACE_ROLE
 diseño de la 013 y la 014 y la de una entidad de la 015."""
 
 
-_OWN_CODE_TYPES = (provenance.PLATFORM, provenance.STOCKPILE_REMOVAL, provenance.BUTTRESS, provenance.BODY)
+_OWN_CODE_TYPES = (provenance.PLATFORM, provenance.STOCKPILE_REMOVAL, provenance.BUTTRESS, provenance.BODY, provenance.ROAD)
 """Los tipos de operación que son una **entidad** con su código en los ajustes y dejan una superficie (la plataforma y, de la 016, la
-retirada, el contrafuerte y el cuerpo): el gancho de las dependencias (:meth:`DesignWriter._supports`) no se apoya en la propia entidad
-ni en lo que parte de ella (spec 016, T20)."""
+retirada, el contrafuerte y el cuerpo; de la 017, la pista, T21): el gancho de las dependencias (:meth:`DesignWriter._supports`) no se apoya en la
+propia entidad ni en lo que parte de ella (spec 016, T20)."""
 
 
 def _has_entities(conn: sqlite3.Connection, version_uid: str) -> bool:
