@@ -1116,7 +1116,9 @@ def _pit_name(project: StoreProject, version: Version, start_name: str) -> str |
 def other_designs(project: StoreProject, version: Version, start_name: str, *, own: str | None = None) -> tuple[str, ...]:
     """Los nombres de los datos de **otros diseños** de la versión con los que se compara la partida de una pista (RF-017-05 (b), T19-b): **la última superficie de cada cadena de
     entidades** (``entities.chain_tail_surfaces``) y **las superficies de diseño** (papel ``design_surface``) de la versión, **que no tienen a la partida como ancestro** en el grafo (la
-    superficie que escribió la misma operación que la partida, o una cuya cadena de partidas pasa por la que la escribió, no es otro diseño), en el orden de su nombre. Solo lee.
+    superficie que escribió la misma operación que la partida, o una cuya cadena de partidas pasa por la que la escribió, no es otro diseño), en el orden de su nombre. Solo lee. **Tampoco lo es
+    aquello de lo que parte la partida** (H2, T25): con la partida de un relleno sobre la explotación de una cantera, la explotación y la final de esa cantera —las superficies que escribió una
+    operación de la cadena de la partida— son su historia, no un diseño que la pista no tenga en cuenta; sin esto, toda pista de la última superficie de una cadena avisaría de las dos.
 
     ``own`` (T24): la operación de la pista que se recalcula (la que sustituye la nueva). **Lo que parte de lo que dejó ella** —su ramal, el relleno que se hizo luego sobre su calzada— **no es otro
     diseño**: depende de la pista, y anotarlo como entrada la haría depender de lo que depende de ella (un bucle que no se asienta). Con otra partida (rehacer la pista sobre otra superficie) esos
@@ -1135,12 +1137,13 @@ def other_designs(project: StoreProject, version: Version, start_name: str, *, o
                 "SELECT DISTINCT d.uid, d.name FROM gb_dataset AS d JOIN gb_operation_io AS io ON io.item_uid = d.uid AND io.direction = 'out' AND io.item_kind = 'dataset' "
                 "WHERE d.version_uid = ? AND io.role = ? ORDER BY d.name", (version.uid, provenance.DESIGN_SURFACE_ROLE)).fetchall():
             candidates[str(name)] = str(uid)
+        before_start = set() if writer is None else _surface_ancestors(conn, writer)  # H2 (T25): de lo que parte la partida (la cantera, el relleno anterior) tampoco es «otro diseño»
         found: list[str] = []
         for name in sorted(candidates):
             record = dataset_registry.get(conn, name, version_uid=version.uid)
             if name == start_name or record is None or not record.live or record.operation_uid is None:
                 continue
-            if writer is not None and (record.operation_uid == writer or writer in _surface_ancestors(conn, record.operation_uid)):
+            if writer is not None and (record.operation_uid == writer or record.operation_uid in before_start or writer in _surface_ancestors(conn, record.operation_uid)):
                 continue
             if own is not None and (record.operation_uid == own or own in _surface_ancestors(conn, record.operation_uid)):  # lo que deja la propia pista y lo que parte de ello (T24)
                 continue
