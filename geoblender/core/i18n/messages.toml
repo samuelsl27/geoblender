@@ -11208,3 +11208,108 @@ es = "Cuántos estados puede expandir la búsqueda de la ruta antes de pararse d
 
 ["Why you accept a mean gradient above the maximum of the profile: it stays recorded with who and when; it is needed only if the mean gradient passes it"]
 es = "Por qué acepta una pendiente media por encima del máximo del perfil: queda registrado con quién y cuándo; solo hace falta si la pendiente media lo pasa"
+
+["Accessibility of the roads…"]
+es = "Accesibilidad de las pistas…"
+
+["Accessibility of the haul roads on a surface of the project or of the active version: what can be reached on foot from the entry points, the reachable elevations and which berm stretches, platforms and zones that require access are communicated"]
+es = "Accesibilidad de las pistas sobre una superficie del proyecto o de la versión activa: qué se alcanza a pie desde los puntos de entrada, las cotas alcanzables y qué tramos de berma, plataformas y zonas «requiere acceso» quedan comunicados"
+
+["Name of the accessibility, unique in the active version"]
+es = "Nombre de la accesibilidad, único en la versión activa"
+
+["Surface the accessibility is calculated on: a grid of the project or of the active version; by default, the last of the chain of entities of the version"]
+es = "Superficie sobre la que se calcula la accesibilidad: una rejilla del proyecto o de la versión activa; por defecto, la última de la cadena de entidades de la versión"
+
+["Layer of points of the project with the entry points: where people or machines get onto the surface"]
+es = "Capa de puntos del proyecto con los puntos de entrada: por donde las personas o las máquinas acceden a la superficie"
+
+["Field of the layer with the name of each entry point (empty: its number (fid))"]
+es = "Campo de la capa con el nombre de cada punto de entrada (vacío: su número (fid))"
+
+["Maximum walkable gradient (%)"]
+es = "Pendiente máxima transitable (%)"
+
+["Local gradient above which a cell cannot be walked, in per cent; a hypothesis without default value"]
+es = "Pendiente local por encima de la cual no se puede andar por una celda, en tanto por ciento; una hipótesis sin valor por defecto"
+
+["Minimum walkable width (m)"]
+es = "Ancho mínimo transitable (m)"
+
+["Narrowest passage that can be walked, in metres, between cell centres; a hypothesis without default value"]
+es = "El paso más estrecho por el que se puede andar, en metros, entre centros de celda; una hipótesis sin valor por defecto"
+
+["Minimum area of a berm stretch (m²)"]
+es = "Área mínima de un tramo de berma (m²)"
+
+["Smallest berm stretch that is listed, in square metres; a hypothesis without default value"]
+es = "El tramo de berma más pequeño que se lista, en metros cuadrados; una hipótesis sin valor por defecto"
+
+["Accessibility"]
+es = "Accesibilidad"
+
+["Entry points"]
+es = "Puntos de entrada"
+
+["Walkable ground and berms: the type of each value is shown"]
+es = "Terreno transitable y bermas: se enseña el tipo de cada valor"
+
+["Write the name of the accessibility"]
+es = "Escriba el nombre de la accesibilidad"
+
+["Choose the layer of the entry points: there is none of points in the project"]
+es = "Elija la capa de los puntos de entrada: el proyecto no tiene ninguna de puntos"
+
+["Choose the surface the accessibility is calculated on"]
+es = "Elija la superficie sobre la que se calcula la accesibilidad"
+
+["Accessibility «{name}» created in {version}"]
+es = "Accesibilidad «{name}» creada en {version}"
+
+["Computing the accessibility… {percent} % · Esc: cancel"]
+es = "Calculando la accesibilidad… {percent} % · Esc: cancelar"
+
+["Cancelled: the accessibility is created; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»"]
+es = "Cancelado: la accesibilidad está creada; las restricciones declaradas y las máscaras se ponen al día antes de la próxima operación que las use, y la capa de entidades con la próxima orden de entidades o «Recalcular lo obsoleto»"
+
+["The accessibility is created: only the declared constraints and the masks have not been brought up to date"]
+es = "La accesibilidad está creada: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
+["Accessibility «{name}» in {version}"]
+es = "Accesibilidad «{name}» en {version}"
+
+["Berm stretches"]
+es = "Tramos de berma"
+
+["Platforms"]
+es = "Plataformas"
+
+["Zones that require access"]
+es = "Zonas «requiere acceso»"
+
+["Nothing to list"]
+es = "Nada que enseñar"
+
+["… and {more} more (the whole list is recorded when the accessibility is created)"]
+es = "… y {more} más (la lista entera se registra al crear la accesibilidad)"
+
+["Berm stretch {stretch} of «{source}»: elevation {level} m, {area} m² · communicated"]
+es = "Tramo de berma {stretch} de «{source}»: cota {level} m, {area} m² · comunicado"
+
+["Berm stretch {stretch} of «{source}»: elevation {level} m, {area} m² · not communicated"]
+es = "Tramo de berma {stretch} de «{source}»: cota {level} m, {area} m² · no comunicado"
+
+["Platform «{name}» ({code}): communicated, reached at elevation {level} m"]
+es = "Plataforma «{name}» ({code}): comunicada, se llega a la cota {level} m"
+
+["Platform «{name}» ({code}): not communicated"]
+es = "Plataforma «{name}» ({code}): no comunicada"
+
+["Zone «{code}» that requires access: communicated"]
+es = "Zona «{code}» que requiere acceso: comunicada"
+
+["Zone «{code}» that requires access: not communicated; the nearest reachable ground is {distance} m away (level difference {difference} m)"]
+es = "Zona «{code}» que requiere acceso: no comunicada; lo alcanzable más próximo está a {distance} m (diferencia de cota {difference} m)"
+
+["Zone «{code}» that requires access: not communicated"]
+es = "Zona «{code}» que requiere acceso: no comunicada"

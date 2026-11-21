@@ -271,6 +271,13 @@ class AccessProjectTest(PrepareCase):
         self.assertIn("nombre", error.values["fields"])
         self.refused(request(layer="gis_fea_no_existe"), "gis.dataset_unknown")
 
+    def test_without_a_chain_or_a_quarry_there_is_no_default_surface(self) -> None:
+        """RF-017-24 (T30): el diálogo propone **la última de la cadena** de la versión y, sin cadena, la explotación de su cantera; V01 de las pistas no tiene ni una ni otra
+        (las superficies son del proyecto): no se elige ninguna por la persona. Solo lee."""
+        before = self.state()
+        self.assertIsNone(access_store.default_surface(self.project, self.v1))
+        self.assertEqual(self.state(), before)
+
     def test_the_masks_of_another_version_are_a_program_error(self) -> None:
         """RF-013-04 (las máscaras son de versión): preparar en V01 con las máscaras de otra versión es un ``ValueError`` (un error del programa) y no escribe nada."""
         before = self.state()
@@ -672,6 +679,53 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual((last.code, last.values["operations"]), ("des.access_obsolete_dependents", 3))
         self.assertEqual(access_store.access_summary(self.outcome, version="V01", surface=SURFACE).obsolete, ())
         self.assertNotIn("des.access_obsolete_dependents", [notice.code for notice in self.summary.notices])
+
+
+class PlacesTest(unittest.TestCase):
+    """RF-017-25 (T30: las listas con su lugar y su «Ir a»): el lugar de cada plataforma y de cada zona «requiere acceso» del cálculo, absoluto y float64, a mano."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.job = bank_job()
+        cls.outcome = compute(access_store.access_compute_steps(cls.job))
+        cls.places = access_store.access_places(cls.job, cls.outcome)
+
+    def assertPlace(self, found: Any, local: tuple[float, float], area_m2: float) -> None:
+        x, y = absolute(local)
+        self.assertEqual((found.x, found.y, found.area_m2), (x, y, area_m2))
+
+    def test_a_platform_is_where_its_footprint_is(self) -> None:
+        """RF-017-25: el lugar de una plataforma es el centro de las celdas de su huella (la caja de (10, 80) a (50, 92), 20 × 6 celdas de 2 m: 480 m²), con su área."""
+        self.assertEqual(list(self.places.platforms), ["PLT-001"])
+        self.assertPlace(self.places.platforms["PLT-001"], (30.0, 86.0), 480.0)
+
+    def test_a_zone_that_is_communicated_is_where_its_cells_are(self) -> None:
+        """RF-017-25: una zona comunicada no tiene otro lugar que el suyo: el centro de sus celdas (la de (160, 52) a (200, 62): 400 m²)."""
+        self.assertPlace(self.places.zones["zona_con_acceso"], (180.0, 57.0), 400.0)
+
+    def test_a_zone_that_is_not_is_where_the_summary_puts_it(self) -> None:
+        """RF-017-25: la zona que no se comunica lleva **el lugar que dice su resumen** —su celda más próxima a lo alcanzable, a 18 m y +10 m de diferencia de cota—, con el área de la zona
+        entera (720 m²), para que «Ir a» y el aviso lleven al mismo sitio."""
+        zone = next(item for item in self.outcome.zones if item.code == "zona_sin_acceso")
+        self.assertFalse(zone.connected)
+        found = self.places.zones["zona_sin_acceso"]
+        self.assertEqual((found.x, found.y, found.area_m2), (zone.x, zone.y, 720.0))
+        self.assertEqual((found.x, found.y), (699861.0, 4399841.0))
+
+    def test_what_has_no_cells_has_no_place(self) -> None:
+        """RF-017-25: una plataforma o una zona sin celdas no tiene lugar al que ir: no sale en la lista de lugares, y nada falla."""
+        empty = bank_job(platforms=[road_model.AccessCells("PLT-009", "Sin huella", np.empty(0, dtype=np.int64))],
+                         zones=[road_model.AccessCells("sin_celdas", "Sin celdas", np.empty(0, dtype=np.int64))])
+        found = access_store.access_places(empty, compute(access_store.access_compute_steps(empty)))
+        self.assertEqual((dict(found.platforms), dict(found.zones)), ({}, {}))
+
+    def test_a_place_is_absolute_and_float64(self) -> None:
+        """Regla 4 de ``AGENTS.md``: las coordenadas absolutas viajan en float64 de Python, nunca en float32 (con nortes de 4,4 Mm, 4 399 886 m no se pierde 0,5 m)."""
+        for place in (*self.places.platforms.values(), *self.places.zones.values()):
+            self.assertIs(type(place.x), float)
+            self.assertIs(type(place.y), float)
+            self.assertIs(type(place.area_m2), float)
+        self.assertEqual(self.places.platforms["PLT-001"].y, absolute((30.0, 86.0))[1])
 
 
 if __name__ == "__main__":

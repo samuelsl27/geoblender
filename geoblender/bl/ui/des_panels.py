@@ -26,6 +26,13 @@ le falta o no vale (en ámbar) y cada uno de sus quince valores **con su tipo, s
 «Perfil nuevo…» y «Completar o renombrar…» son ``geoblender.des_save_road_profile``. ``design.road_profiles`` es perezoso: se importa al leer los
 perfiles, no al habilitar (RNF-001-03).
 
+**Accesibilidad de las pistas…** (spec 017, T30; HU-017-3; RF-017-24, RF-017-25, RF-017-29; comprobación manual M3): lo que necesita el diálogo de ``geoblender.des_road_access`` (``bl.ops.des``):
+las capas de puntos de entrada y la superficie que propone (:func:`refresh_access_choices`, :func:`access_layer_items`, :func:`access_default_surface`: la última de la cadena y, sin cadena, la
+explotación de la cantera) y, tras calcular, **las listas** de tramos de berma, plataformas y zonas «requiere acceso» **comunicados o no**, con su lugar y su «Ir a»
+(:func:`show_access` las lee del cálculo abierto con ``show_summary``, :func:`access_sections` las da y :func:`draw_access_lists` las dibuja en la ventana de crear). El resumen que se enseña
+(:func:`summary_lines`) lleva la cabecera, las cotas, el área y los avisos y **no repite lo que no se comunica**, que dicen las listas (y, en el informe de la orden,
+:func:`access_report_lines`).
+
 Los derivados y la marca de la rejilla **no se calculan aquí**: son los de
 ``design.model.BenchProfile`` (``avance_m``, ``general_deg``, ``unresolved_by``). **Nada se lee al
 dibujar**: :func:`fill_profiles` regenera la vista desde el proyecto (al abrir la ventana y tras
@@ -797,6 +804,8 @@ class _Choices:
     road_platforms: list[tuple[str, str, str]] = field(default_factory=list)
     road_zones: list[tuple[str, str, str]] = field(default_factory=list)
     road_start: str | None = None
+    access_layers: list[tuple[str, str, str]] = field(default_factory=list)
+    access_surface: str | None = None
     by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
     key: tuple[str, str, str] | None = None
 
@@ -813,6 +822,35 @@ class _Resting:
 
 
 _RESTING = _Resting()
+
+
+@dataclass(frozen=True, slots=True)
+class AccessRow:
+    """Una fila de las listas de «Accesibilidad de las pistas…» (spec 017, T30; RF-017-25): su ``text`` (ya traducido), si va en ``alert`` (no queda comunicado) y el lugar de su «Ir a» (``place``: la ``x`` y
+    la ``y`` absolutas y el radio, en metros y en texto que se lee sin pérdida, ADR-0005; ``None`` si no tiene lugar)."""
+
+    text: str
+    alert: bool = False
+    place: tuple[str, str, str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AccessSection:
+    """Una de las tres listas (tramos de berma, plataformas y zonas «requiere acceso»): su ``title``, las ``rows`` que caben en la ventana —**las que no se comunican, antes**— y ``more``, cuántas faltan."""
+
+    title: str
+    rows: tuple[AccessRow, ...]
+    more: int = 0
+
+
+@dataclass
+class _AccessLists:
+    """Las listas del cálculo abierto de una accesibilidad (:func:`show_access`), ya leídas y traducidas: la ventana de crear las dibuja (:func:`draw_access_lists`) sin volver a calcularlas en cada dibujo."""
+
+    sections: list[AccessSection] = field(default_factory=list)
+
+
+_ACCESS = _AccessLists()
 
 
 def _fixed_choices() -> None:
@@ -1509,6 +1547,43 @@ def has_road_profiles() -> bool:
     return any(item[0] != NO_ZONE for item in _CHOICES.road_profiles)
 
 
+def _fixed_choices_access() -> None:
+    """Las listas de «Accesibilidad de las pistas…» sin nada del proyecto: sin capas de puntos y sin superficie propuesta."""
+    _CHOICES.access_layers = [(NO_LAYER, NOT_SHOWN, tr("There are no layers of points in the project"))]
+    _CHOICES.access_surface = None
+
+
+def refresh_access_choices(project: Any) -> None:
+    """Vuelve a leer de ``project`` lo que pide «Accesibilidad de las pistas…» (spec 017, T30; plan 017 §5.3.3): las capas «entidades» de **puntos** (los puntos de entrada) y **la superficie que
+    propone el diálogo**: la última de la cadena de entidades de la versión activa y, sin cadena, la explotación de su cantera (``design.access_store.default_surface``, RF-017-24). Las superficies que
+    se ofrecen son las de :func:`refresh_choices` (las del proyecto y las de la versión), que se llama antes. Si no se puede leer la propuesta, se deja sin ella."""
+    from ...design import access_store  # al usarlo: habilitar no carga el cálculo
+
+    _fixed_choices_access()
+    points = [name for name, kind in constraint_panels.search_layers(project) if kind == "point"]
+    if points:
+        _CHOICES.access_layers = [(name, constraint_panels.layer_label(name), tr("Layer of points")) for name in points]
+    version = scene_versions.active()
+    if version is None:
+        return
+    try:
+        _CHOICES.access_surface = access_store.default_surface(project, version)
+    except (GeoblenderError, sqlite3.Error, ValueError):
+        LOGGER.warning("No se pudo leer la superficie por defecto de la accesibilidad", exc_info=True)
+
+
+def access_layer_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las capas de puntos del proyecto que ofrece «Accesibilidad de las pistas…» como puntos de entrada (spec 017, T30; una lista viva del módulo); sin ninguna, «—»."""
+    if not _CHOICES.access_layers:
+        _fixed_choices_access()
+    return _CHOICES.access_layers
+
+
+def access_default_surface() -> str | None:
+    """La superficie que propone el diálogo de «Accesibilidad de las pistas…» (la última de la cadena y, sin cadena, la explotación de la cantera; RF-017-24); ``None`` si no hay candidata."""
+    return _CHOICES.access_surface
+
+
 def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key = None
@@ -1524,6 +1599,8 @@ def forget_choices() -> None:
     _CHOICES.road_points, _CHOICES.road_lines, _CHOICES.road_lines_3d = [], [], []
     _CHOICES.road_profiles, _CHOICES.road_roads, _CHOICES.road_platforms = [], [], []
     _CHOICES.road_zones, _CHOICES.road_start = [], None
+    _CHOICES.access_layers, _CHOICES.access_surface = [], None
+    _ACCESS.sections = []
     _RESTING.lines = []
     _CHOICES.by_id = {}
 
@@ -1974,6 +2051,101 @@ def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     return lines
 
 
+ACCESS_ROWS = 10
+"""Cuántas filas enseña cada lista de la accesibilidad en la ventana de crear (como los ``SUMMARY_ITEMS`` de ``design.preview``): las demás, con una nota; el resultado entero se registra al crear."""
+_ACCESS_ITEM_NOTICES = frozenset({"des.access_berm_missing", "des.access_platform_missing", "des.access_zone_missing", "des.access_zone_missing_unplaced", "des.access_more"})
+"""Los avisos del resumen de una accesibilidad que dicen **qué no se comunica**: los dicen las listas, con su lugar y su «Ir a»; el resumen que se enseña no los repite."""
+
+
+def _access_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de una accesibilidad calculada (``design.access_store.AccessSummary``; spec 017, T30; RF-017-24, RF-017-25, M3): la cabecera (cuántos tramos de berma, plataformas y zonas «requiere acceso» quedan
+    comunicados), las cotas mínima y máxima alcanzables y el área, la cota mínima sobre la final de una cantera, los avisos del cálculo (un punto de entrada que no está en terreno transitable, nada
+    alcanzado) y lo que quedará obsoleto. **Lo que no se comunica** no sale aquí: lo dicen las listas (:func:`access_sections`), cada cosa con su lugar y su «Ir a»."""
+    shown = language()
+    return [(notice.text(shown), notice.severity == "warning") for notice in calculation.notices if notice.code not in _ACCESS_ITEM_NOTICES]
+
+
+def _cut_rows(rows: list[AccessRow]) -> tuple[tuple[AccessRow, ...], int]:
+    """Las primeras :data:`ACCESS_ROWS` filas de ``rows`` —**las que no se comunican (en alerta) antes**, cada grupo en su orden— y cuántas faltan."""
+    ordered = sorted(rows, key=lambda row: not row.alert)
+    return tuple(ordered[:ACCESS_ROWS]), max(0, len(ordered) - ACCESS_ROWS)
+
+
+def _access_sections(calculation: Calculation) -> list[AccessSection]:
+    """Las tres listas de la accesibilidad calculada ``calculation`` (:class:`AccessSection`; spec 017, T30; RF-017-25): **cada tramo de berma** (su número y el dato de bermas de que sale, su cota real, su área y
+    si queda comunicado, con su lugar: el centro de sus celdas), **cada plataforma** de la versión (su nombre y su código, si queda comunicada y a qué cota se llega, con el centro de su huella) y **cada zona
+    «requiere acceso»** (su código y si queda comunicada y, de la que no, la distancia y la diferencia de cota a lo alcanzable más próximo, con el lugar que dice el resumen). El lugar de «Ir a» lo da
+    ``design.access_store.access_places``; el radio, su área (:func:`constraint_panels.place_of`). Solo lee."""
+    from ...design import access_store  # al usarlo: habilitar no carga el cálculo
+
+    outcome, job = calculation.outcome, calculation.entity.job  # type: ignore[union-attr]
+    places = access_store.access_places(job, outcome)  # type: ignore[arg-type]
+    names = {item.code: item.name for item in job.platforms}  # type: ignore[union-attr]
+    berms: list[AccessRow] = []
+    for item in outcome.berms:  # type: ignore[union-attr]
+        source, level, area = "—" if item.source is None else item.source, _number(item.level_m, 2), _number(item.area_m2)
+        text = (tr("Berm stretch {stretch} of «{source}»: elevation {level} m, {area} m² · communicated", stretch=item.number, source=source, level=level, area=area) if item.connected
+                else tr("Berm stretch {stretch} of «{source}»: elevation {level} m, {area} m² · not communicated", stretch=item.number, source=source, level=level, area=area))
+        berms.append(AccessRow(text, not item.connected, constraint_panels.place_of(item.x, item.y, item.area_m2)))
+    platforms: list[AccessRow] = []
+    for item in outcome.platforms:  # type: ignore[union-attr]
+        found = places.platforms.get(item.code)
+        name = names.get(item.code, item.code)
+        text = (tr("Platform «{name}» ({code}): communicated, reached at elevation {level} m", name=name, code=item.code, level=_number(item.level_m, 2)) if item.connected
+                else tr("Platform «{name}» ({code}): not communicated", name=name, code=item.code))
+        platforms.append(AccessRow(text, not item.connected, None if found is None else constraint_panels.place_of(found.x, found.y, found.area_m2)))
+    zones: list[AccessRow] = []
+    for item in outcome.zones:  # type: ignore[union-attr]
+        found = places.zones.get(item.code)
+        if item.connected:
+            text = tr("Zone «{code}» that requires access: communicated", code=item.code)
+        elif item.distance_m is not None and item.level_difference_m is not None:
+            text = tr("Zone «{code}» that requires access: not communicated; the nearest reachable ground is {distance} m away (level difference {difference} m)", code=item.code,
+                      distance=_number(item.distance_m, 2), difference=_number(item.level_difference_m, 2))
+        else:
+            text = tr("Zone «{code}» that requires access: not communicated", code=item.code)
+        zones.append(AccessRow(text, not item.connected, None if found is None else constraint_panels.place_of(found.x, found.y, found.area_m2)))
+    return [AccessSection(title, *_cut_rows(rows)) for title, rows in ((tr("Berm stretches"), berms), (tr("Platforms"), platforms), (tr("Zones that require access"), zones))]
+
+
+def show_access(calculation: Calculation | None) -> None:
+    """Deja las listas del cálculo abierto de una accesibilidad ``calculation`` (:func:`_access_sections`) para la ventana de crear (spec 017, T30); sin cálculo, o con el de otra orden, las vacía.
+    :func:`show_summary` lo llama: las listas siguen al resumen (al calcular, al crear y al cancelar)."""
+    if calculation is None or calculation.op_type != design_provenance.ROAD_ACCESS:
+        _ACCESS.sections = []
+        return
+    _ACCESS.sections = _access_sections(calculation)
+
+
+def access_sections() -> list[AccessSection]:
+    """Las tres listas del cálculo abierto de una accesibilidad (tramos de berma, plataformas y zonas «requiere acceso»), en el idioma en que se leyeron; ninguna si no hay cálculo abierto de ese tipo."""
+    return list(_ACCESS.sections)
+
+
+def access_report_lines() -> list[tuple[str, bool]]:
+    """Lo que no se comunica de las listas (:func:`access_sections`), línea a línea y en alerta: lo que la orden dice en el informe al calcular, donde el resumen que se enseña ya no lo repite."""
+    return [(row.text, True) for section in _ACCESS.sections for row in section.rows if row.alert]
+
+
+def draw_access_lists(layout: Any, width_px: int) -> None:
+    """Las listas de la accesibilidad (:func:`access_sections`) en un diálogo de ``width_px`` (spec 017, T30; RF-017-25; M3): cada una en su caja con su título y, por fila, su texto (en alerta si no se
+    comunica) y su **«Ir a»** (``geoblender.core_go_to_place`` con el lugar y el radio), y, si faltan, una nota con cuántas."""
+    for section in _ACCESS.sections:
+        box = layout.box()
+        box.label(text=section.title, translate=False)
+        if not section.rows:
+            box.label(text=tr("Nothing to list"), translate=False)
+            continue
+        for row in section.rows:
+            line = box.row()
+            draw_wrapped(line.column(), row.text, width_px - 90, alert=row.alert)
+            if row.place is not None:
+                button = line.operator(constraint_panels.GO_TO_PLACE, text=tr("Go to"), translate=False)
+                button.x, button.y, button.radius = row.place
+        if section.more:
+            box.label(text=tr("… and {more} more (the whole list is recorded when the accessibility is created)", more=section.more), translate=False)
+
+
 def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
@@ -1995,6 +2167,8 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
         lines.extend(_buttress_lines(calculation))
     elif calculation.op_type == design_provenance.ROAD:
         lines.extend(_road_lines(calculation))
+    elif calculation.op_type == design_provenance.ROAD_ACCESS:
+        return _access_lines(calculation)  # sus avisos ya son su resumen (sin lo que no se comunica, que dicen las listas): no se añaden otra vez
     elif calculation.op_type in design_provenance.STOCKPILE_DETECT_TYPES:
         pass  # la detección lo dice todo en sus avisos (``StockpileSummary.notices``: la cabecera, los acopios, los candidatos): spec 016, T35
     elif calculation.op_type == design_provenance.QUARRY:
@@ -2100,7 +2274,9 @@ def show_preview(lines: Sequence[tuple[str, bool]]) -> None:
 
 def show_summary(calculation: Calculation | None) -> None:
     """Deja el resumen del cálculo abierto ``calculation`` (:func:`summary_lines`) en la vista, con
-    su título («Envolvente «Hoyo» en V01»); sin cálculo, lo vacía."""
+    su título («Envolvente «Hoyo» en V01»); sin cálculo, lo vacía. Con el de una accesibilidad deja también
+    sus listas (:func:`show_access`; spec 017, T30), que siguen al resumen."""
+    show_access(calculation)
     shown = view()
     if shown is None:
         return
@@ -2141,6 +2317,8 @@ def show_summary(calculation: Calculation | None) -> None:
         title = tr("Buttress «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.ROAD:
         title = tr("Road «{name}» in {version}", name=calculation.name, version=calculation.version)
+    elif calculation.op_type == design_provenance.ROAD_ACCESS:
+        title = tr("Accessibility «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.STOCKPILE_DETECT:
         title = tr("Detection of stockpiles «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.STOCKPILE_DETECT_PROJECT:  # D-15: del proyecto, sin versión (spec 016, T35)

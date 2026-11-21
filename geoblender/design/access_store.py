@@ -29,6 +29,9 @@ que no da, con su causa, para el aviso, T18) y :func:`read_zone_table` (la tabla
   bermas, plataformas y zonas (comunicadas o no) y, en los avisos, lo que **no** se comunica (con su lugar, y de las zonas su distancia y su diferencia de cota; los
   :data:`~.preview.SUMMARY_ITEMS` primeros de cada lista y una nota con los que faltan) y lo que quedará obsoleto al repetirla (:func:`access_obsolete`).
 
+- :func:`default_surface` y :func:`access_places` (spec 017, T30): lo que necesita el diálogo de «Accesibilidad de las pistas…» (``bl.ops.des``) y sus listas: la superficie que propone (la
+  última de la cadena y, sin cadena, la explotación de la cantera) y el lugar de cada plataforma y de cada zona «requiere acceso» del cálculo para «Ir a».
+
 Python puro (nivel 8), con numpy. ``design.access_store`` es un módulo pesado de la 017: lo importan las órdenes al usarlo, no ``bl`` al registrarse
 (``tests/unit/architecture/test_lazy_registration.py``).
 """
@@ -78,6 +81,8 @@ __all__ = [
     "EXCLUDED_OTHER_SURFACE",
     "EXCLUDED_STALE",
     "AccessData",
+    "AccessPlace",
+    "AccessPlaces",
     "AccessSummary",
     "AccessZone",
     "Accessibility",
@@ -86,6 +91,7 @@ __all__ = [
     "access_compute_steps",
     "access_job",
     "access_obsolete",
+    "access_places",
     "access_report_rows",
     "access_summary",
     "access_values",
@@ -95,6 +101,7 @@ __all__ = [
     "berm_rows",
     "create_access",
     "create_access_steps",
+    "default_surface",
     "entry_points",
     "platform_cells",
     "platform_rows",
@@ -575,6 +582,71 @@ def prepared_summary(project: StoreProject, prepared: PreparedAccess, outcome: A
     crearla (:func:`access_obsolete`). Solo lee."""
     return access_summary(outcome, version=prepared.version.code, surface=prepared.surface, final=prepared.final,
                           obsolete=access_obsolete(project, prepared, supersedes=supersedes))
+
+
+# --- Lo que propone el diálogo y adónde lleva «Ir a» (spec 017, T30; RF-017-24, RF-017-25) ---------
+
+
+def default_surface(project: StoreProject, version: Version) -> str | None:
+    """La superficie que propone el diálogo de «Accesibilidad de las pistas…» en la versión ``version`` (RF-017-24: por defecto, **la última de la cadena** de entidades): el dato de la superficie de
+    la entidad calculada y viva que cierra la cadena (``entities.chain_tails``, ``des_psf_<nombre>``) si es una sola y, **sin cadena**, la superficie de explotación de la cantera de la 014
+    (``des_exp_<cantera>``: sobre ella la final de la cantera entra en el cálculo, error 23) si es una sola y está al día (una cantera obsoleta no cuenta). ``None`` si no hay candidata o hay
+    varias: no se elige una por la persona. Solo lee."""
+    registry = entities.registry(project, version.uid)
+    tails = [tail for tail in entities.chain_tails(registry.records) if tail.state not in (EntityState.UNCALCULATED, EntityState.DISCARDED)]
+    if len(tails) == 1:
+        return provenance.dataset_name(provenance.ENTITY_SURFACE_GRID, tails[0].name)
+    if tails:
+        return None
+    prefix = provenance.FAMILIES_BY_CODE[provenance.EXPLOITATION_GRID].prefix
+    with project.read() as conn:
+        found = [str(name) for uid, name in conn.execute("SELECT uid, name FROM gb_dataset WHERE version_uid = ? AND status = ? ORDER BY name",
+                                                         (version.uid, DatasetStatus.CURRENT.value)).fetchall()
+                 if str(name).startswith(prefix) and not stale.item_causes(conn, "dataset", str(uid))]
+    return found[0] if len(found) == 1 else None
+
+
+@dataclass(frozen=True, slots=True)
+class AccessPlace:
+    """Un lugar al que lleva «Ir a» desde las listas de la accesibilidad (RF-017-25): su centro absoluto (``x`` e ``y``, m, float64) y su área (``area_m2``, m²), que da el radio del encuadre."""
+
+    x: float
+    y: float
+    area_m2: float
+
+
+@dataclass(frozen=True, slots=True)
+class AccessPlaces:
+    """El lugar de cada **plataforma** (``platforms``, por su código) y de cada **zona «requiere acceso»** (``zones``, por su código) de un cálculo de la accesibilidad; los tramos de berma
+    llevan el suyo en :class:`~.road_model.BermReach`. Lo que no tiene celdas no tiene lugar y no sale."""
+
+    platforms: Mapping[str, AccessPlace]
+    zones: Mapping[str, AccessPlace]
+
+
+def _centre(grid: Any, cells: np.ndarray) -> AccessPlace | None:
+    """El centro absoluto de las celdas ``cells`` (índices de la rejilla en filas) de ``grid`` y su área; ``None`` si no hay ninguna. float64: nunca float32 (regla 4 de ``AGENTS.md``)."""
+    if not cells.size:
+        return None
+    rows, cols = np.divmod(cells, grid.ncols)
+    return AccessPlace(float(grid.west + (float(cols.mean()) + 0.5) * grid.dx), float(grid.north - (float(rows.mean()) + 0.5) * grid.dy), float(cells.size * grid.cell_area))
+
+
+def access_places(job: AccessJob, outcome: AccessOutcome) -> AccessPlaces:
+    """El lugar de cada plataforma y de cada zona «requiere acceso» de ``job`` para «Ir a» (spec 017, T30; RF-017-25), sin proyecto ni escribir nada: el **centro de sus celdas** y su área o, de la
+    zona **que no se comunica**, **el lugar que dice su resumen** (su celda más próxima a lo alcanzable, ``ZoneReach.x`` y ``y``), con el área de la zona entera, de modo que el aviso y «Ir a» llevan al
+    mismo sitio. La plataforma o la zona sin celdas no tiene lugar."""
+    grid = job.grid
+    placed = {item.code: item for item in outcome.zones}
+    zones: dict[str, AccessPlace] = {}
+    for zone in job.zones:
+        centre = _centre(grid, zone.cells)
+        if centre is None:
+            continue
+        found = placed.get(zone.code)
+        zones[zone.code] = centre if found is None or found.connected or found.x is None or found.y is None else AccessPlace(float(found.x), float(found.y), centre.area_m2)
+    platforms = {item.code: centre for item in job.platforms if (centre := _centre(grid, item.cells)) is not None}
+    return AccessPlaces(MappingProxyType(platforms), MappingProxyType(zones))
 
 
 # --- Lo que se guarda (spec 017, T17b; RF-017-24, RF-017-25, RNF-017-10) ----------------------------------------

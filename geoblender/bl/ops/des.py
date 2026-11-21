@@ -352,6 +352,21 @@ que impide moverla, lo que no se mueve y lo que quedará obsoleto). **Tras crear
 declara restricciones (D-15), pero la capa de entidades y la de ejes se ponen al día, por pasos con el avance y Esc. Disponible con el proyecto en escritura y la versión activa
 editable y, si no, desactivada con su motivo (RF-017-29, RF-015-28: :class:`DesignCommandAware`). «Proponer el trazado…» (``des_propose_road``) es de la T33.
 
+**Accesibilidad de las pistas…** (spec 017, T30; HU-017-3; RF-017-29, RF-017-24, RF-017-25, RF-017-30, RF-015-28; plan 017 §5.3.3 y §5.5; comprobación manual M3):
+:class:`GEOBLENDER_OT_des_road_access` (``geoblender.des_road_access``, interna e interina de «R-40» hasta que la T33 la ponga en el menú) calcula ``des.road_access`` de la versión activa con
+``design.steps.access_run``: qué celdas se alcanzan a pie desde los puntos de entrada (la pendiente y el ancho transitables), las cotas mínima y máxima alcanzables —también sobre la final de una
+cantera de dos superficies— y qué tramos de berma, plataformas y zonas «requiere acceso» quedan comunicados. Sigue el patrón de «Pista…» (:class:`_ChainsEntityLayer` + :class:`_CalculateAndCreate` +
+:class:`DesignCommandAware` + :class:`~.core._StepsModal`), sin vista previa ni confirmaciones: no mueve ninguna celda. **La operación es de la versión** (D-18, decisión T30-a): hace falta una versión
+activa editable; **la superficie sí puede ser del proyecto**. Su diálogo pide el nombre; **la superficie** (las del proyecto y las de la versión; **por defecto, la última de la cadena** de entidades y,
+sin cadena, la explotación de su cantera: ``des_panels.access_default_surface``, ``design.access_store.default_surface``); la capa de **puntos de entrada** (``des_panels.access_layer_items``) con el campo
+de su nombre y **los tres umbrales —la pendiente y el ancho transitables y el área mínima de un tramo de berma—, cada uno con su tipo** (HIPÓTESIS sin valor por defecto, D-17: :func:`_access_text`).
+Lo pedido es una ``design.road_model.AccessRequest`` (su :meth:`~GEOBLENDER_OT_des_road_access._request`). Tras **Calcular**, la ventana de crear enseña el resumen (la cabecera, las cotas y el área, los
+avisos y lo que quedará obsoleto) y **las listas** de tramos de berma, plataformas y zonas «requiere acceso», **comunicados o no** (los que no, primero y en alerta), cada fila con su cota o su distancia, su
+lugar y su **«Ir a»** (``geoblender.core_go_to_place``; ``des_panels.access_sections`` y ``draw_access_lists``; el lugar, de ``design.access_store.access_places``); lo que no se comunica va también al
+informe de la orden. **Tras crear, encadena** ``entity_store.after_entity_change``: la accesibilidad no declara restricciones, pero la capa de entidades se pone al día con su fila. Calcular, Crear,
+Cancelar y Esc son los de :class:`_CalculateAndCreate` (el avance y el registro simétrico completos son de la T32). Disponible con el proyecto en escritura y la versión activa editable y, si no,
+desactivada con su motivo (RF-017-29, RF-015-28: :class:`DesignCommandAware`).
+
 **El menú «Entidad ▾» e insertar antes o después** (spec 015, T31; HU-015-2, HU-015-3; RF-015-28, RF-015-05, RF-015-15; D-11,
 D-14; plan 015 §5.3.3 y §5.5; comprobación manual M5): el menú contextual de las entidades
 (``GEOBLENDER_MT_des_context_entity``, ``contexts.toml``, entrada «015») lleva las órdenes reales:
@@ -1150,10 +1165,12 @@ def calculation() -> Calculation | None:
 def discard_calculation() -> None:
     """Descarta el cálculo abierto de la sesión («Cancelar», cerrar la ventana, cambiar de
     proyecto, desactivar Geoblender): borra sus temporales y no deja nada, y con él el escalonado
-    que esperaba a la envolvente. Sin él, nada."""
+    que esperaba a la envolvente y las listas de una accesibilidad (``des_panels.show_access``, T30).
+    Sin él, nada."""
     held = _HELD[:]
     _HELD.clear()
     _NEXT.clear()
+    des_panels.show_access(None)
     for other in held:
         _discard(other)
 
@@ -8101,7 +8118,13 @@ def _route_text(param: str) -> str:
     """Lo que dice el diálogo de «Pista…» de un parámetro de la ruta (RF-017-10, D-10, D-11): **su tipo** (el de su familia) y, si lo tiene, su valor por defecto:
     «HIPÓTESIS: sin valor por defecto, lo elige usted» o «Por defecto: 5.000.000 · ADOPTADO». Ninguno se propone: vacío es el valor por defecto o, si no lo tiene,
     el rechazo del cálculo con su nombre."""
-    template = design_params.entity_params("road").template(param)
+    return _entity_param_text("road", param)
+
+
+def _entity_param_text(entity: str, param: str) -> str:
+    """El tipo (y, si lo tiene, el valor por defecto) del parámetro ``param`` de las entidades del tipo ``entity`` (``road``, ``access``…) como lo dicen los diálogos de la 017: lo de
+    :func:`_route_text` y de :func:`_access_text` (D-10, D-11, D-17)."""
+    template = design_params.entity_params(entity).template(param)
     kind = tr("ASSUMPTION") if template.kind == ParamKind.HIPOTESIS else tr("ADOPTED")
     if template.default is None:
         return tr("{kind}: no default value, you choose it", kind=kind)
@@ -8625,6 +8648,226 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _ChainsEntityLayer, _C
         return found
 
 
+# --- Accesibilidad de las pistas… (spec 017, T30; HU-017-3; RF-017-29, RF-017-24, RF-017-25, RF-017-30, RF-015-28; plan 017 §5.3.3 y §5.5; comprobación manual M3) ------------
+
+ROAD_ACCESS_COMMAND = provenance.ACCESS_COMMAND
+_ACCESS_HIDDEN = frozenset({"confirm", "in_steps"})
+"""Las propiedades ocultas de «Accesibilidad de las pistas…»: las pone quien la lanza (o su ventana de confirmar)."""
+
+
+def _access_rows() -> tuple[tuple[str, str, str], ...]:
+    """Los tres umbrales de la accesibilidad (RF-017-24, RF-017-25, D-17): la propiedad del diálogo, el valor de ``AccessRequest`` (y de ``des.access.{e}.*``) y su etiqueta en el idioma de Geoblender.
+    Los tres son HIPÓTESIS sin valor por defecto: el diálogo dice el tipo de cada uno."""
+    return (("walk_slope", "walk_slope_pct", tr("Maximum walkable gradient (%)")), ("walk_width", "walk_width_m", tr("Minimum walkable width (m)")),
+            ("min_berm_area", "min_berm_area_m2", tr("Minimum area of a berm stretch (m²)")))
+
+
+def _access_text(param: str) -> str:
+    """Lo que dice el diálogo de «Accesibilidad de las pistas…» de un umbral (D-17): **su tipo**, el de su familia: «HIPÓTESIS: sin valor por defecto, lo elige usted». Ninguno se propone: vacío es el
+    rechazo del cálculo con su nombre (RF-015-08)."""
+    return _entity_param_text("access", param)
+
+
+class GEOBLENDER_OT_des_road_access(_ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal, bpy.types.Operator):
+    """Accessibility of the haul roads on a surface of the project or of the active version: what can be reached on foot from the entry points, the reachable elevations and which berm stretches, platforms and zones that require access are communicated"""
+
+    bl_idname = ROAD_ACCESS_COMMAND
+    bl_label = "Accessibility of the roads…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.ROAD_ACCESS
+    COMMAND = ROAD_ACCESS_COMMAND
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the accessibility, unique in the active version", options=_FIELD)
+    surface: EnumProperty(  # type: ignore[valid-type]
+        name="Surface",
+        description="Surface the accessibility is calculated on: a grid of the project or of the active version; by default, the last of the chain of entities of the version",
+        items=des_panels.surface_items, options=_FIELD)
+    layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer of the entry points",
+        description="Layer of points of the project with the entry points: where people or machines get onto the surface", items=des_panels.access_layer_items, options=_FIELD)
+    name_field: StringProperty(  # type: ignore[valid-type]
+        name="Name field", description="Field of the layer with the name of each entry point (empty: its number (fid))", options=_FIELD)
+    walk_slope: StringProperty(  # type: ignore[valid-type]
+        name="Maximum walkable gradient (%)",
+        description="Local gradient above which a cell cannot be walked, in per cent; a hypothesis without default value", options=_FIELD)
+    walk_width: StringProperty(  # type: ignore[valid-type]
+        name="Minimum walkable width (m)",
+        description="Narrowest passage that can be walked, in metres, between cell centres; a hypothesis without default value", options=_FIELD)
+    min_berm_area: StringProperty(  # type: ignore[valid-type]
+        name="Minimum area of a berm stretch (m²)",
+        description="Smallest berm stretch that is listed, in square metres; a hypothesis without default value", options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez. Una accesibilidad no retira
+    # nada, no mueve ninguna celda ni deja una pared: no pide más confirmación que Crear.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué. Con ``confirm``, el diálogo de crear el cálculo abierto, con su resumen y sus listas. Si no, las listas
+        leídas de nuevo (las superficies del proyecto y de la versión, las capas de puntos y la superficie por defecto), la propuesta (un nombre, la primera capa y la superficie: la última de la cadena)
+        y el diálogo del cálculo: Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            des_panels.refresh_access_choices(project)
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label), confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio (plan 017 §5.3.3): un nombre que no repite el de ninguna entidad del proyecto ni de la versión («Accesibilidad 1»…), la primera capa de
+        puntos y **la superficie: la última de la cadena** de la versión (RF-017-24) o, sin cadena, la explotación de su cantera y, sin ninguna, el terreno (``surface_proposal.ground_item``, con lo
+        seleccionado en la vista). Ningún umbral se propone: no tienen valor por defecto (D-17)."""
+        given = self.properties.is_property_set
+        if not self.name.strip():
+            taken, number = _taken_entity_names(project), 1
+            while f"{tr('Accessibility')} {number}" in taken:
+                number += 1
+            self.name = f"{tr('Accessibility')} {number}"
+        if not given("layer"):
+            layers = [item[0] for item in des_panels.access_layer_items(self, None) if item[0] != des_panels.NO_LAYER]
+            if layers:
+                self.layer = layers[0]
+        if not given("surface"):
+            offered = [identifier for identifier, _name, _about in des_panels.surface_items(None, None) if identifier != des_panels.NO_ZONE]
+            default = des_panels.access_default_surface()
+            ground = default if default in offered else (surface_proposal.ground_item(context, project, offered, des_panels.surface_choice) if offered else None)
+            if ground is not None:
+                self.surface = ground
+
+    def draw(self, context: Any) -> None:
+        """Arriba el nombre y la superficie; la capa de los puntos de entrada con su campo y **los umbrales, cada uno con su tipo** (HIPÓTESIS, sin valor por defecto). En la confirmación de crear, el
+        resumen (la cabecera, las cotas mínima y máxima alcanzables y los avisos) y **las listas de bermas, plataformas y zonas «requiere acceso»**, comunicadas o no, cada una con su «Ir a»."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto y sus listas
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            des_panels.draw_access_lists(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "surface", text=tr("Surface"), translate=False)
+        box = layout.box()
+        box.label(text=tr("Entry points"), translate=False)
+        box.prop(self, "layer", text=tr("Layer of the entry points"), translate=False)
+        box.prop(self, "name_field", text=tr("Name field"), translate=False)
+        walkable = layout.box()
+        walkable.label(text=tr("Walkable ground and berms: the type of each value is shown"), translate=False)
+        for prop, param, label in _access_rows():
+            row = walkable.row()
+            row.prop(self, prop, text=label, translate=False)
+            row.label(text=_access_text(param), translate=False)
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _request(self) -> Any:
+        """Lo pedido en el diálogo como la ``design.road_model.AccessRequest`` (RF-017-24, RF-017-25), comprobado sin escribir ni calcular nada. Un umbral vacío queda sin cifra: lo rechaza el cálculo
+        nombrando la entidad, el campo y el valor (RF-015-08, D-17: la petición no lleva ninguna cifra minera). :class:`ComputeFormError` si falta algo del diálogo."""
+        from ...design import road_model  # al usarlo: habilitar no carga el cálculo
+
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the accessibility"))
+        if self.layer in ("", des_panels.NO_LAYER):
+            raise ComputeFormError(tr("Choose the layer of the entry points: there is none of points in the project"))
+        if self.surface in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the surface the accessibility is calculated on"))
+        thresholds = {param: typed_number(getattr(self, prop), label) for prop, param, label in _access_rows()}
+        return road_model.AccessRequest(name, road_model.LayerFields(self.layer, self.name_field.strip() or None), self.surface, **thresholds)
+
+    # --- Calcular y crear ---------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido (sin escribir nada si falta algo), pasa por la puerta de la 008 y calcula la accesibilidad por pasos con
+        ``design.steps.access_run`` —compila las máscaras antes si no están al día—, sin registrar nada (RF-015-03): desde la interfaz, en el modal con el avance y Esc (RF-015-29, RF-017-30); desde un
+        guion, de una vez. Al terminar deja el cálculo abierto con su resumen y sus listas y pide confirmar. Los rechazos (la capa y su campo, los puntos de entrada, los umbrales, la superficie, el
+        nombre repetido) y todas las cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.access_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _finished(self, context: Any, opened: Any) -> set[str]:
+        """Como las demás (:meth:`_ChainsEntityLayer._finished`) y, **tras calcular**, dice en el informe **lo que no se comunica** (:func:`~..ui.des_panels.access_report_lines`): el resumen que se
+        enseña no lo repite, porque lo dicen las listas con su lugar y su «Ir a»."""
+        calculated = not self._chain
+        done = _ChainsEntityLayer._finished(self, context, opened)
+        if calculated:
+            for text, alert in des_panels.access_report_lines():
+                self._report({"WARNING" if alert else "INFO"}, text)
+        return done
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear» (RF-017-24, RF-015-02): como las demás. **Ya creada**, encadena lo que sigue (:meth:`_update_declared`: la capa de entidades, la declaración y las máscaras, como operaciones aparte): la
+        accesibilidad no declara ninguna restricción."""
+        opened = calculation()
+        created = _CalculateAndCreate._create(self, context)
+        if opened is None or "FINISHED" not in created:
+            return created
+        return self._update_declared(context, opened)
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Accessibility «{name}» created in {version}", name=opened.name, version=opened.version)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando la accesibilidad… 40 % · Esc: cancelar» o, tras crearla, «Poniendo al día las restricciones declaradas… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if self._chain:
+            return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel", percent=percent)
+        return tr("Computing the accessibility… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if self._chain:
+            return tr("Cancelled: the accessibility is created; the declared constraints and the masks are brought up to date before the next operation that uses them, "
+                      "and the entity layer with the next entity order or «Recompute the stale results»")
+        return _CalculateAndCreate._cancelled_text(self)
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        found = _CalculateAndCreate._error_text(self, exc)
+        if self._chain:
+            return f"{found} " + tr("The accessibility is created: only the declared constraints and the masks have not been brought up to date")
+        return found
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -8655,7 +8898,8 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_stockpile_candidates,
                              GEOBLENDER_OT_des_edit_road_profile,
                              GEOBLENDER_OT_des_save_road_profile,
-                             GEOBLENDER_OT_des_create_road)
+                             GEOBLENDER_OT_des_create_road,
+                             GEOBLENDER_OT_des_road_access)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -8670,4 +8914,5 @@ y la T43, la interna que lanza «Cambiar parámetro…», sin menú); de la 016,
 de la «Unidad por espesor sobre su apoyo…» de Geología al menú Entidades); la T27 pone «Contrafuerte…», con la clave del catálogo
 ``des_add_buttress``; la T35 pone «Acopio (detectar, retirar)…», «Detectar acopios…» y «Candidatos de los acopios…» y entrega la entrada 016 con
 el menú Diseño ▸ Pistas y entidades ▸ Entidades); de la 017, la T29 pone «Perfil de pista…» (``des_edit_road_profile``) y su interna
-(``des_save_road_profile``) y la T29b, «Pista…» (``des_create_road``); **aún no están en el menú** (la T33; ``PENDING_COMMANDS_017``: las que no están en el catálogo))."""
+(``des_save_road_profile``), la T29b, «Pista…» (``des_create_road``) y la T30, «Accesibilidad de las pistas…» (``des_road_access``); **aún no están en el menú** (la T33;
+``PENDING_COMMANDS_017``: las que no están en el catálogo))."""

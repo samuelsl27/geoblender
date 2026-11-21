@@ -242,6 +242,23 @@ class VersionDataTest(QuarryVersionCase):
         self.assertIn((BERMS_DATASET, "berms"), [(use.item, str(use.role)) for use in prepared.start.inputs])
         self.assertEqual(prepared.start.params, provenance.access_params(CODE))
 
+    def test_the_default_surface_is_the_exploitation_of_the_only_quarry_that_is_up_to_date(self) -> None:
+        """RF-017-24 (T30): sin cadena de entidades, el diálogo propone la superficie de explotación de la cantera de la versión —para que la final entre en el cálculo (error 23)—; con dos
+        canteras al día no elige ninguna por la persona y la de una cantera **obsoleta** (``des_exp_otra``) no cuenta. Solo lee."""
+        before = self.state()
+        self.assertIsNone(access_store.default_surface(self.project, self.v1), "dos canteras al día: no se elige una")
+        self.assertEqual(self.state(), before)
+        with self.project.read() as conn:
+            uid = conn.execute("SELECT uid FROM gb_dataset WHERE name = 'des_exp_otra'").fetchone()[0]
+        with self.project.write_transaction() as conn:
+            conn.execute("INSERT INTO gb_stale (item_kind, item_uid, cause_kind, subject_uid, since) VALUES ('dataset', ?, 'dataset_changed', ?, '2026-11-21T00:00:00Z')", (uid, uid))
+        self.addCleanup(self._clear_stale, uid)
+        self.assertEqual(access_store.default_surface(self.project, self.v1), EXPLOITATION)
+
+    def _clear_stale(self, uid: str) -> None:
+        with self.project.write_transaction() as conn:
+            conn.execute("DELETE FROM gb_stale WHERE item_uid = ? AND item_kind = 'dataset'", (uid,))
+
     def test_a_surface_that_is_not_the_exploitation_has_no_final(self) -> None:
         """RF-017-24: la superficie del proyecto (o la final misma) no tiene otra superficie con que compararse: sin cantera de dos superficies, ninguna final."""
         self.assertIsNone(self.prepare(bank_request()).job.final)

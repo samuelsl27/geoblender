@@ -746,3 +746,16 @@ description.es = "Pista de la versión activa: su eje, su rasante y su sección 
 entry = "R-40"
 action = "D"
 frequency = 2
+
+# «Accesibilidad de las pistas…» (spec 017, T30; HU-017-3; RF-017-24, RF-017-25, RF-017-29): la orden que calcula y crea la accesibilidad de una superficie. **Interina, de R-40**: la T33 la pasa
+# a la entrada 017 y la pone en Diseño ▸ Pistas y entidades; mientras, no tiene casa (BS §7.2).
+[[command]]
+key = "geoblender.des_road_access"
+kind = "internal"
+label.en = "Accessibility of the roads…"
+label.es = "Accesibilidad de las pistas…"
+description.en = "Accessibility of the haul roads on a surface of the project or of the active version: what can be reached on foot from the entry points, the reachable elevations and which berm stretches, platforms and zones that require access are communicated"
+description.es = "Accesibilidad de las pistas sobre una superficie del proyecto o de la versión activa: qué se alcanza a pie desde los puntos de entrada, las cotas alcanzables y qué tramos de berma, plataformas y zonas «requiere acceso» quedan comunicados"
+entry = "R-40"
+action = "D"
+frequency = 1
