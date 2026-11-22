@@ -20,6 +20,7 @@ Sobre el proyecto de las pistas (``tests.support.road_data``, rejilla de 2 m, 20
 
 from __future__ import annotations
 
+import time
 import unittest
 from types import SimpleNamespace
 from typing import Any
@@ -29,6 +30,8 @@ import numpy as np
 
 from tests.support import road_data as rd
 from tests.support.package import import_geoblender
+from tests.unit.design.milestone_road_create import CreateCase
+from tests.unit.design.test_platform_operation import finish
 from tests.unit.design.test_road_prepare import BY, GRID, RAMP, PrepareCase, absolute, request
 
 design_params = import_geoblender("design.params")
@@ -419,3 +422,113 @@ class RoadPreviewTest(PrepareCase):
         self.assertFalse(held.calculated)
         self.assertEqual({item.which for item in held.points}, {"origin", "destination"})
         self.assertGreater(held.corridor_nodes, 0)
+
+
+# --- La vista previa de «Proponer el trazado…» (T44, hallazgo D-1) -------------------------------------------------------------------------------
+
+
+class ProposePreviewTest(CreateCase):
+    """RF-017-26, RF-017-28, RF-015-26 (T44, hallazgo D-1): la vista previa de «Proponer el trazado…» es la de **una propuesta** (``RoadAsk(propose=True)``), no la de una pista: una propuesta **no es una
+    entidad y no apoya nada**, así que con la partida que ya ocupa otra entidad (aquí, la superficie de la rampa de la que parte ``RDW-001``) **no rechaza** —«La entidad … no puede partir de…»— sino que
+    dibuja, y tras «Calcular» dibuja **el eje con su rasante** (sin la sección, que una propuesta no tiene). Sobre el proyecto de las pistas (rejilla de 2 m) con la «Pista de la rampa» (``RDW-001``)
+    creada; **no escribe nada**."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.made(request("Pista de la rampa"))
+
+    def preview_of(self, ask: Any, version: Any = None) -> Any:
+        found = last(preview.road_preview_steps(self.project, ask, (version or self.v1).uid))
+        assert found is not None
+        return found
+
+    def test_a_with_the_start_taken_by_another_entity_it_draws_the_origin_the_destination_and_the_corridor(self) -> None:
+        """RF-017-26, RF-017-28, RF-015-26: la propuesta de la rampa **parte de la superficie de la que ya parte la «Pista de la rampa»**: como pista, la vista previa la rechaza
+        (``des.entity_start_taken``: contraste, lo mismo que «Calcular» una pista); como **propuesta**, no hay rechazo y **dibuja** el origen, el destino y el pasillo, con la misma holgura y los mismos nodos
+        que el de una pista, sin código de entidad y con su propia nota; en los dos idiomas, sin llaves; y no escribe nada."""
+        before = self.state()
+        as_road = self.preview_of(preview.RoadAsk(request=request("Otra pista")))
+        self.assertEqual(as_road.refusal.code, "des.entity_start_taken")
+        self.assertFalse(as_road.drawable)
+        found = self.preview_of(preview.RoadAsk(request=request("Ruta propuesta"), propose=True))
+        self.assertIsNone(found.refusal, found.lines("es"))
+        self.assertTrue(found.drawable and not found.calculated)
+        self.assertEqual((found.name, found.code, found.version, found.mode, found.start_surface, found.profile), ("Ruta propuesta", "", "V01", "trace", RAMP, "PISTA_PRINCIPAL"))
+        by_kind = {item.which: item for item in found.points}
+        self.assertEqual(set(by_kind), {"origin", "destination"})
+        self.assertEqual((by_kind["origin"].x, by_kind["origin"].y), absolute(rd.RAMP_ORIGIN))
+        self.assertEqual((by_kind["destination"].x, by_kind["destination"].y), absolute(rd.RAMP_DESTINATION))
+        self.assertGreater(found.corridor_nodes, 0)
+        self.assertTrue(found.reachable and len(found.corridor) > 0)
+        self.assertEqual(found.margin_m, rd.ROUTE.margin_m)
+        self.assertEqual([notice.code for notice in found.notices][:2], ["des.preview_propose_trace", "des.preview_road_corridor"])
+        self.assertTrue(all("{" not in text and "()" not in text for language in ("es", "en") for text, _alert in found.lines(language)), found.lines("es"))
+        self.assertIn("«Ruta propuesta»", found.lines("es")[0][0])
+        self.assertNotIn("sección", found.lines("es")[0][0], "una propuesta no tiene sección")
+        self.assertEqual(self.state(), before, "la vista previa no escribe")
+
+    def test_b_after_calculating_it_draws_the_axis_with_its_levels_and_no_section(self) -> None:
+        """RF-017-26, RF-017-28, RF-017-17: tras «Calcular» la propuesta (``road_propose_run``) la vista previa lleva **el eje con su rasante** de lo que dejó —bit a bit el del resultado—, los tramos por pd y
+        pm, el origen y el destino que alcanzó, ya sin pasillo y **sin los bordes de la sección** (una propuesta no la tiene, A6 a A9); su nota es la de la propuesta y la pendiente media por encima de pm
+        **no pide confirmar**; con solo el resultado (sin la preparación) sale lo mismo; no escribe nada."""
+        asked = request("Ruta calculada")
+        calculation = finish(steps.road_propose_run(self.project, asked, version=self.v1.uid, masks=self.masks_v1))
+        self.addCleanup(calculation.discard)
+        outcome = calculation.outcome
+        before = self.state()
+        found = self.preview_of(preview.RoadAsk(request=asked, prepared=calculation.entity, outcome=outcome, propose=True))
+        self.assertIsNone(found.refusal)
+        self.assertTrue(found.calculated and found.drawable)
+        self.assertEqual((found.name, found.code, found.mode), ("Ruta calculada", "", "trace"))
+        np.testing.assert_array_equal(found.axis, outcome.axis.points)
+        np.testing.assert_array_equal(found.stations, outcome.axis.stations)
+        np.testing.assert_array_equal(found.levels, outcome.levels)
+        self.assertIsNone(found.edges, "una propuesta no tiene sección")
+        self.assertEqual((found.corridor, found.zone), ((), ()))
+        self.assertGreater(len(found.stretches), 0)
+        ends = {item.which: item for item in found.points}
+        self.assertEqual((ends["origin"].x, ends["origin"].y, ends["origin"].level_m), (*outcome.axis.points[0], float(outcome.levels[0])))
+        self.assertEqual((ends["destination"].x, ends["destination"].y, ends["destination"].level_m), (*outcome.axis.points[-1], float(outcome.levels[-1])))
+        self.assertEqual(found.notices[0].code, "des.preview_propose_calculated")
+        self.assertNotIn("des.road_mean_gradient", [notice.code for notice in found.notices])
+        self.assertTrue(all("{" not in text for language in ("es", "en") for text, _alert in found.lines(language)))
+        only = self.preview_of(preview.RoadAsk(request=asked, outcome=outcome, propose=True))
+        np.testing.assert_array_equal(only.axis, found.axis)
+        self.assertEqual(self.state(), before, "la vista previa no escribe")
+
+    def test_d_each_call_of_the_preview_of_a_proposal_takes_at_most_two_tenths_of_a_second(self) -> None:
+        """RNF-017-06, RF-017-26 (T44, D-1): la vista previa de una propuesta —su preparación y el pasillo de la ruta— se hace por pasos y **cada llamada** del hilo (lo que dura cada ``next``, en CPU del
+        proceso) pasa de 0,2 s ni en la de antes de calcular ni en la de tras calcular; y es del mismo orden que la de una pista (no la empeora)."""
+        asked = request("Ruta propuesta")
+        calculation = finish(steps.road_propose_run(self.project, asked, version=self.v1.uid, masks=self.masks_v1))
+        self.addCleanup(calculation.discard)
+        for what, ask in (("antes de calcular", preview.RoadAsk(request=asked, propose=True)),
+                          ("tras calcular", preview.RoadAsk(request=asked, prepared=calculation.entity, outcome=calculation.outcome, propose=True))):
+            with self.subTest(what):
+                work = preview.road_preview_steps(self.project, ask, self.v1.uid)
+                slowest, calls = 0.0, 0
+                while True:
+                    started = time.process_time()
+                    try:
+                        next(work)
+                    except StopIteration:
+                        break
+                    slowest, calls = max(slowest, time.process_time() - started), calls + 1
+                self.assertGreater(calls, 0)
+                print(f"RNF-017-06: vista previa de una propuesta {what}: {calls} llamadas, la más larga {slowest * 1000:.1f} ms frente a 200 ms")
+                self.assertLessEqual(slowest, 0.2)
+
+    def test_c_what_calculating_a_proposal_would_refuse_is_the_notice_and_the_masks_are_those_of_the_version(self) -> None:
+        """RF-015-26, RF-015-08, RF-017-04: lo que rechazaría «Calcular» la propuesta (un perfil que no existe) es ``refusal`` con el mismo mensaje, sin dibujo y **nombrando la propuesta** (no una pista); sin las
+        máscaras de la versión al día (V02), el aviso de siempre; no escribe nada."""
+        before = self.state()
+        found = self.preview_of(preview.RoadAsk(request=request("Ruta propuesta", profile="no_existe"), propose=True))
+        self.assertEqual(found.refusal.code, "des.road_profile_unknown")
+        self.assertFalse(found.drawable)
+        self.assertIn("Ruta propuesta", found.lines("es")[0][0])
+        self.assertTrue(found.lines("es")[0][1], "el rechazo va en alerta")
+        masks = self.preview_of(preview.RoadAsk(request=request("Ruta propuesta"), propose=True), version=self.v2)
+        self.assertFalse(masks.drawable)
+        self.assertEqual([notice.code for notice in masks.notices], ["des.preview_entity_masks_missing"])
+        self.assertEqual(self.state(), before)

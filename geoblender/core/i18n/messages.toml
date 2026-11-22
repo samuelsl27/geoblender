@@ -11053,8 +11053,20 @@ es = "Pista «{name}» ({code}) · modo «{mode}» · perfil «{profile}»: long
 ["Gradient: mean {mean} % · maximum {max} % at the abscissa {station} m, at ({x}, {y})"]
 es = "Pendiente: media del {mean} % · máxima del {max} % en la abscisa {station} m, en ({x}, {y})"
 
-["Section and edge: cut {cut} m³ · fill {fill} m³ · net {net} m³"]
-es = "Sección y borde: desmonte {cut} m³ · relleno {fill} m³ · neto {net} m³"
+["Largest deviation of the axis from the route: {deviation} m"]
+es = "Desviación máxima del eje respecto a la ruta: {deviation} m"
+
+["Largest deviation of the axis from the line: {deviation} m"]
+es = "Desviación máxima del eje respecto a la línea: {deviation} m"
+
+["Section: cut {cut} m³ · fill {fill} m³"]
+es = "Sección: desmonte {cut} m³ · relleno {fill} m³"
+
+["Edge: cut {cut} m³ · fill {fill} m³"]
+es = "Borde: desmonte {cut} m³ · relleno {fill} m³"
+
+["Net of the section and the edge: {net} m³ (cut {cut} m³ − fill {fill} m³)"]
+es = "Neto de la sección y el borde: {net} m³ (desmonte {cut} m³ − relleno {fill} m³)"
 
 ["No curves: the axis is a straight line"]
 es = "Sin curvas: el eje es una recta"
@@ -11366,8 +11378,8 @@ es = "La pendiente media, {mean} %, pasaba del {limit} % del perfil: confirmado 
 ["{area} m² of the carriageway did not end up on the level profile: confirmed by {person} on {date} (largest difference {difference} m)"]
 es = "{area} m² de la calzada no quedaban en su rasante: confirmado por {person} el {date} (mayor diferencia {difference} m)"
 
-["It reads another design of the version that changed, {designs}: recalculating the road does not settle it if that design now rests on it. Redo the road on the surface of that design, or discard it"]
-es = "Lee otro diseño de la versión que cambió, {designs}: recalcular la pista no la asienta si ese diseño se apoya ya en ella. Rehaga la pista sobre la superficie de ese diseño o descártela"
+["It reads another design of the version that changed, {designs}. «Recompute the stale results» brings it up to date; if the road should take that design into account, redo it on the surface of that design, or discard it"]
+es = "Lee otro diseño de la versión que cambió, {designs}. «Recalcular lo obsoleto» la pone al día; si la pista debe tener en cuenta ese diseño, rehágala sobre la superficie de ese diseño o descártela"
 
 ["The layer of the axes of the roads for QGIS is marked: it still says what this road was before (its state, its profile or its class), because a change such as the value of a profile does not bring it up to date at once; the next order on roads or «Recompute the stale results» does"]
 es = "La capa de ejes de pistas para QGIS está marcada: todavía dice lo que esta pista era antes (su estado, su perfil o su clase), porque un cambio como el valor de un perfil no la pone al día al instante; la próxima orden de pistas o «Recalcular lo obsoleto» sí"

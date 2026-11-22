@@ -2251,6 +2251,23 @@ CATALOG: tuple[Message, ...] = (
         "(la media máxima del perfil, {limit} %); sección de {section} m (calzada de {carriageway} m).",
         "note",
     ),
+    # La vista previa de «Proponer el trazado…» (T44, D-1; RF-017-26, RF-017-28): una propuesta no es una entidad (sin código) y no tiene sección ni borde: lo que dice antes de calcular y tras calcular.
+    Message(
+        "des.preview_propose_trace",
+        "Preview of the proposed route «{entity}» in {version}: the route will be searched from the origin to the destination on «{surface}» with the profile {profile}; it changes no surface and it is not "
+        "an entity, so a surface that another entity already starts from is no obstacle; nothing is calculated or written.",
+        "Vista previa de la propuesta «{entity}» en {version}: la ruta se buscará del origen al destino sobre «{surface}» con el perfil {profile}; no cambia ninguna superficie y no es una entidad, así "
+        "que una superficie de la que ya parte otra entidad no es un obstáculo; no se calcula ni se escribe nada.",
+        "note",
+    ),
+    Message(
+        "des.preview_propose_calculated",
+        "Preview of the proposed route «{entity}» in {version}: axis of {length} m (curves: {curves}) from the level {start_level} m at the origin to {end_level} m at its end, mean gradient {gradient} % "
+        "(mean limit of the profile, {limit} %). It is what «Calculate» left: it has no section, and nothing is written until it is created.",
+        "Vista previa de la propuesta «{entity}» en {version}: eje de {length} m (curvas: {curves}), de la cota {start_level} m en el origen a {end_level} m al final, pendiente media del {gradient} % "
+        "(la media máxima del perfil, {limit} %). Es lo que dejó «Calcular»: no tiene sección y no se escribe nada hasta crearla.",
+        "note",
+    ),
     # Los cuatro tipos de entidad de la 016 (T03; plan 016 §5.1 y §5.5; RF-016-04 a 07, 12 a 15, 18 a 22). La detección de
     # acopios: el acopio que se rechaza (se informa en el resumen y no se registra) nombra su marca, el caso y su lugar.
     Message(
@@ -3602,6 +3619,24 @@ CATALOG: tuple[Message, ...] = (
         "Haul road «{entity}»: its end level changes from {old} m to {new} m because it is taken again from {source}, which has changed (a level that you gave yourself is never changed).",
         "Pista «{entity}»: su cota de fin pasa de {old} m a {new} m porque se vuelve a tomar de {source}, que ha cambiado (una cota que usted dio nunca se cambia).",
         "note",
+    ),
+    # T44 (D-2): el campo de los nombres de la capa no viaja con una pista traída (no es un parámetro de la entidad): «Calcular…» usa el campo por defecto y lo avisa con los puntos que halló, para que
+    # se compruebe que son los de la pista original.
+    Message(
+        "des.road_names_default",
+        "Haul road «{entity}» comes from another version and the field of the names of the layer «{layer}» does not travel with it: it is calculated with the default field «{field}» (the layer has "
+        "{fields} text fields). It found «{first}» at ({first_x}, {first_y}) and «{second}» at ({second_x}, {second_y}); if the road was made with another field of names, check that they are the same points.",
+        "La pista «{entity}» viene de otra versión y el campo de los nombres de la capa «{layer}» no viaja con ella: se calcula con el campo por defecto «{field}» (la capa tiene {fields} campos de "
+        "texto). Halló «{first}» en ({first_x}, {first_y}) y «{second}» en ({second_x}, {second_y}); si la pista se hizo con otro campo de nombres, compruebe que son los mismos puntos.",
+        "warning",
+    ),
+    Message(
+        "des.road_names_default_one",
+        "Haul road «{entity}» comes from another version and the field of the names of the layer «{layer}» does not travel with it: it is calculated with the default field «{field}» (the layer has "
+        "{fields} text fields). It found «{first}» at ({first_x}, {first_y}); if the road was made with another field of names, check that it is the same point.",
+        "La pista «{entity}» viene de otra versión y el campo de los nombres de la capa «{layer}» no viaja con ella: se calcula con el campo por defecto «{field}» (la capa tiene {fields} campos de "
+        "texto). Halló «{first}» en ({first_x}, {first_y}); si la pista se hizo con otro campo de nombres, compruebe que es el mismo punto.",
+        "warning",
     ),
     # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase): la pista y la accesibilidad no declaran restricción
     # alguna (D-15), así que no se usa; existe, como el de la detección de acopios.

@@ -672,6 +672,39 @@ def _names(layer: FeatureLayer, request: RoadRequest, code: str) -> tuple[str | 
     raise _reject("des.road_layer_field", request, code, RoadParam.LAYER, wanted, fields=", ".join(column.field for column in fit) or "—")
 
 
+def _names_default_notice(layer: FeatureLayer, layer_name: str, entity: str, named: Sequence[tuple[str, tuple[float, float]]]) -> Notice | None:
+    """**El aviso de que una pista traída usa el campo de nombres por defecto de la capa** (spec 017, T44, hallazgo D-2; RF-015-18; propuesta por defecto de DS-15): el campo de los nombres **no es un
+    parámetro de la entidad** y no viaja con la pista (guardarlo cambiaría el formato guardado: lo decide Samuel), así que al calcularla «Calcular…» resuelve el nombre del origen y del destino
+    con el campo por defecto —``nombre`` o ``name``— y, si la original se hizo con **otro campo de texto** de la misma capa, puede coger **otros puntos sin que nada lo diga**. ``named`` son los
+    puntos de la capa que la pista halló **por su nombre** (``(el texto tal como está en la entidad, su lugar absoluto)``: el origen y el destino de «trazar», o la línea de los otros modos).
+    Avisa (``des.road_names_default``, con los dos; ``des.road_names_default_one``, con uno) **solo si hay algo que confundir**: la capa tiene **más de un campo de texto** (los que la persona pudo
+    elegir) y el campo por defecto existe; con **un solo campo de texto**, con el origen y el destino dados por su número (``fid``: no dependen de ningún campo) o sin campo por defecto (el nombre no
+    se halla: es un rechazo claro, no otros puntos) no avisa. Una línea de rotura (``gis_brk_``, su campo ``line_id``) no es de las capas de «nombre»: no avisa. Función pura: ``None`` si no avisa."""
+    fields = sum(column.sql_type not in _NUMERIC for column in layer.columns)
+    if fields < 2:
+        return None
+    used = next((column.field for column in layer.columns if column.sql_type == "TEXT" and column.field.casefold() in entity_store._NAME_FIELDS), None)
+    found = [(text, point) for text, point in named if not (text.isascii() and text.isdigit() and int(text) in layer.fids)]
+    if used is None or not found:
+        return None
+    values: dict[str, object] = {"entity": entity, "layer": layer_name, "field": used, "fields": fields}
+    for place, (text, point) in zip(("first", "second"), found[:2], strict=False):
+        values.update({place: text, f"{place}_x": float(point[0]), f"{place}_y": float(point[1])})
+    return Notice("des.road_names_default" if len(found) > 1 else "des.road_names_default_one", values)
+
+
+def _named_by_text(request: RoadRequest, points: tuple[tuple[float, float] | None, tuple[float, float] | None]) -> list[tuple[str, tuple[float, float]]]:
+    """Los puntos de la capa que la pista ``request`` halló **por el texto** de su nombre o su ``fid`` (``points``: el origen y el destino, o el primer y el último vértice de la línea): en «trazar»,
+    el origen si no es el eje de otra pista y el destino si no es una entidad ni una cota; en los otros modos, la línea (por el primero de sus vértices)."""
+    if request.mode is not RoadMode.TRACE:
+        return [] if request.feature is None or points[0] is None else [(request.feature.strip(), points[0])]
+    found: list[tuple[str, tuple[float, float]]] = []
+    for text, point in ((request.origin, points[0]), (request.destination, points[1])):
+        if text is not None and point is not None and isinstance(parse_reference(text), PointReference):
+            found.append((text.strip(), point))
+    return found
+
+
 def _feature_index(layer: FeatureLayer, wanted: str, request: RoadRequest, code: str, param: RoadParam) -> int:
     """El índice (en el orden de la capa) de la geometría que se elige por su ``fid`` (un número que está en la capa) o por su nombre: ``des.entity_feature_unknown`` si la capa no la
     tiene y ``des.entity_feature_ambiguous`` si varias llevan ese nombre (con sus ``fid``)."""
@@ -1599,6 +1632,11 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     yield
     common = entity_store._common(project, version)
     notices: list[Notice] = [] if budget_notice is None else [budget_notice]
+    entry = registry.get(chosen)
+    if code is not None and request.fields.name_field is None and entry is not None and entry.record.state is EntityState.UNCALCULATED:  # una pista traída: el campo de nombres no viajó (T44, D-2)
+        names_notice = _names_default_notice(layer, request.layer, name, _named_by_text(request, geometry_points))
+        if names_notice is not None:
+            notices.insert(0, names_notice)
     pit = _pit_name(project, version, start_name)
     if pit is not None:
         found = yield from read_surface_steps(project, pit, version_uid=version.uid, expect=frame, role=_PIT_ROLE)
@@ -2057,7 +2095,8 @@ def road_held_notices(outcome: RoadOutcome, masks: Any, *, names: Mapping[str, s
 def summary_of(outcome: RoadOutcome, *, version: str, profile: road_profiles.RoadProfile, start_notices: Sequence[Notice] = (), followed: Sequence[Notice] = (), carriageway: Sequence[Notice] = (),
                held: Sequence[Notice] = (), obsolete: Sequence[Obsolete] = ()) -> RoadSummary:
     """El resumen de «Calcular» la pista de ``outcome`` (RF-015-03, RF-017-23, RF-017-12, RF-017-17, RF-017-22; H-10; **puro**: sin proyecto) como :class:`~.preview.RoadSummary`: las cifras que se registrarán,
-    la longitud, las cotas de inicio y de fin, la pendiente media y la máxima (con su abscisa y su lugar), el radio mínimo y las curvas, el corte y el relleno de la sección y del borde juntos y el neto,
+    la longitud, las cotas de inicio y de fin, la pendiente media y la máxima (con su abscisa y su lugar), el radio mínimo y las curvas, la desviación máxima del eje (RF-017-13), el corte y el relleno
+    **de la sección y del borde por separado** (RF-017-21, RF-017-23: las cifras que se registran) con sus totales y el neto,
     **la holgura del pasillo** (``margin_m``: la ruta cambia con ella, H-10) y si pide confirmar la media (``needs_mean_confirmation``, con el límite ``mean_limit_pct`` del perfil ``profile``) o la
     calzada (``needs_carriageway_confirmation``, con su área), y los avisos **en el orden en que se enseñan**: los de la partida (``start_notices``: RF-017-05 (a), «no llega al fondo», que ``prepare_road``
     calcula al preparar), **las cotas que la pista vuelve a tomar de su origen al recalcularla** (``followed``: T24b, RF-017-03; :meth:`LevelFollow.notice`), la nota de la ruta (solo «trazar»), los del cálculo (los tramos del salto creado, de diez en diez como en la plataforma: ``edges.summary_notices``), los de la calzada que no queda
@@ -2067,8 +2106,8 @@ def summary_of(outcome: RoadOutcome, *, version: str, profile: road_profiles.Roa
         raise ValueError("el resumen de una pista pide su eje, su rasante y su grabado: son los del resultado de road_compute_steps")
     found = {figure.key: figure.value for figure in outcome.figures}
     top = int(np.argmax(np.abs(np.diff(levels)) / np.diff(axis.stations)))
-    cut = found["des.road_cut_m3"] + found["des.road_edge_cut_m3"]
-    fill = found["des.road_fill_m3"] + found["des.road_edge_fill_m3"]
+    section_cut, section_fill, edge_cut, edge_fill = (found[key] for key in ("des.road_cut_m3", "des.road_fill_m3", "des.road_edge_cut_m3", "des.road_edge_fill_m3"))
+    cut, fill = section_cut + edge_cut, section_fill + edge_fill
     route = outcome.route
     kept = tuple(obsolete)
     notes: list[Notice] = []
@@ -2078,7 +2117,7 @@ def summary_of(outcome: RoadOutcome, *, version: str, profile: road_profiles.Roa
     return RoadSummary(
         outcome.name, outcome.code, version, outcome.mode.value, profile.code, outcome.figures, axis.length_m, float(levels[0]), float(levels[-1]), found["des.road_gradient_mean_pct"],
         found["des.road_gradient_max_pct"], found["des.road_gradient_max_station_m"], float(axis.points[top, 0]), float(axis.points[top, 1]), axis.min_radius_m, axis.curve_count, cut, fill,
-        cut - fill, None if route is None else route.margin_m, bool(outcome.mean_exceeded), float(profile.max_mean_gradient_pct), engraved.needs_confirmation,
+        cut - fill, section_cut, section_fill, edge_cut, edge_fill, axis.deviation_m, None if route is None else route.margin_m, bool(outcome.mean_exceeded), float(profile.max_mean_gradient_pct), engraved.needs_confirmation,
         sum(group.area_m2 for group in engraved.off_level), notices, kept)
 
 
@@ -2845,7 +2884,7 @@ def propose_layer_rows(outcome: ProposalOutcome) -> tuple[road_layer.RouteLayerR
 class ProposalSummary:
     """El resumen de «Calcular» una propuesta del trazado (spec 017, T33; RF-017-28, RF-017-17; **puro**: sin proyecto): el ``name`` de la propuesta, el código de su ``version``, el nombre
     del perfil (``profile``) y lo que dice de su eje y su rasante: la longitud, las cotas de inicio y de fin, la pendiente media y la máxima (con su abscisa y su lugar), el radio mínimo y las
-    curvas, la holgura del pasillo de la ruta (``margin_m``: la ruta cambia con ella, H-10) y si la pendiente media pasa de la media máxima del perfil (``mean_exceeded``, con su límite
+    curvas, la desviación máxima del eje frente a la ruta (``axis_deviation_m``, m: RF-017-13; no es una cifra que se registre), la holgura del pasillo de la ruta (``margin_m``: la ruta cambia con ella, H-10) y si la pendiente media pasa de la media máxima del perfil (``mean_exceeded``, con su límite
     ``mean_limit_pct``): **avisa y no pide confirmación**, porque la propuesta no graba ninguna superficie. ``notices``, los avisos **en el orden en que se enseñan**: la nota de la ruta y los del
     eje y la rasante (cada uno con su abscisa y su lugar)."""
 
@@ -2862,10 +2901,17 @@ class ProposalSummary:
     gradient_max_y: float
     radius_min_m: float | None
     curves: int
+    axis_deviation_m: float
     margin_m: float | None
     mean_exceeded: bool
     mean_limit_pct: float
     notices: tuple[Notice, ...]
+
+
+def _proposal_notices(outcome: ProposalOutcome) -> tuple[Notice, ...]:
+    """Los avisos del cálculo de una propuesta (``outcome.notices``) **con el texto de la propuesta** en la pendiente media por encima de pm (``des.propose_mean_gradient``): el de la pista dice que hace falta
+    confirmar (``des.road_mean_gradient``) y una propuesta no lo pide, porque no graba ninguna superficie. Lo usan el resumen y la vista previa."""
+    return tuple(Notice("des.propose_mean_gradient", item.values) if item.code == "des.road_mean_gradient" else item for item in outcome.notices)
 
 
 def propose_summary(outcome: ProposalOutcome, *, version: str, profile: road_profiles.RoadProfile) -> ProposalSummary:
@@ -2881,11 +2927,11 @@ def propose_summary(outcome: ProposalOutcome, *, version: str, profile: road_pro
     top = int(np.argmax(np.abs(np.diff(levels)) / np.diff(axis.stations)))
     route = outcome.route
     notes = () if route is None else (Notice("des.road_route_margin", {"entity": outcome.name, "mesh": route.mesh_m, "margin": route.margin_m, "expanded": route.expanded, "budget": route.budget}),)
-    shown = tuple(Notice("des.propose_mean_gradient", item.values) if item.code == "des.road_mean_gradient" else item for item in outcome.notices)  # el de la pista pide confirmar; el de la propuesta, no
+    shown = _proposal_notices(outcome)  # el de la pista pide confirmar; el de la propuesta, no
     return ProposalSummary(
         outcome.name, version, profile.name, axis.length_m, float(levels[0]), float(levels[-1]), road_gradient.mean_gradient(axis.stations, levels) * 100.0,
         float(found["des.road_gradient_max_pct"]), float(axis.stations[top]), float(axis.points[top, 0]), float(axis.points[top, 1]), axis.min_radius_m, int(axis.curve_count),
-        None if route is None else route.margin_m, bool(outcome.mean_exceeded), float(profile.max_mean_gradient_pct), (*notes, *shown))
+        axis.deviation_m, None if route is None else route.margin_m, bool(outcome.mean_exceeded), float(profile.max_mean_gradient_pct), (*notes, *shown))
 
 
 def propose_values(prepared: PreparedProposal) -> dict[str, object]:
@@ -3019,11 +3065,11 @@ def _locked(array: Any) -> np.ndarray:
     return view
 
 
-def _rasante_fields(profile: road_profiles.RoadProfile, points: Any, stations: Any, levels: Any) -> dict[str, Any]:
-    """Los datos de **tras calcular** de una vista previa (:class:`~.preview.RoadPreview`): el eje por estaciones, la rasante, los bordes de la sección (a su semianchura), la longitud, la pendiente media
-    (D-7: :func:`~.road_gradient.mean_gradient`) y los tramos con su estado frente a pd y pm del ``profile``."""
+def _rasante_fields(profile: road_profiles.RoadProfile, points: Any, stations: Any, levels: Any, *, section: bool = True) -> dict[str, Any]:
+    """Los datos de **tras calcular** de una vista previa (:class:`~.preview.RoadPreview`): el eje por estaciones, la rasante, los bordes de la sección (a su semianchura; ``section`` falso, los de una
+    propuesta, que no la tiene: ninguno), la longitud, la pendiente media (D-7: :func:`~.road_gradient.mean_gradient`) y los tramos con su estado frente a pd y pm del ``profile``."""
     axis, s, z = _locked(points), _locked(stations), _locked(levels)
-    return {"calculated": True, "axis": axis, "stations": s, "levels": z, "edges": section_edges(axis, road_profiles.derived(profile).half_width_m), "length_m": float(s[-1] - s[0]),
+    return {"calculated": True, "axis": axis, "stations": s, "levels": z, "edges": section_edges(axis, road_profiles.derived(profile).half_width_m) if section else None, "length_m": float(s[-1] - s[0]),
             "gradient_mean_pct": road_gradient.mean_gradient(s, z) * 100.0,
             "stretches": gradient_stretches(s, z, profile.max_gradient_pct, profile.max_mean_gradient_pct)}
 
@@ -3044,6 +3090,8 @@ def preview_road_units(project: StoreProject, ask: RoadAsk, version_uid: str, *,
       (:func:`prepare_road_units`; **o la que ya hizo** ``ask.prepared``: no se repite) —un rechazo suyo es ``RoadPreview.refusal``—; con ella, el origen y el destino (con su cota), en «trazar» **el
       pasillo** de la ruta (:func:`corridor_units`: la malla, las dos redes 2D y los nodos que pasan, RF-017-09) y, en una rampa, la zona del destino; en «sobre un eje» y «eje 3D», la línea y sus extremos.
       Con ``ask.outcome`` (lo que dejó «Calcular»), en cambio, el **eje con sus curvas, la rasante por tramos y los bordes de la sección**, sin repetir el pasillo (no es de después de calcular).
+    - **Una propuesta del trazado** (``ask.propose``, «Proponer el trazado…»; T44, D-1; RF-017-26, RF-017-28): **lo mismo con la preparación de la propuesta** (:func:`prepare_propose_units`: no es una entidad
+      y no apoya nada, así que no rechaza la partida que ya ocupa otra entidad), sin código de entidad, **sin sección ni bordes** y con las notas de la propuesta; tras calcular, el eje con su rasante.
     - **Una pista de la versión** (``ask.code``): su eje por estaciones guardado (``des_rdx_``) con los valores vigentes de su perfil, el origen y el destino en sus extremos y lo que se le apoya
       (``design.entities.dependents``); una sin calcular se dice. ``ValueError`` si no es una pista de la versión.
 
@@ -3063,41 +3111,57 @@ def preview_road_units(project: StoreProject, ask: RoadAsk, version_uid: str, *,
             return RoadPreview(asked.name, "", version.code, state, notices=(issue,))
         masks = yield from access.load_masks_steps(project, version.uid)
         try:
-            prepared = yield from prepare_road_units(project, asked, version, masks)
+            if ask.propose:  # una propuesta no es una entidad: no tiene la comprobación de que de cada superficie parte una sola (T44, D-1)
+                prepared = yield from prepare_propose_units(project, asked, version, masks)
+            else:
+                prepared = yield from prepare_road_units(project, asked, version, masks)
         except GeoblenderError as refused:  # lo que rechazaría «Calcular»: es el aviso
             return RoadPreview(asked.name, "", version.code, state, refusal=refused)
         yield
-    return (yield from _preview_prepared(prepared, ask.outcome, state, budget_s))
+    return (yield from _preview_prepared(prepared, ask.outcome, state, budget_s, propose=ask.propose))
 
 
-def _preview_prepared(prepared: PreparedRoad, outcome: RoadOutcome | None, state: access.MaskState, budget_s: float) -> Generator[None, None, RoadPreview]:
-    """La vista previa de la pista ya preparada ``prepared`` (:func:`preview_road_units`): de antes de calcular o, con su ``outcome``, de después."""
+def _preview_prepared(prepared: PreparedRoad | PreparedProposal, outcome: RoadOutcome | ProposalOutcome | None, state: access.MaskState, budget_s: float, *, propose: bool = False
+                      ) -> Generator[None, None, RoadPreview]:
+    """La vista previa de la pista ya preparada ``prepared`` (:func:`preview_road_units`): de antes de calcular o, con su ``outcome``, de después. De una **propuesta** (``propose``: ``prepared`` es la
+    :class:`PreparedProposal` y ``outcome``, el :class:`~.road_model.ProposalOutcome`): sin código de entidad, sin los avisos de la partida de una pista, sin sección ni bordes y con las notas de la
+    propuesta (T44, D-1)."""
     job, profile = prepared.job, prepared.profile
     grid, request, geometry = job.grid, job.request, job.geometry
     derived = road_profiles.derived(profile)
-    head: dict[str, Any] = {"entity": request.name, "code": prepared.code, "version": prepared.version.code}
+    code = "" if propose else prepared.code  # type: ignore[union-attr]
+    start_notices: tuple[Notice, ...] = () if propose else prepared.notices  # type: ignore[union-attr]
+    head: dict[str, Any] = {"entity": request.name, "code": code, "version": prepared.version.code}
     widths: dict[str, Any] = {"section": derived.section_m, "carriageway": derived.carriageway_m}
     fields: dict[str, Any] = {"mode": job.mode.value, "start_surface": prepared.start_surface, "profile": profile.name, "cell_m": float(max(grid.dx, grid.dy)),
-                              "carriageway_m": derived.carriageway_m, "section_m": derived.section_m, "max_gradient_pct": profile.max_gradient_pct,
+                              "carriageway_m": 0.0 if propose else derived.carriageway_m, "section_m": 0.0 if propose else derived.section_m, "max_gradient_pct": profile.max_gradient_pct,
                               "max_mean_gradient_pct": profile.max_mean_gradient_pct}
     notices: list[Notice] = []
     if outcome is not None:  # tras calcular: el eje con sus curvas, la rasante por tramos y los bordes de la sección
         axis, levels = outcome.axis, outcome.levels
         if axis is None or levels is None:
             raise ValueError("el resultado de una pista lleva su eje y su rasante: es el de road_compute_steps")
-        fields.update(_rasante_fields(profile, axis.points, axis.stations, levels))
+        fields.update(_rasante_fields(profile, axis.points, axis.stations, levels, section=not propose))
         first, end = axis.points[0], axis.points[-1]
         fields.update(points=(RoadPoint("origin", float(first[0]), float(first[1]), float(levels[0])), RoadPoint("destination", float(end[0]), float(end[1]), float(levels[-1]))),
                       curves=int(axis.curve_count), min_radius_m=axis.min_radius_m)
-        notices.append(Notice("des.preview_road_calculated", {**head, "length": float(axis.length_m), "curves": int(axis.curve_count), "start_level": float(levels[0]), "end_level": float(levels[-1]),
-                                                              "gradient": fields["gradient_mean_pct"], "limit": profile.max_mean_gradient_pct, **widths}))
-        notices.extend(prepared.notices)
-        notices.extend(outcome.notices)
+        calculated = {"length": float(axis.length_m), "curves": int(axis.curve_count), "start_level": float(levels[0]), "end_level": float(levels[-1]), "gradient": fields["gradient_mean_pct"],
+                      "limit": profile.max_mean_gradient_pct}
+        if propose:
+            notices.append(Notice("des.preview_propose_calculated", {"entity": request.name, "version": prepared.version.code, **calculated}))
+            notices.extend(_proposal_notices(outcome))  # type: ignore[arg-type]
+        else:
+            notices.append(Notice("des.preview_road_calculated", {**head, **calculated, **widths}))
+            notices.extend(start_notices)
+            notices.extend(outcome.notices)
     elif job.mode is RoadMode.TRACE:  # antes de calcular: el origen, el destino y el pasillo de la ruta
         origin, destination = geometry.origin, geometry.destination
         assert origin is not None and destination is not None
         points = [RoadPoint("origin", origin[0], origin[1], job.start_level_m)]
-        notices.append(Notice("des.preview_road_trace", {**head, "surface": prepared.start_surface, "profile": profile.name, **widths}))
+        if propose:
+            notices.append(Notice("des.preview_propose_trace", {"entity": request.name, "version": prepared.version.code, "surface": prepared.start_surface, "profile": profile.name}))
+        else:
+            notices.append(Notice("des.preview_road_trace", {**head, "surface": prepared.start_surface, "profile": profile.name, **widths}))
         if isinstance(destination, LevelDestination):
             fields.update(zone=tuple(ring for part in destination.zone for ring in part), target_level_m=destination.level_m, target_tolerance_m=destination.tolerance_m)
             notices.append(Notice("des.preview_road_level_destination", {"level": destination.level_m, "tolerance": destination.tolerance_m}))
@@ -3112,15 +3176,15 @@ def _preview_prepared(prepared: PreparedRoad, outcome: RoadOutcome | None, state
         else:
             notices.append(Notice("des.preview_road_unreachable"))
         yield
-        notices.extend(prepared.notices)
+        notices.extend(start_notices)
     else:  # «sobre un eje» y «eje 3D»: la línea que sigue, sin ruta ni pasillo
         line = geometry.line
         assert line is not None
         ends = (job.start_level_m, job.end_level_m) if job.mode is RoadMode.ON_AXIS else (float(line[0, 2]), float(line[-1, 2]))
         fields.update(line=_locked(line[:, :2]), points=(RoadPoint("origin", float(line[0, 0]), float(line[0, 1]), ends[0]), RoadPoint("destination", float(line[-1, 0]), float(line[-1, 1]), ends[1])))
         notices.append(Notice("des.preview_road_line", {**head, "feature": request.feature or "", "layer": prepared.layer, "surface": prepared.start_surface, "profile": profile.name, **widths}))
-        notices.extend(prepared.notices)
-    return RoadPreview(request.name, prepared.code, prepared.version.code, state, notices=tuple(notices), **fields)
+        notices.extend(start_notices)
+    return RoadPreview(request.name, code, prepared.version.code, state, notices=tuple(notices), **fields)
 
 
 def _preview_stored(project: StoreProject, version: Version, code: str, state: access.MaskState) -> Generator[None, None, RoadPreview]:

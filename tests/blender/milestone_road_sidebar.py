@@ -374,8 +374,8 @@ class RoadSidebarTest(access_ops.RoadAccessOpsTest):
         self.assertEqual(self.states(), {"PLT-001": "stale", "RDW-001": "stale", "RDW-002": "stale", "ACC-001": "stale"})
         self.choose(self.uids["road"])
         other = [text for text in self.alerts() if "Lee otro diseño" in text]
-        self.assertEqual(other, ["Lee otro diseño de la versión que cambió, «des_psf_carga»: recalcular la pista no la asienta si ese diseño se apoya ya en ella. "
-                                 "Rehaga la pista sobre la superficie de ese diseño o descártela"])
+        self.assertEqual(other, ["Lee otro diseño de la versión que cambió, «des_psf_carga». «Recalcular lo obsoleto» la pone al día; si la pista debe tener en cuenta ese diseño, rehágala sobre la "
+                                 "superficie de ese diseño o descártela"])
         self.assertTrue(self.lines()[0][1].startswith("Obsoleto: cambió") and self.lines()[0][2])
         self.assertEqual(self.other_designs(self.entities.registry(self.project, self.v01.uid).get(first).operation_uid), ("des_psf_carga",))
         self.choose(self.uids["reach"])

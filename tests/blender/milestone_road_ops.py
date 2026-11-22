@@ -406,6 +406,16 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
         self.assertAlmostEqual(outcome.length_m, 40.0, delta=4.0, msg="de (10, 30) a (50, 30)")
         self.assertFalse(held.needs_mean_confirmation or held.needs_carriageway_confirmation)
         self.assertFalse(any(alert for _text, alert in summary[:4]))
+        number = self.i18n.format_number
+        self.assertEqual([text for text, _alert in summary[3:7]], [
+            f"Desviación máxima del eje respecto a la ruta: {number(outcome.axis_deviation_m, 2)} m",
+            f"Sección: desmonte {number(outcome.section_cut_m3, 0)} m³ · relleno {number(outcome.section_fill_m3, 0)} m³",
+            f"Borde: desmonte {number(outcome.edge_cut_m3, 0)} m³ · relleno {number(outcome.edge_fill_m3, 0)} m³",
+            f"Neto de la sección y el borde: {number(outcome.net_m3, 0)} m³ (desmonte {number(outcome.cut_m3, 0)} m³ − relleno {number(outcome.fill_m3, 0)} m³)"],
+            "RF-017-21, RF-017-23, RF-017-13 (T44: S-1, S-3): la sección y el borde en líneas distintas, el neto y la desviación máxima del eje")
+        self.assertEqual((outcome.section_cut_m3 + outcome.edge_cut_m3, outcome.section_fill_m3 + outcome.edge_fill_m3), (outcome.cut_m3, outcome.fill_m3))
+        self.assertEqual(outcome.axis_deviation_m, held.outcome.axis.deviation_m)
+        self.assertFalse([text for text, _alert in summary if text.startswith("Sección y borde")])
         tail = summary[len(summary) - len(held.notices):]
         self.assertEqual([text for text, _alert in tail], [notice.text("es") for notice in held.notices], "todos los avisos de la pista llegan al resumen")
         self.assertTrue(any("holgura del pasillo" in text for text, _alert in tail), "la nota de la ruta lleva la holgura del pasillo")

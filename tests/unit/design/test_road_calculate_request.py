@@ -16,6 +16,8 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
+import numpy as np
+
 from tests.support import entity_fixtures as efx
 from tests.support import quarry_fixtures as qfx
 from tests.support.package import import_geoblender
@@ -26,6 +28,7 @@ core_params = import_geoblender("core.params")
 design_params = import_geoblender("design.params")
 entity_store = import_geoblender("design.entity_store")
 messages = import_geoblender("design.messages")
+preview = import_geoblender("design.preview")
 road_model = import_geoblender("design.road_model")
 road_store = import_geoblender("design.road_store")
 
@@ -109,6 +112,76 @@ class BroughtRoadRequestTest(efx.EntityProjectCase):
                 for part in ("Rampa a una cota (V01)", "RDW-006", "V02", key("RDW-006", "start"), platform, road):
                     self.assertIn(part, text)
         self.assertEqual(messages.lookup("des.entity_calculate_missing").severity, "error")
+
+
+class NamesNoticeTest(unittest.TestCase):
+    """RF-015-18, RF-017-01, RF-017-02 (T44, hallazgo D-2; decisión de la sesión principal, propuesta por defecto de DS-15): el campo de los nombres de la capa **no viaja** con una pista traída
+    (no es un parámetro de la entidad: cambiarlo exigiría guardarlo, un cambio del formato guardado que decide Samuel), así que «Calcular…» **avisa**: dice qué campo usó, nombra la capa y los puntos
+    que halló con sus coordenadas y que, si la pista original se hizo con otro campo, hay que comprobar que son los mismos. **Cuándo avisa** (la decisión que fija la prueba): solo si hay **algo que
+    confundir**, es decir, si la capa tiene **más de un campo de texto** (los que la persona pudo elegir) y la pista halló un punto **por su nombre** con el campo por defecto (``nombre`` o ``name``);
+    con **un solo campo de texto**, o con el origen y el destino dados por su número (``fid``), no hay otro campo que haya podido dar otros puntos y no avisa. Función pura: sin proyecto."""
+
+    ORIGIN, DESTINATION = (725010.5, 4400030.5), (725050.5, 4400030.5)
+
+    @staticmethod
+    def layer(*fields: tuple[str, str, tuple[Any, ...]]) -> Any:
+        """Una capa de tres puntos con los campos ``(nombre del campo, tipo, valores)``."""
+        vector = import_geoblender("gis.vector")
+        points = ((725010.5, 4400030.5), (725050.5, 4400030.5), (725030.5, 4400050.5))
+        parts = tuple(((np.array([point], dtype=np.float64),),) for point in points)
+        columns = tuple(vector.FieldColumn(field, field, kind) for field, kind, _values in fields)
+        return vector.FeatureLayer("point", (1, 2, 3), parts, columns, {field: values for field, _kind, values in fields})
+
+    def two_text_fields(self) -> Any:
+        """La capa de la sonda D-2: ``nombre`` (A, Origen, Destino) y ``etiqueta`` (Origen, Destino, Z), los dos de texto."""
+        return self.layer(("nombre", "TEXT", ("A", "Origen", "Destino")), ("etiqueta", "TEXT", ("Origen", "Destino", "Z")))
+
+    def test_a_with_two_text_fields_it_warns_with_the_field_used_and_the_points_found(self) -> None:
+        """RF-015-18, RF-017-02, D-2: con la capa de dos campos de texto, la pista traída halla «Origen» y «Destino» por el campo por defecto (``nombre``) y **avisa**, en ámbar: la pista, la capa, el campo
+        usado, cuántos campos de texto tiene, cada punto con sus coordenadas y que si la original se hizo con otro campo hay que comprobar que son los mismos; en español y en inglés, sin marcadores."""
+        found = (("Origen", self.ORIGIN), ("Destino", self.DESTINATION))
+        notice = road_store._names_default_notice(self.two_text_fields(), "gis_fea_dos_campos", "Pista etiquetada", found)
+        self.assertIsNotNone(notice)
+        self.assertEqual(notice.code, "des.road_names_default")
+        self.assertEqual(notice.severity, "warning")
+        self.assertEqual(dict(notice.values), {"entity": "Pista etiquetada", "layer": "gis_fea_dos_campos", "field": "nombre", "fields": 2, "first": "Origen", "first_x": self.ORIGIN[0],
+                                               "first_y": self.ORIGIN[1], "second": "Destino", "second_x": self.DESTINATION[0], "second_y": self.DESTINATION[1]})
+        spanish, english = notice.text("es"), notice.text("en")
+        for text in (spanish, english):
+            self.assertNotIn("{", text)
+            for part in ("Pista etiquetada", "gis_fea_dos_campos", "nombre", "«Origen»", "«Destino»"):
+                self.assertIn(part, text)
+        self.assertIn("725 010,5".replace(" ", preview.THIN_SPACE), spanish)
+        self.assertIn("725,010.5", english)
+        self.assertIn("otro campo", spanish)
+        self.assertIn("another field", english)
+
+    def test_b_one_named_geometry_gives_the_variant_of_one_and_no_name_found_no_warning(self) -> None:
+        """RF-015-18, RF-017-02, D-2: con **un solo** punto hallado por su nombre (el origen por el eje de otra pista y el destino por una cota o una plataforma no usan los nombres) o la línea de un
+        modo «sobre un eje», avisa con la variante de uno (``des.road_names_default_one``); sin ninguna geometría hallada por su nombre, no hay nada que avisar."""
+        layer = self.two_text_fields()
+        one = road_store._names_default_notice(layer, "gis_fea_dos_campos", "Pista", (("Destino", self.DESTINATION),))
+        self.assertEqual(one.code, "des.road_names_default_one")
+        self.assertEqual(one.severity, "warning")
+        self.assertEqual(dict(one.values), {"entity": "Pista", "layer": "gis_fea_dos_campos", "field": "nombre", "fields": 2, "first": "Destino", "first_x": self.DESTINATION[0],
+                                            "first_y": self.DESTINATION[1]})
+        for language in ("es", "en"):
+            self.assertNotIn("{", one.text(language))
+        self.assertIsNone(road_store._names_default_notice(layer, "gis_fea_dos_campos", "Pista", ()))
+
+    def test_c_with_one_text_field_or_the_number_of_the_point_it_does_not_warn(self) -> None:
+        """RF-015-18, D-2 (la decisión): con **un solo campo de texto** (``nombre``; el resto, números) no hay otro campo con el que se haya podido hacer la pista original y no avisa; tampoco si el origen
+        y el destino se dieron por su número (``fid``: no dependen de ningún campo) ni si la capa no tiene el campo por defecto (``nombre`` o ``name``: el nombre no se halla y es un rechazo claro, no
+        otros puntos sin aviso)."""
+        one_text = self.layer(("nombre", "TEXT", ("A", "Origen", "Destino")), ("cota", "DOUBLE", (1.0, 2.0, 3.0)), ("numero", "INTEGER", (7, 8, 9)))
+        found = (("Origen", self.ORIGIN), ("Destino", self.DESTINATION))
+        self.assertIsNone(road_store._names_default_notice(one_text, "gis_fea_un_campo", "Pista", found))
+        by_number = (("2", self.ORIGIN), ("3", self.DESTINATION))
+        self.assertIsNone(road_store._names_default_notice(self.two_text_fields(), "gis_fea_dos_campos", "Pista", by_number))
+        no_default = self.layer(("etiqueta", "TEXT", ("Origen", "Destino", "Z")), ("otra", "TEXT", ("a", "b", "c")))
+        self.assertIsNone(road_store._names_default_notice(no_default, "gis_fea_sin_nombre", "Pista", found))
+        mixed = (("Origen", self.ORIGIN), ("3", self.DESTINATION))  # el origen por su nombre y el destino por su número: avisa solo del primero
+        self.assertEqual(road_store._names_default_notice(self.two_text_fields(), "gis_fea_dos_campos", "Pista", mixed).code, "des.road_names_default_one")
 
 
 if __name__ == "__main__":

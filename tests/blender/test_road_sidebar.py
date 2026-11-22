@@ -38,8 +38,8 @@ NEW_MSGIDS = (
     "Carriageway {width} m · section {section} m", "Section: cut {cut} m³ · fill {fill} m³; edge: cut {edge_cut} m³ · fill {edge_fill} m³; net {net} m³",
     "The mean gradient, {mean} %, passed the {limit} % of the profile: confirmed by {person} on {date}",
     "{area} m² of the carriageway did not end up on the level profile: confirmed by {person} on {date} (largest difference {difference} m)",
-    "It reads another design of the version that changed, {designs}: recalculating the road does not settle it if that design now rests on it. "
-    "Redo the road on the surface of that design, or discard it",
+    "It reads another design of the version that changed, {designs}. «Recompute the stale results» brings it up to date; if the road should take that design into account, redo it on the "
+    "surface of that design, or discard it",
     "The layer of the axes of the roads for QGIS is marked: it still says what this road was before (its state, its profile or its class), because a change such as the value of a "
     "profile does not bring it up to date at once; the next order on roads or «Recompute the stale results» does",
     "… and {more} more (the whole list is in the tables of the accessibility)", "The project has no result of this accessibility", "Surface: «{surface}»",
@@ -155,23 +155,58 @@ class SidebarTextsTest(unittest.TestCase):
         english = self.texts(self.road_lines("en", self.facts(confirmed=confirmed)))
         self.assertIn("The mean gradient, 5.60 %, passed the 5.00 % of the profile: confirmed by Ana on 2026-11-21 · Reason: El acceso es corto", english)
 
+    def summary_of(self, language: str, *, mode: str = "trace", propose: bool = False) -> list:
+        """El resumen de «Calcular» (``des_panels._road_lines`` o ``_propose_lines``) con lo que lleva ``RoadSummary`` o ``ProposalSummary`` puesto a mano (sin proyecto)."""
+        self.i18n.set_language(language)
+        summary = SimpleNamespace(mode=mode, code="RDW-001", profile="Pista principal", length_m=120.0, start_level_m=100.5, end_level_m=107.25, gradient_mean_pct=5.6, gradient_max_pct=8.4,
+                                  gradient_max_station_m=64.0, gradient_max_x=700064.5, gradient_max_y=4400030.5, radius_min_m=25.0, curves=2, cut_m3=530.0, fill_m3=135.0, net_m3=395.0,
+                                  section_cut_m3=410.0, section_fill_m3=95.0, edge_cut_m3=120.0, edge_fill_m3=40.0, axis_deviation_m=1.25, mean_exceeded=False, mean_limit_pct=10.0,
+                                  carriageway_area_m2=0.0)
+        calculation = SimpleNamespace(summary=summary, name="Pista A", entity=SimpleNamespace(profile=SimpleNamespace(name="Pista principal")), needs_mean_confirmation=False,
+                                      needs_carriageway_confirmation=False)
+        return (self.panels._propose_lines if propose else self.panels._road_lines)(calculation)
+
+    def test_a_d_the_summary_of_calculate_gives_the_section_and_the_edge_apart_and_the_deviation_of_the_axis(self) -> None:
+        """RF-017-21, RF-017-23, RF-017-13, RF-017-28 (T44, hallazgos S-1 y S-3): el resumen de «Calcular» da el corte y el relleno **de la sección y del borde en líneas distintas** (y el neto) y
+        **la desviación máxima del eje** —respecto a la ruta en «trazar» y a la línea en los otros modos—, como el de la plataforma de la 015, no una sola línea «Sección y borde» con la suma; el de
+        «Proponer el trazado…» da también la desviación (no tiene sección ni borde); en los dos idiomas, sin llaves sin sustituir y sin ámbar."""
+        spanish = [text for text, _alert in self.summary_of("es")]
+        self.assertEqual(spanish[3:], ["Desviación máxima del eje respecto a la ruta: 1,25 m", "Sección: desmonte 410 m³ · relleno 95 m³", "Borde: desmonte 120 m³ · relleno 40 m³",
+                                       "Neto de la sección y el borde: 395 m³ (desmonte 530 m³ − relleno 135 m³)"])
+        self.assertFalse(any(text.startswith("Sección y borde") for text in spanish), "ya no hay una sola línea con la suma")
+        self.assertIn("respecto a la línea: 1,25 m", [text for text, _alert in self.summary_of("es", mode="on_axis")][3])
+        self.assertIn("respecto a la línea: 1,25 m", [text for text, _alert in self.summary_of("es", mode="axis_3d")][3])
+        english = [text for text, _alert in self.summary_of("en")]
+        self.assertEqual(english[3:], ["Largest deviation of the axis from the route: 1.25 m", "Section: cut 410 m³ · fill 95 m³", "Edge: cut 120 m³ · fill 40 m³",
+                                       "Net of the section and the edge: 395 m³ (cut 530 m³ − fill 135 m³)"])
+        self.assertFalse(any(alert for _text, alert in self.summary_of("es")))
+        proposed = [text for text, _alert in self.summary_of("es", propose=True)]
+        self.assertIn("Desviación máxima del eje respecto a la ruta: 1,25 m", proposed)
+        self.assertFalse([text for text in proposed if text.startswith(("Sección", "Borde", "Neto"))], "una propuesta no tiene sección ni borde")
+        for shown in (*spanish, *english, *proposed):
+            self.assertNotIn("{", shown)
+
     # --- b: la causa y la salida de H2-2, y la capa marcada --------------------------------------------
 
     def test_b_a_road_stale_by_another_design_says_the_cause_and_the_way_out(self) -> None:
-        """RF-015-25, H2-2 (decisión de la sesión principal): una pista **obsoleta** que lee otro diseño que cambió dice, en alerta, **la causa** (qué diseño) y **la salida**: rehacerla sobre la
-        superficie de ese diseño o descartarla; una al día, no lo pregunta siquiera; una obsoleta sin otro diseño que haya cambiado, tampoco lo dice."""
+        """RF-015-25, H2-2 (decisión de la sesión principal; corregida en la T44, S-18 y DS-13): una pista **obsoleta** que lee otro diseño que cambió dice, en alerta, **la causa** (qué diseño) y **la
+        salida**: «Recalcular lo obsoleto» la pone al día y, si debe tener en cuenta ese diseño, rehacerla sobre su superficie o descartarla; **ya no dice que «Recalcular lo obsoleto» no la asienta**
+        (``milestone_road_ce.BeforeTheFillTest.test_c`` prueba que converge); una al día, no lo pregunta siquiera; una obsoleta sin otro diseño que haya cambiado, tampoco lo dice."""
         stale = self.road_lines("es", self.facts(), state="stale", others=("des_psf_relleno",))
         line = stale[-1]
         self.assertTrue(line.alert)
-        self.assertEqual(line.text, "Lee otro diseño de la versión que cambió, «des_psf_relleno»: recalcular la pista no la asienta si ese diseño se apoya ya en ella. "
-                                    "Rehaga la pista sobre la superficie de ese diseño o descártela")
+        self.assertEqual(line.text, "Lee otro diseño de la versión que cambió, «des_psf_relleno». «Recalcular lo obsoleto» la pone al día; si la pista debe tener en cuenta ese diseño, rehágala sobre "
+                                    "la superficie de ese diseño o descártela")
         english = self.road_lines("en", self.facts(), state="stale", others=("des_psf_relleno", "des_psf_carga"))[-1].text
         self.assertIn("«des_psf_relleno», «des_psf_carga»", english)
-        self.assertTrue(english.endswith("Redo the road on the surface of that design, or discard it"))
+        self.assertTrue(english.endswith("redo it on the surface of that design, or discard it"))
+        for shown in (line.text, english):
+            self.assertNotIn("no la asienta", shown)
+            self.assertNotIn("does not settle", shown)
         self.road_lines("es", self.facts(), state="current", others=("des_psf_relleno",))
         self.assertFalse(self.called, "una pista al día no pregunta por otros diseños")
-        self.assertNotIn("recalcular la pista no la asienta", " ".join(self.texts(self.road_lines("es", self.facts(), state="current", others=("des_psf_relleno",)))))
-        self.assertNotIn("recalcular la pista no la asienta", " ".join(self.texts(self.road_lines("es", self.facts(), state="stale", others=()))))
+        self.assertNotIn("Lee otro diseño", " ".join(self.texts(self.road_lines("es", self.facts(), state="current", others=("des_psf_relleno",)))))
+        self.assertNotIn("Lee otro diseño", " ".join(self.texts(self.road_lines("es", self.facts(), state="stale", others=()))))
 
     def test_b_b_a_marked_layer_says_so_and_why(self) -> None:
         """T26-b: si la capa de ejes de pistas está marcada para la pista, la barra N lo dice, en alerta: todavía dice lo de antes (el estado, el perfil o la clase) **porque lo que cambió (el valor de un perfil) no la pone al

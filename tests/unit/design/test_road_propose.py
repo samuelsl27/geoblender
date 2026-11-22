@@ -28,6 +28,7 @@ from tests.unit.design.test_road_prepare import RAMP, request
 base = import_geoblender("core.gpkg.base")
 cstyles = import_geoblender("core.constraints.styles")
 entities = import_geoblender("design.entities")
+preview = import_geoblender("design.preview")
 provenance = import_geoblender("design.provenance")
 road_layer = import_geoblender("design.road_layer")
 road_model = import_geoblender("design.road_model")
@@ -202,6 +203,30 @@ class ProposeComputeTest(unittest.TestCase):
         steps.close()
         done = [stage.done for stage in self.stages if hasattr(stage, "done")]
         self.assertEqual(done, sorted(done))
+
+    def test_e_the_summary_of_a_proposal_gives_the_largest_deviation_of_the_axis(self) -> None:
+        """RF-017-13, RF-017-28 (T44, S-3): el resumen de «Proponer el trazado…» da la **desviación máxima del eje** frente a la ruta (``axis_deviation_m``, la de ``Axis.deviation_m``), como el de la pista;
+        no es una cifra nueva de las dos del plan (no se registra)."""
+        summary = road_store.propose_summary(self.outcome, version="V01", profile=self.job.profile)
+        self.assertEqual(summary.axis_deviation_m, self.outcome.axis.deviation_m)
+        self.assertAlmostEqual(summary.axis_deviation_m, 2.8284271247, delta=1e-9, msg="la ruta de la rampa, simplificada con su tolerancia, se aparta 2,83 m de la ruta")
+        self.assertEqual(tuple(item.key for item in self.outcome.figures), ("des.road_length_m", "des.road_gradient_max_pct"))
+
+
+class ProposeAskTest(unittest.TestCase):
+    """RF-017-26, RF-017-28 (T44, D-1): la vista previa de «Proponer el trazado…» es de **una propuesta** (``RoadAsk(propose=True)``): no es una entidad, así que lleva su petición y nunca el código de una pista
+    de la versión."""
+
+    def test_a_the_ask_of_a_proposal_is_a_request_and_by_default_a_road(self) -> None:
+        """RF-017-26, RF-017-28: ``RoadAsk(request)`` sigue siendo la vista previa de una pista que se prepara (``propose`` falso); con ``propose=True`` es la de la propuesta, con o sin lo que hizo «Calcular»;
+        una propuesta no es una pista **de la versión** (su código) y no se pide así: ``ValueError``."""
+        asked = request("Trazado A")
+        self.assertFalse(preview.RoadAsk(request=asked).propose)
+        proposal = preview.RoadAsk(request=asked, propose=True)
+        self.assertTrue(proposal.propose and proposal.request is asked)
+        self.assertTrue(preview.RoadAsk(request=asked, prepared=object(), outcome=object(), propose=True).propose)
+        with self.assertRaises(ValueError):
+            preview.RoadAsk(code="RDW-001", propose=True)
 
 
 class ProposeListsTest(unittest.TestCase):

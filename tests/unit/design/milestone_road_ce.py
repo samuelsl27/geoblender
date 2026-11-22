@@ -15,7 +15,7 @@ cambiada, la pista principal descartada, el relleno posterior y traer a otra ver
   que no llega al fondo (las dos cotas mínimas); y la accesibilidad da **125 m sobre la explotación y 140 m sobre la final** y, con la superficie que propone el diálogo (la última de la
   cadena), también los 140 m sobre la final de su cantera (T43, C-2).
 - **Antes del relleno** (:class:`BeforeTheFillTest`, CE-017-05): la pista sobre una superficie **anterior al relleno** avisa del área, la diferencia máxima y el lugar de lo que no tiene en cuenta
-  (a mano sobre los ficheros) y, al cambiar el relleno, **queda obsoleta con su causa** (el hallazgo H2-2 impide aquí repetirla: véase la *Verificación* de la T25).
+  (a mano sobre los ficheros) y, al cambiar el relleno, **queda obsoleta con su causa** y «Recalcular lo obsoleto» la asienta con las demás (T44: el hallazgo H2-2 de la T25 no se da; ``test_c``).
 - **La cantera con bancos** (:class:`BankTest`, E4, CE-017-07 y CE-017-09; en orden): la rampa a una cota por los bancos (con la confirmación de la calzada fuera de su rasante), la accesibilidad de la
   cantera (tres bermas comunicadas y una no, la plataforma, las dos zonas «requiere acceso»: a mano), la accesibilidad de la superficie que deja la rampa (a mano: la inundación sobre ella) y la
   verificación de la 012 con las **tres respuestas** de RF-012-22.
@@ -63,6 +63,7 @@ entity_store = import_geoblender("design.entity_store")
 gis = import_geoblender("gis")
 model = import_geoblender("design.model")
 provenance = import_geoblender("design.provenance")
+recompute_mod = import_geoblender("core.provenance.recompute")
 res_store = import_geoblender("reserves.store")
 road_profiles = import_geoblender("design.road_profiles")
 road_store = import_geoblender("design.road_store")
@@ -438,7 +439,7 @@ class BeforeTheFillTest(PitCase):
 
     def test_b_changing_the_fill_makes_it_stale_with_its_cause(self) -> None:
         """CE-017-05, RF-015-16, RF-008-26: al **cambiar el relleno** (su cota, de 130 a 131 m) la pista que no lo tenía en cuenta **queda obsoleta con su causa** y «Recalcular lo obsoleto» la
-        tiene en su plan, después de la plataforma y de la pista que parte de ella (lee la superficie que esa deja). (**No se repite aquí**: hallazgo H2-2, véase la *Verificación* de la T25.)"""
+        tiene en su plan, después de la plataforma y de la pista que parte de ella (lee la superficie que esa deja). (Asentarlo hasta el final es ``test_c``.)"""
         key = design_params.entity_key(FILL_CODE, "start_level_m")
         self.change(key, FILL_LEVEL_M + 1.0)
         causes = self.stale_causes(self.uid(self.other_stored))
@@ -448,6 +449,36 @@ class BeforeTheFillTest(PitCase):
         self.assertTrue(self.stale_causes(self.current("RDW-001")))
         plan = [unit[0] for unit in self.recompute_plan()]
         self.assertEqual([op for op in plan if op in (provenance.PLATFORM, provenance.ROAD)], [provenance.PLATFORM, provenance.ROAD, provenance.ROAD])
+
+    def test_c_recomputing_the_stale_settles_the_road_before_the_fill_and_everything_is_up_to_date(self) -> None:
+        """RF-017-05 (b), RF-015-16, RF-008-26, H2-2 (T44; S-18, DS-13; el verificador A lo midió con ``A/p4_h22.py::H22d``): la pista **anterior al relleno** —que lee su superficie como otro diseño
+        y de la que el relleno no depende— tras **cambiar el relleno** (continúa de ``test_b``: ya cambiado a 131 m y todo obsoleto) y **«Recalcular lo obsoleto» hasta el final**
+        (``recompute_settled_steps``, la orden real) **converge**: no llega al tope de pasadas (``limit_reached`` falso, sin lo obsoleto que queda), el plan queda vacío y las tres entidades —la
+        plataforma, la pista que parte de ella y la anterior— vuelven a estar «al día»; y una **segunda vuelta** (otro cambio del relleno, a 132 m) igual. Por eso la barra N ya no dice que
+        «Recalcular lo obsoleto» no la asienta (``test_road_sidebar``)."""
+        def settled() -> Any:
+            found = None
+            for step in recompute_mod.recompute_settled_steps(self.project):
+                found = step.result if step.result is not None else found
+            return found
+
+        def states() -> dict[str, str]:
+            return {entry.record.code: str(entry.record.state) for entry in entities.registry(self.project, self.v1.uid)}
+
+        self.assertEqual(sorted(states()), ["PLT-001", "RDW-001", "RDW-002"])
+        self.assertEqual(sorted(set(states().values())), ["stale"], "tras cambiar el relleno, las tres obsoletas")
+        for round_, level in enumerate((None, FILL_LEVEL_M + 2.0), start=1):
+            with self.subTest(vuelta=round_):
+                if level is not None:  # la segunda vuelta: otro cambio del relleno
+                    self.change(design_params.entity_key(FILL_CODE, "start_level_m"), level)
+                    self.assertTrue(self.recompute_plan(), "el cambio deja obsoleto lo que lee el relleno")
+                outcome = settled()
+                self.assertIsNotNone(outcome)
+                self.assertFalse(outcome.limit_reached, "no se queda en un bucle: converge antes del tope de pasadas")
+                self.assertEqual(self.recompute_plan(), [], "no queda nada obsoleto que recalcular")
+                self.assertEqual(states(), {"PLT-001": "current", "RDW-001": "current", "RDW-002": "current"})
+                for code in states():
+                    self.assertEqual(self.stale_causes(str(entities.registry(self.project, self.v1.uid).get(code).operation_uid)), set(), code)
 
 
 class BankCase(H2Case):

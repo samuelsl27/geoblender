@@ -985,6 +985,29 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(summary.net_m3, summary.cut_m3 - summary.fill_m3)
         self.assertAlmostEqual(summary.net_m3, found["des.road_net_m3"], delta=1e-9 * abs(summary.cut_m3))
 
+    def test_a3_the_summary_gives_the_section_and_the_edge_apart_and_the_largest_deviation_of_the_axis(self) -> None:
+        """RF-017-21, RF-017-23, RF-017-13 (T44, hallazgos S-1 y S-3): RF-017-21 y RF-017-23 piden el corte y el relleno **de la sección y del borde por separado** (y el neto): el resumen lleva los
+        cuatro (``section_cut_m3``, ``section_fill_m3``, ``edge_cut_m3`` y ``edge_fill_m3``: las cifras que se registran, no una cuenta nueva) además de los totales, que son su suma; con el escarpe de
+        20 m a lo largo del eje la sección y el borde mueven cada uno lo suyo y ninguno es el total. Y RF-017-13 pide la **desviación máxima del eje** frente a la línea: una L de 140 m y 160 m con
+        una curva de 8,28 m de desviación la da (``axis_deviation_m``, la de ``Axis.deviation_m``, la que ya guarda el informe), igual que el informe."""
+        x, _y = rd.local_centers(GRID)
+        job = axis_job(((200.0, 100.0), (200.0, 300.0)), terrain=np.where(x < 200.0, 100.0, 120.0))
+        outcome = last(road_store.road_compute_steps(job, COMMON))
+        found = values_of(outcome)
+        summary = road_store.summary_of(outcome, version="V01", profile=job.profile)
+        self.assertEqual((summary.section_cut_m3, summary.section_fill_m3), (found["des.road_cut_m3"], found["des.road_fill_m3"]))
+        self.assertEqual((summary.edge_cut_m3, summary.edge_fill_m3), (found["des.road_edge_cut_m3"], found["des.road_edge_fill_m3"]))
+        self.assertEqual((summary.section_cut_m3 + summary.edge_cut_m3, summary.section_fill_m3 + summary.edge_fill_m3), (summary.cut_m3, summary.fill_m3))
+        for part in (summary.section_cut_m3, summary.section_fill_m3, summary.edge_cut_m3, summary.edge_fill_m3):
+            self.assertGreater(part, 1.0)
+        self.assertNotIn(summary.section_cut_m3, (summary.cut_m3, summary.edge_cut_m3))
+        corner = last(road_store.road_compute_steps(axis_job(((60.0, 100.0), (200.0, 100.0), (200.0, 260.0))), COMMON))
+        deviation = road_store.summary_of(corner, version="V01", profile=job.profile).axis_deviation_m
+        self.assertEqual(deviation, corner.axis.deviation_m)
+        self.assertAlmostEqual(deviation, 8.2842712474619, delta=1e-9)
+        stored = {row[0]: row[1] for row in road_store.road_report_rows(corner)}
+        self.assertEqual(stored["axis_deviation_m"], deviation, "lo que enseña el resumen es lo que guarda el informe")
+
     def test_b_the_notices_go_in_order_the_axis_the_footprint_the_carriageway_what_is_held_and_what_goes_stale(self) -> None:
         """RF-017-22, RF-015-13, RF-015-03: los avisos del cálculo, los de la calzada fuera de su rasante (los que piden confirmar), lo que no se mueve por una restricción y, al final, lo que quedará
         obsoleto con su causa (la nota de la holgura, la primera, es de «trazar»: ``test_a``)."""

@@ -19,6 +19,8 @@ plataforma y las funciones de la pista (las órdenes de la pista son de la fase 
 - **g** (RNF-017-08; plan §7.3): **con 20 pistas** (de 5.000 vértices: ``tests.support.road_data.scale_preview_lines``; la que se previsualiza y, apoyadas en ella, las otras 19 con sus huellas), sobre una
   superficie de 2,81 M celdas, activarla ≤ 1 s (la orden de dibujo, los pasos de su temporizador con los 5 ms de espera de cada uno) y cada redibujo ≤ 5 ms (``gpu`` y ``blf`` sustituidos: solo el
   Python de Geoblender); **medido sin la lectura del proyecto**, que la prepara ``design`` con la 013 y la 016 (la T34 lo mide entero con la orden de la fase G).
+- **h** (RF-017-26, RF-017-28, RNF-017-08; T44, D-1): la vista previa de **«Proponer el trazado…»** (``RoadAsk(propose=True)``) con la partida que **ya ocupa otra entidad** no rechaza y dibuja
+  el origen, el destino y el pasillo, y tras calcular **el eje con su rasante** (sin la sección); se quita con su control y al conmutar a la interfaz de Blender; activarla ≤ 1 s y cada redibujo ≤ 5 ms.
 - **z** (principio 8): desactivar Geoblender con la vista previa activa lo quita todo.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
@@ -363,6 +365,100 @@ class RoadPreviewMilestone(road_ce.RoadCETest):
         self.assertLessEqual(statistics.median(redraws), REDRAW_BUDGET_S, again)
         self.assertLessEqual(percentile, REDRAW_BUDGET_S, again)  # y el percentil 95: la carga ajena no cuenta de más
         entity.disable()
+
+    # --- h: la vista previa de «Proponer el trazado…» (T44, D-1) -------------------------------------------
+
+    def redraw_ms(self, built: Any, count: int = 60) -> list[float]:
+        """Lo que tarda cada redibujo de ``built`` (los lotes y los elementos en pantalla, con ``gpu`` y ``blf`` sustituidos, como en ``test_g``), en ms."""
+        constraints = self.constraints
+        gpu = mock.MagicMock()
+        gpu.state.depth_test_get.return_value = "NONE"
+        sx, sy = 1.0 / 800.0, REGION[0] / (REGION[1] * 800.0)
+        matrix = np.array([[sx, 0.0, 0.0, -800.0 * sx], [0.0, sy, 0.0, -800.0 * sy], [0.0, 0.0, -0.001, 0.0], [0.0, 0.0, 0.0, 1.0]])
+        view = {"view_matrix": Matrix.Identity(4), "projection_matrix": Matrix.Identity(4), "perspective": True, "view_distance": 100.0, "viewport_size": REGION, "pixel_size": 1.0}
+        took: list[float] = []
+        with mock.patch.object(constraints, "gpu", gpu), mock.patch.object(constraints, "batch_for_shader"):
+            for index in range(count):
+                started = time.perf_counter()
+                constraints.draw_lines(built.lines, **view)
+                self.design_draw.screen_items(built, matrix, REGION, measure=lambda text: 7.0 * len(text), scale=1.0)
+                if index >= 10:
+                    took.append((time.perf_counter() - started) * 1000.0)
+        return took
+
+    def test_h_the_preview_of_a_proposal_draws_with_the_start_taken_and_after_calculating_the_axis_in_time(self) -> None:
+        """RF-017-26, RF-017-28, RF-015-26, RNF-017-08 (T44, D-1; M5): con la partida que **ya ocupa otra entidad** —la rampa (la de la plataforma P1), ``entity:PLT-001`` (la «Pista a P1»),
+        ``entity:RDW-001`` (el «Ramal») y ``entity:RDW-002`` (el relleno)— la vista previa de **«Proponer el trazado…»** (``RoadAsk(propose=True)``) **no rechaza** («La entidad … no puede partir
+        de…»: una propuesta no es una entidad y no apoya nada) y **dibuja** el origen, el destino y el pasillo, mientras que la misma petición como pista sí lo rechaza (``des.entity_start_taken``,
+        ``test_e``); **tras «Calcular»** la propuesta dibuja **el eje con su rasante** —el eje, los tramos, la flecha y el origen y el destino que alcanzó—, **sin los bordes de la sección** (una propuesta
+        no la tiene) y con su leyenda y su resumen en los dos idiomas; **no escribe nada**; se quita con su control y **al conmutar a la interfaz de Blender** (RF-015-26). **RNF-017-08**: activarla
+        (antes y tras calcular) ≤ 1 s y cada redibujo ≤ 5 ms."""
+        entity = self.entity
+        before = self.untouched()
+        contrast = self.show(entity.EntityPlan(road=self.dpreview.RoadAsk(request=self.road_request("Ruta propuesta", origin="Origen rampa", destination="Destino rampa", surface=road_ce.RAMP))))
+        self.assertEqual(entity.preview().refusal.code, "des.entity_start_taken")
+        self.assertEqual(contrast.lines.batches, ())
+        entity.disable()
+        activations: list[float] = []
+        for start in (road_ce.RAMP, "entity:PLT-001", "entity:RDW-001", "entity:RDW-002"):
+            with self.subTest(partida=start):
+                asked = self.road_request("Ruta propuesta", origin="Origen rampa", destination="Destino rampa", surface=start)
+                clock = time.perf_counter()
+                built = self.show(entity.EntityPlan(road=self.dpreview.RoadAsk(request=asked, propose=True)))
+                activations.append(time.perf_counter() - clock)
+                found = entity.preview()
+                self.assertIsNone(found.refusal, found.lines("es"))
+                self.assertTrue(found.drawable and not found.calculated)
+                self.assertEqual((found.code, found.mode, found.name), ("", "trace", "Ruta propuesta"))
+                self.assertEqual([batch.key for batch in built.lines.batches], [entity.CORRIDOR, entity.ORIGIN, entity.DESTINATION])
+                self.assertEqual([alert for _text, alert in built.summary], [False, False])
+                self.assertIn("«Ruta propuesta»", built.summary[0][0])
+                entity.disable()
+        asked = self.road_request("Ruta propuesta", origin="Origen rampa", destination="Destino rampa", surface="entity:RDW-001")
+        calculation = _last_calculation(self.road_steps.road_propose_run(self.project, asked, version=self.v01.uid, masks=self.masks))
+        outcome = calculation.outcome
+        clock = time.perf_counter()
+        built = self.show(entity.EntityPlan(road=self.dpreview.RoadAsk(request=asked, prepared=calculation.entity, outcome=outcome, propose=True)))
+        activations.append(time.perf_counter() - clock)
+        found = entity.preview()
+        np.testing.assert_array_equal(found.axis, outcome.axis.points)
+        np.testing.assert_array_equal(found.levels, outcome.levels)
+        self.assertTrue(found.calculated and found.edges is None)
+        keys = {batch.key for batch in built.lines.batches}
+        self.assertTrue({entity.AXIS, entity.ARROW, entity.ORIGIN, entity.DESTINATION} <= keys, keys)
+        self.assertNotIn(entity.SECTION, keys, "una propuesta no tiene sección")
+        self.assertNotIn(entity.CORRIDOR, keys, "ya no es de antes de calcular")
+        self.assertEqual(self.batch(built, entity.AXIS).segments, len(outcome.axis.points) - 1)
+        self.assertFalse([row.text for row in built.lines.legend if "sección" in row.text.lower()], [row.text for row in built.lines.legend])
+        self.assertEqual(found.notices[0].code, "des.preview_propose_calculated")
+        for language in ("es", "en"):
+            self.assertTrue(all("{" not in text for text, _alert in found.lines(language)))
+        took = self.redraw_ms(built)
+        self.addCleanup(calculation.discard)
+        report = (f"RNF-017-08 (la vista previa de «Proponer el trazado…»): activarla {', '.join(f'{item:.3f}' for item in activations)} s (las cuatro partidas ocupadas y tras calcular) frente a "
+                  f"{ACTIVATE_BUDGET_S:.1f} s; cada redibujo tras calcular: mediana {statistics.median(took):.3f} ms, p95 {sorted(took)[int(0.95 * len(took))]:.3f} ms frente a {REDRAW_BUDGET_S * 1000:.0f} ms")
+        print(report)
+        self.assertLessEqual(max(activations), ACTIVATE_BUDGET_S, report)
+        self.assertLessEqual(statistics.median(took), REDRAW_BUDGET_S * 1000.0, report)
+        self.assertEqual(self.untouched(), before, "la vista previa no escribe")
+        self.assertEqual(bpy.ops.geoblender.des_entity_preview("EXEC_DEFAULT"), {"FINISHED"})  # el mismo control la quita
+        self.assertFalse(entity.enabled() or entity.drawing())
+        # y **al conmutar a la interfaz de Blender** con el proyecto abierto (RF-015-26): ida y vuelta, y volver no la pone sola
+        switcher = self.switcher
+        self.show(entity.EntityPlan(road=self.dpreview.RoadAsk(request=asked, prepared=calculation.entity, outcome=outcome, propose=True)))
+        self.assertTrue(entity.enabled() and entity.drawing())
+        self.assertIn(entity.disable, switcher.blender_hooks())
+        window = bpy.context.window_manager.windows[0]
+        self.addCleanup(switcher.forget)
+        with mock.patch.object(switcher, "_marked", return_value={window.workspace.name}):
+            self.assertTrue(switcher.toggle(window, "BLENDER").workspace)
+        self.assertFalse(entity.enabled() or entity.drawing() or entity.building())
+        self.assertIsNone(entity.built())
+        other_space = next(space.name for space in bpy.data.workspaces if space.name != window.workspace.name)
+        with mock.patch.object(switcher, "_marked", return_value={other_space}):
+            self.assertEqual(switcher.toggle(window, "GEOBLENDER").workspace, other_space)
+        self.assertFalse(entity.enabled(), "volver no la pone sola")
+        self.assertEqual(self.untouched(), before, "ni escribe ni deja nada en la escena")
 
     # --- z: Geoblender se desactiva ----------------------------------------------------------------------
 

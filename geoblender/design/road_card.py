@@ -7,7 +7,7 @@ traducidos): de lo **guardado** de la operación vigente de la entidad, no de un
 - :func:`read_road_facts`: de una **pista**, lo de su informe (``des_prp_``: la longitud, las cotas, las pendientes con su abscisa y su lugar, las curvas, el corte y el relleno de la
   sección y del borde, la pared del borde) y de sus cifras (la calzada y la sección), lo que la persona confirmó al crearla (RF-017-17, RF-017-22) y sus avisos con su código.
 - :func:`stale_other_designs`: los **otros diseños** que lee la pista (entrada ``other_design``, RF-017-05 (b)) y que han cambiado o están cambiando: la causa de una pista obsoleta
-  por un diseño que no es el suyo (H2-2: ``Recalcular lo obsoleto`` no la asienta si ese diseño se apoya ahora en ella).
+  por un diseño que no es el suyo (H2-2: ``Recalcular lo obsoleto`` la pone al día, también si ese diseño se apoya ahora en ella: T44).
 - :func:`marked_layer`: si la capa de ejes de pistas de la versión (``des_rax_``) está **marcada** para esta pista: dice otro estado que el registro (RF-017-27; T26-b: cambiar el valor de
   un perfil deja las pistas obsoletas por el grafo y no la regenera al instante).
 - :func:`read_access_facts`: de una **accesibilidad**, las cotas mínima y máxima alcanzables y las listas de tramos de berma, plataformas y zonas «requiere acceso» **comunicados o no**
@@ -176,8 +176,9 @@ def profile_name(conn: sqlite3.Connection, code: str) -> str | None:
 def stale_other_designs(conn: sqlite3.Connection, operation_uid: str) -> tuple[str, ...]:
     """Los nombres de los datos de **otros diseños** que lee la pista de la operación ``operation_uid`` (entrada con el papel ``other_design``: RF-017-05 (b), T19-b) **y que han cambiado
     o están cambiando** desde que la pista los leyó: el dato ya no está vivo, su contenido es otro que el anotado, o la operación que lo escribió está ella misma obsoleta. Es la **causa de
-    una pista obsoleta por un diseño que no es el suyo** (H2-2, decisión de la sesión principal de 21/11/2026): el sistema no impide que ese diseño se apoye luego en la pista, y entonces
-    «Recalcular lo obsoleto» no la asienta; la salida es rehacerla sobre la superficie de ese diseño o descartarla. Por orden de lectura; ninguno si no lee ninguno o ninguno cambió. Solo lee."""
+    una pista obsoleta por un diseño que no es el suyo** (H2-2, decisión de la sesión principal de 21/11/2026): el sistema no impide que ese diseño se apoye luego en la pista y
+    «Recalcular lo obsoleto» la pone al día (T44: la prueba ``milestone_road_ce.BeforeTheFillTest.test_c`` lo fija); si la pista debe tener en cuenta ese diseño, la salida es rehacerla sobre su
+    superficie o descartarla. Por orden de lectura; ninguno si no lee ninguno o ninguno cambió. Solo lee."""
     found: list[str] = []
     for name, status, content_now, writer, content_used in conn.execute(_OTHER_DESIGNS, (operation_uid, provenance.ROAD_OTHER_DESIGN_ROLE)).fetchall():
         changed = (str(status) != "current" or content_now != content_used

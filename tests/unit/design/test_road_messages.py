@@ -136,6 +136,9 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # T24b: al recalcular, la cota de inicio o de fin que salió del algoritmo se vuelve a tomar de su origen y el resumen lo dice (RF-017-03, D-13).
     "des.road_start_level_followed": ("note", "RF-017-03", {"entity", "old", "new", "source"}),
     "des.road_end_level_followed": ("note", "RF-017-03", {"entity", "old", "new", "source"}),
+    # T44 (D-2): el campo de los nombres de la capa no viaja con una pista traída: «Calcular…» usa el campo por defecto, lo avisa con el campo y los puntos que halló (RF-015-18).
+    "des.road_names_default": ("warning", "RF-015-18", {"entity", "layer", "field", "fields", "first", "first_x", "first_y", "second", "second_x", "second_y"}),
+    "des.road_names_default_one": ("warning", "RF-015-18", {"entity", "layer", "field", "fields", "first", "first_x", "first_y"}),
     # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase y no usado: la T03 los puso).
     "des.road_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.access_declared_reason": ("note", "RF-015-10", {"name"}),

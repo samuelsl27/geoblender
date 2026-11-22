@@ -168,6 +168,7 @@ _CODE_DECIMALS: Mapping[str, Mapping[str, int]] = MappingProxyType({
     "des.road_end_level_followed": MappingProxyType({"old": 2, "new": 2}),
     "des.preview_road_calculated": MappingProxyType({"limit": 2}),
     "des.preview_road_stored": MappingProxyType({"limit": 2}),
+    "des.preview_propose_calculated": MappingProxyType({"limit": 2}),
     "des.preview_road_level_destination": MappingProxyType({"level": 2, "tolerance": 2}),
 })
 """Los decimales de los números de **un mensaje concreto** (spec 016, T12), que mandan sobre :data:`_DECIMALS`: los avisos de
@@ -927,7 +928,9 @@ class RoadSummary:
     """El resumen de «Calcular» una pista (RF-015-03, RF-017-23): su ``name`` y su ``code`` (``RDW-001``), la ``version`` (su código), el ``mode`` (``trace``, ``on_axis`` o ``axis_3d``), el código del
     ``profile``, las ``figures`` que se registrarán (CALCULADO, con su unidad y el ámbito de la entidad), la longitud del eje (``length_m``), las cotas de inicio y de fin (``start_level_m`` y
     ``end_level_m``), la pendiente media (``gradient_mean_pct``) y la máxima (``gradient_max_pct``) con su abscisa y su lugar (``gradient_max_station_m``, ``gradient_max_x``, ``gradient_max_y``), el radio mínimo
-    (``radius_min_m``; ``None`` sin curvas) y las curvas, el corte y el relleno de la sección y del borde **juntos** (``cut_m3`` y ``fill_m3``) y el neto (``net_m3``), **la holgura del pasillo** de la ruta
+    (``radius_min_m``; ``None`` sin curvas) y las curvas, el corte y el relleno **totales** (``cut_m3`` y ``fill_m3``: la sección más el borde) y el neto (``net_m3``) **y los de la sección y los del borde por
+    separado** (``section_cut_m3``, ``section_fill_m3``, ``edge_cut_m3`` y ``edge_fill_m3``: RF-017-21 y RF-017-23; son las cifras que se registran), la **desviación máxima del eje** frente a la ruta o a la
+    línea (``axis_deviation_m``, m: RF-017-13; ``Axis.deviation_m``), **la holgura del pasillo** de la ruta
     (``margin_m``, m: la ruta cambia con ella, H-10; ``None`` fuera de «trazar», que no busca ruta), si la pendiente media pasa de la del perfil y pide confirmar con un motivo
     (``needs_mean_confirmation``, RF-017-17; el límite del perfil, ``mean_limit_pct``), si hay calzada que no queda en su rasante y pide confirmar (``needs_carriageway_confirmation``, RF-017-22; su área,
     ``carriageway_area_m2``), los ``notices`` en el orden en que se enseñan (la nota de la ruta, los avisos del cálculo con su lugar, los de la calzada con la restricción o la entidad que lo impide, lo que no
@@ -952,6 +955,11 @@ class RoadSummary:
     cut_m3: float
     fill_m3: float
     net_m3: float
+    section_cut_m3: float
+    section_fill_m3: float
+    edge_cut_m3: float
+    edge_fill_m3: float
+    axis_deviation_m: float
     margin_m: float | None
     needs_mean_confirmation: bool
     mean_limit_pct: float
@@ -1658,18 +1666,23 @@ class RoadAsk:
     """De qué pista se pide la vista previa (RF-017-26; una sola cosa): la que **se prepara** (``request``, la ``design.road_model.RoadRequest`` del diálogo de «Pista…»; una pista nueva con el código que
     tendría) o **una de la versión** (``code``, su código: su eje guardado con los parámetros vigentes de su perfil). Con ``request`` puede traer lo que ya hizo «Calcular»: la preparación (``prepared``, la
     ``design.road_store.PreparedRoad``: con ella no se repite) y el resultado (``outcome``, la ``design.road_model.RoadOutcome``: con él la vista previa es la de **tras calcular**; sin él, la de antes).
-    Ni el resultado sin su petición ni las dos peticiones a la vez: ``ValueError``."""
+    **Una propuesta del trazado** («Proponer el trazado…», RF-017-28; T44, D-1) es ``propose=True`` con su ``request`` (y, tras «Calcular», ``prepared``, la ``design.road_store.PreparedProposal``, y ``outcome``,
+    la ``design.road_model.ProposalOutcome``): **no es una entidad y no apoya nada**, así que se prepara como ella (:func:`~.road_store.prepare_propose_units`: sin la comprobación de que de cada
+    superficie parte una sola entidad ni la cadena), no tiene sección y no es de la versión. Ni el resultado sin su petición, ni las dos peticiones a la vez, ni una propuesta de la versión: ``ValueError``."""
 
     request: Any = None
     code: str | None = None
     prepared: Any = None
     outcome: Any = None
+    propose: bool = False
 
     def __post_init__(self) -> None:
         if (self.request is None) == (self.code is None):
             raise ValueError("la vista previa de una pista es de la que se prepara (su petición) o de una de la versión (su código), no de las dos ni de ninguna")
         if self.code is not None and (self.prepared is not None or self.outcome is not None):
             raise ValueError("lo que ya hizo «Calcular» (la preparación y el resultado) es de la pista que se prepara, no de una de la versión")
+        if self.propose and self.code is not None:
+            raise ValueError("una propuesta del trazado no es una entidad de la versión: su vista previa es la de su petición, no la de un código")
 
 
 @dataclass(frozen=True, slots=True, eq=False)

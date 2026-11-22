@@ -224,7 +224,7 @@ sin calcular) y, de un acopio, «retirado en su superficie» (D-12). Todo se **l
 ``DESIGN_ENTITY`` de su ``des_epr_``) la ficha de la barra N «Entidad» y «Elemento activo» (:func:`entity_card`) añade, tras su estado, :func:`_road_card_lines`: su **modo y su perfil**, la
 longitud y las cotas de la rasante, la pendiente media y la máxima con su abscisa y su lugar, el radio mínimo, la calzada y la sección, el corte y el relleno **de la sección y del borde**, la
 pared del borde, lo que la persona confirmó al crearla (RF-017-17, RF-017-22), los avisos del cálculo y, **en alerta**, (1) **la causa y la salida** de una pista obsoleta por **otro diseño que lee**
-(H2-2: ese diseño se apoya luego en ella y «Recalcular lo obsoleto» no la asienta; la salida es rehacerla sobre la superficie de ese diseño o descartarla) y (2) que **la capa de ejes de pistas para
+(H2-2: «Recalcular lo obsoleto» la pone al día —T44: converge, ya no se dice que no la asienta—; si debe tener en cuenta ese diseño, la salida es rehacerla sobre su superficie o descartarla) y (2) que **la capa de ejes de pistas para
 QGIS está marcada** (cambiar el valor de un perfil deja la pista obsoleta y no la regenera al instante; T26-b). Lo que se le apoya y en qué se apoya, sus parámetros y su cadena son los de
 cualquier entidad. **De una accesibilidad** (el objeto ``DESIGN`` de su ``des_acc_``: la barra N «Diseño», :func:`item_lines`, que no cambia :func:`entity_wanted`) la ficha lleva su estado como
 entidad (al día, obsoleta con su causa, descartada, «apoyo retirado»; :func:`_entity_state_line`) y :func:`_access_card_lines`: la superficie, las cotas mínima y máxima alcanzables y **las tres
@@ -2044,10 +2044,18 @@ def _curves_line(radius_min_m: float | None, curves: int) -> tuple[str, bool]:
     return tr("Minimum radius {radius} m in {curves} curves", radius=_number(radius_min_m, 1), curves=_number(curves)), False
 
 
+def _deviation_line(deviation_m: float, from_line: bool) -> tuple[str, bool]:
+    """La línea de **la desviación máxima del eje** (RF-017-13; spec 017, T44, S-3) respecto a la ruta (en «trazar» y en la propuesta) o a la línea dibujada (``from_line``: «sobre un eje» y «eje 3D»), en m: lo que
+    se aparta el eje con sus curvas de lo que simplifica o recorta. No es una cifra de las 23 de la pista: se guarda en el informe y aquí se enseña."""
+    if from_line:
+        return tr("Largest deviation of the axis from the line: {deviation} m", deviation=_number(deviation_m, 2)), False
+    return tr("Largest deviation of the axis from the route: {deviation} m", deviation=_number(deviation_m, 2)), False
+
+
 def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de una pista calculada (``design.preview.RoadSummary``; spec 017, T29b; RF-017-23, RF-017-17, RF-017-22; M1): su modo, su perfil, su longitud y las
-    cotas de inicio y de fin, la pendiente media y la máxima con su abscisa y su lugar, el radio mínimo y las curvas, el corte y el relleno de la sección y del
-    borde juntos y, **en ámbar, lo que pide su confirmación expresa**: la pendiente media por encima de la del perfil (con un motivo, que queda registrado: no
+    cotas de inicio y de fin, la pendiente media y la máxima con su abscisa y su lugar, el radio mínimo y las curvas, la desviación máxima del eje, el corte y el relleno **de la sección y del
+    borde en líneas distintas** (y el neto) y, **en ámbar, lo que pide su confirmación expresa**: la pendiente media por encima de la del perfil (con un motivo, que queda registrado: no
     bloquea) y la calzada que no queda en su rasante. Los avisos con su lugar (la holgura del pasillo de la ruta, los del eje, la huella recortada, los otros
     diseños, el salto creado, la calzada y la restricción que impide moverla, lo que no se mueve y lo que quedará obsoleto) los añade :func:`summary_lines`
     (son los ``notices`` del cálculo)."""
@@ -2064,8 +2072,11 @@ def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
                  station=_number(summary.gradient_max_station_m, 1), x=_number(summary.gradient_max_x, 1),  # type: ignore[union-attr]
                  y=_number(summary.gradient_max_y, 1)), False)]  # type: ignore[union-attr]
     lines.append(_curves_line(summary.radius_min_m, summary.curves))  # type: ignore[union-attr]
-    lines.append((tr("Section and edge: cut {cut} m³ · fill {fill} m³ · net {net} m³", cut=_number(summary.cut_m3), fill=_number(summary.fill_m3),  # type: ignore[union-attr]
-                     net=_number(summary.net_m3)), False))  # type: ignore[union-attr]
+    lines.append(_deviation_line(summary.axis_deviation_m, summary.mode != "trace"))  # type: ignore[union-attr]
+    lines.append((tr("Section: cut {cut} m³ · fill {fill} m³", cut=_number(summary.section_cut_m3), fill=_number(summary.section_fill_m3)), False))  # type: ignore[union-attr]
+    lines.append((tr("Edge: cut {cut} m³ · fill {fill} m³", cut=_number(summary.edge_cut_m3), fill=_number(summary.edge_fill_m3)), False))  # type: ignore[union-attr]
+    lines.append((tr("Net of the section and the edge: {net} m³ (cut {cut} m³ − fill {fill} m³)", net=_number(summary.net_m3), cut=_number(summary.cut_m3),  # type: ignore[union-attr]
+                     fill=_number(summary.fill_m3)), False))  # type: ignore[union-attr]
     if calculation.needs_mean_confirmation:
         lines.append((tr("The mean gradient, {mean} %, passes the {limit} % of the profile: the road is not created without your express confirmation and a "
                          "reason, which stays recorded with who and when; the button that creates it confirms it",
@@ -2078,7 +2089,7 @@ def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
 
 def _propose_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de una propuesta del trazado calculada (``design.road_store.ProposalSummary``; spec 017, T33; RF-017-28, RF-017-17): su perfil, la longitud y las cotas de inicio y de fin, la pendiente media y la
-    máxima con su abscisa y su lugar, el radio mínimo y las curvas y que es **una capa de líneas con Z editable en QGIS que no toca ninguna superficie**. **La pendiente media por encima de la del perfil solo avisa**
+    máxima con su abscisa y su lugar, el radio mínimo y las curvas, la desviación máxima del eje frente a la ruta (T44, S-3) y que es **una capa de líneas con Z editable en QGIS que no toca ninguna superficie**. **La pendiente media por encima de la del perfil solo avisa**
     (en ámbar y sin pedir confirmación: no graba ninguna superficie). Los avisos con su lugar (la holgura del pasillo, los radios que bajaron del de diseño y los tramos de mayor pendiente) los añade
     :func:`summary_lines` (son los ``notices`` del cálculo)."""
     summary = calculation.summary
@@ -2090,7 +2101,8 @@ def _propose_lines(calculation: Calculation) -> list[tuple[str, bool]]:
                  mean=_number(summary.gradient_mean_pct, 2), max=_number(summary.gradient_max_pct, 2),  # type: ignore[union-attr]
                  station=_number(summary.gradient_max_station_m, 1), x=_number(summary.gradient_max_x, 1),  # type: ignore[union-attr]
                  y=_number(summary.gradient_max_y, 1)), False),  # type: ignore[union-attr]
-             _curves_line(summary.radius_min_m, summary.curves)]  # type: ignore[union-attr]
+             _curves_line(summary.radius_min_m, summary.curves),  # type: ignore[union-attr]
+             _deviation_line(summary.axis_deviation_m, False)]  # type: ignore[union-attr]
     if summary.mean_exceeded:  # type: ignore[union-attr]
         lines.append((tr("The mean gradient, {mean} %, passes the {limit} % of the profile: it is only a warning, the route is created without confirmation because it changes no surface",
                          mean=_number(summary.gradient_mean_pct, 2), limit=_number(summary.mean_limit_pct, 2)), True))  # type: ignore[union-attr]
@@ -3914,8 +3926,8 @@ def _road_card_lines(project: Any, conn: sqlite3.Connection, version: Any, entry
     """Lo que dice la barra N de una **pista** (spec 017, T31b; RF-015-25, RF-017-23, RF-017-17, RF-017-22; H2-2; M4), **leído de lo guardado** de su operación vigente (``design.road_card``; nada
     se calcula): su **modo y su perfil**, la longitud y las cotas de inicio y de fin de la rasante, la pendiente media y la máxima con su abscisa y su lugar, el radio mínimo (o que no tiene curvas),
     la calzada y la sección, el corte y el relleno **de la sección y del borde** y el neto, la pared del borde (en alerta), lo que la persona confirmó al crearla —la pendiente media con su
-    motivo y la calzada fuera de su rasante— y los avisos del cálculo; y, **en alerta**, (1) si está obsoleta por **otro diseño que lee** (H2-2), **la causa y la salida** (rehacerla sobre la
-    superficie de ese diseño o descartarla: «Recalcular lo obsoleto» no la asienta si ese diseño se apoya ya en ella) y (2) si **la capa de ejes de pistas para QGIS está marcada** para ella
+    motivo y la calzada fuera de su rasante— y los avisos del cálculo; y, **en alerta**, (1) si está obsoleta por **otro diseño que lee** (H2-2), **la causa y la salida**
+    («Recalcular lo obsoleto» la pone al día; si debe tener en cuenta ese diseño, rehacerla sobre su superficie o descartarla; T44) y (2) si **la capa de ejes de pistas para QGIS está marcada** para ella
     (T26-b: cambiar el valor de un perfil la deja obsoleta por el grafo y no regenera la capa al instante), que lo está y por qué. Lo que se le apoya y en qué se apoya son los de cualquier entidad
     (:func:`entity_card`)."""
     from ...design import road_card
@@ -3963,8 +3975,8 @@ def _road_card_lines(project: Any, conn: sqlite3.Connection, version: Any, entry
     if str(entry.record.state) == "stale":  # H2-2: obsoleta por otro diseño que lee, con su causa y su salida
         others = road_card.stale_other_designs(conn, str(entry.operation_uid))
         if others:
-            lines.append(CardLine(ROW_FIELD, tr("It reads another design of the version that changed, {designs}: recalculating the road does not settle it if that design now rests on it. "
-                                                "Redo the road on the surface of that design, or discard it", designs=", ".join(f"«{name}»" for name in others)), alert=True))
+            lines.append(CardLine(ROW_FIELD, tr("It reads another design of the version that changed, {designs}. «Recompute the stale results» brings it up to date; if the road should take that design "
+                                                "into account, redo it on the surface of that design, or discard it", designs=", ".join(f"«{name}»" for name in others)), alert=True))
     if version is not None and road_card.marked_layer(project, conn, version.uid, entry.record.code):  # T26-b: la capa de ejes todavía dice otro estado
         lines.append(CardLine(ROW_FIELD, tr("The layer of the axes of the roads for QGIS is marked: it still says what this road was before (its state, its profile or its class), because a change such as the value of a "
                                             "profile does not bring it up to date at once; the next order on roads or «Recompute the stale results» does"), alert=True))

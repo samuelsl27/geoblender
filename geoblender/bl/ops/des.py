@@ -381,7 +381,8 @@ entidades siguiente o «Recalcular lo obsoleto»). Desde un guion (sin ventana),
 ``design.steps.road_propose_run``: **lo mismo que la pista «trazar» hasta la ruta y la rasante** (A1 a A5, sin A6 a A9) y deja **una capa de líneas con Z, editable en QGIS** (``des_rpl_<nombre>``), **sin tocar
 ninguna superficie** y sin ser una entidad (no hay código, ni cadena, ni capa de entidades o de ejes, ni declaración). Su diálogo es el de «Pista…» en el modo «trazar» (la capa de puntos, el origen y el
 destino, el perfil, la partida, las cotas y los nueve parámetros de la ruta con su tipo: :func:`_road_points`, :func:`_route_changes`, :func:`_draw_trace_points` y :func:`_draw_route_params`) y su
-**vista previa** es la de la pista (el origen, el destino y el pasillo de la ruta: :func:`_redraw_road_preview`). El resumen de «Calcular» (``des_panels._propose_lines``) lleva la longitud, las pendientes con su
+**vista previa** es la de **una propuesta** (``RoadAsk(propose=True)``: el origen, el destino y el pasillo de la ruta y, tras calcular, el eje con su rasante, sin sección; no la rechaza una partida que ya
+ocupa otra entidad: T44, D-1; :func:`_redraw_road_preview`). El resumen de «Calcular» (``des_panels._propose_lines``) lleva la longitud, las pendientes con su
 abscisa y su lugar, el radio mínimo y todos los avisos con su lugar; **la pendiente media por encima de pm solo avisa, sin pedir confirmación** (no graba ninguna superficie). **«Crear» es por pasos** desde la
 interfaz, con el avance y Esc (:class:`_CreatesInSteps`, con su propio :meth:`~GEOBLENDER_OT_des_propose_road._creation_steps`: la capa en su temporal y la transacción final, y **nada de lo que sigue a crear una
 entidad**), y de una vez desde un guion. Con el proyecto en escritura y la versión activa editable, y si no, desactivada con su motivo (:class:`DesignCommandAware`).
@@ -8301,11 +8302,11 @@ def _refresh_road_preview(self: Any, _context: Any) -> None:
     _redraw_road_preview(self, GEOBLENDER_OT_des_create_road._request)
 
 
-def _redraw_road_preview(self: Any, build: Callable[[Any], Any]) -> None:
-    """Lo de :func:`_refresh_road_preview` con la petición que arma ``build`` de lo que dice el diálogo ``self`` (su ``_request``: la de «Pista…» o la de «Proponer el trazado…», T33, que
-    comparten la vista previa de la pista: el origen, el destino y el pasillo de la ruta)."""
+def _redraw_road_preview(self: Any, build: Callable[[Any], Any], *, propose: bool = False) -> None:
+    """Lo de :func:`_refresh_road_preview` con la petición que arma ``build`` de lo que dice el diálogo ``self`` (su ``_request``: la de «Pista…» o la de «Proponer el trazado…», T33: el origen, el destino y
+    el pasillo de la ruta). ``propose``: es la vista previa de **una propuesta** del trazado (T44, D-1), no la de una pista: la que está activa ha de ser de la misma clase."""
     loaded = _entity_preview_loaded()
-    if loaded is None or not loaded.enabled() or loaded.plan() is None or loaded.plan().road is None or loaded.plan().road.request is None:
+    if loaded is None or not loaded.enabled() or loaded.plan() is None or loaded.plan().road is None or loaded.plan().road.request is None or loaded.plan().road.propose != propose:
         return
     from ...design.preview import RoadAsk  # al usarlo: habilitar no carga el cálculo
 
@@ -8315,7 +8316,18 @@ def _redraw_road_preview(self: Any, build: Callable[[Any], Any]) -> None:
         return
     if loaded.plan().road.request == request:
         return  # lo mismo que ya se dibuja, con o sin lo calculado (lo repite cada dibujo del diálogo al copiar sus campos al botón): no se reconstruye
-    loaded.replace(loaded.EntityPlan(road=RoadAsk(request=request)))
+    loaded.replace(loaded.EntityPlan(road=RoadAsk(request=request, propose=propose)))
+
+
+def _show_calculated_preview(opened: Any, *, propose: bool) -> None:
+    """Con la vista previa **activa de esta clase** (la de una pista o la de una propuesta del trazado: ``propose``), la cambia por la de lo que dejó «Calcular» (``opened``: el cálculo abierto; con ``propose``,
+    la :class:`~...design.road_store.PreparedProposal` y el ``ProposalOutcome``): el eje con su rasante (T28; T44, D-1: también el de la propuesta). Solo lee."""
+    loaded = _entity_preview_loaded()
+    if loaded is None or not loaded.enabled() or loaded.plan() is None or loaded.plan().road is None or loaded.plan().road.request is None or loaded.plan().road.propose != propose:
+        return
+    from ...design.preview import RoadAsk  # al usarlo: habilitar no carga el cálculo
+
+    loaded.replace(loaded.EntityPlan(road=RoadAsk(request=opened.entity.job.request, prepared=opened.entity, outcome=opened.outcome, propose=propose)))
 
 
 def _road_mode_changed(self: Any, context: Any) -> None:
@@ -8775,12 +8787,7 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
     @staticmethod
     def _show_calculated(opened: Any) -> None:
         """Con la vista previa de **esta** pista activa, la cambia por la de lo que dejó «Calcular» (``opened``: el cálculo abierto). Solo lee."""
-        loaded = _entity_preview_loaded()
-        if loaded is None or not loaded.enabled() or loaded.plan() is None or loaded.plan().road is None or loaded.plan().road.request is None:
-            return
-        from ...design.preview import RoadAsk  # al usarlo: habilitar no carga el cálculo
-
-        loaded.replace(loaded.EntityPlan(road=RoadAsk(request=opened.entity.job.request, prepared=opened.entity, outcome=opened.outcome)))
+        _show_calculated_preview(opened, propose=False)
 
     def _confirmation(self, context: Any) -> set[str]:
         """El diálogo de crear el cálculo abierto. Con la **pendiente media por encima de pm** (RF-017-17) o la **calzada que no queda en su rasante** (RF-017-22), que
@@ -9099,7 +9106,7 @@ def _propose_dialog_fields() -> tuple[str, ...]:
 def _refresh_propose_preview(self: Any, _context: Any) -> None:
     """El ``update`` de cada campo de «Proponer el trazado…» (T33; RF-017-26): como el de «Pista…» (:func:`_refresh_road_preview`), con la petición del diálogo de la propuesta: la vista previa de la
     pista (antes de calcular, el origen, el destino y el pasillo de la ruta; sin sección: la propuesta no la tiene)."""
-    _redraw_road_preview(self, GEOBLENDER_OT_des_propose_road._request)
+    _redraw_road_preview(self, GEOBLENDER_OT_des_propose_road._request, propose=True)
 
 
 class GEOBLENDER_OT_des_propose_road(_ClearsEntityPreview, _CreatesInSteps, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal, bpy.types.Operator):
@@ -9372,7 +9379,7 @@ class GEOBLENDER_OT_des_propose_road(_ClearsEntityPreview, _CreatesInSteps, _Cal
 
         preview = _entity_preview()
         try:
-            preview.enable(preview.EntityPlan(road=RoadAsk(request=request)))
+            preview.enable(preview.EntityPlan(road=RoadAsk(request=request, propose=True)))  # una propuesta no es una entidad: no se rechaza la partida que ya ocupa otra (T44, D-1)
         except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
             self.report({"ERROR"}, tr("The preview of the entity could not be shown: {detail}", detail=design_error_text(exc)))
             return {"CANCELLED"}
@@ -9385,7 +9392,14 @@ class GEOBLENDER_OT_des_propose_road(_ClearsEntityPreview, _CreatesInSteps, _Cal
         if self._saved:
             self._saved = False
             return {"FINISHED"}
-        return _CalculateAndCreate._finished(self, context, opened)
+        done = _CalculateAndCreate._finished(self, context, opened)
+        self._show_calculated(opened)  # con su vista previa activa, **el eje con su rasante** de lo que dejó «Calcular» (T44, D-1)
+        return done
+
+    @staticmethod
+    def _show_calculated(opened: Any) -> None:
+        """Con la vista previa de **esta propuesta** activa, la cambia por la de lo que dejó «Calcular» (``opened``: el cálculo abierto): el eje con su rasante, sin sección. Solo lee."""
+        _show_calculated_preview(opened, propose=True)
 
     def _create(self, context: Any) -> set[str]:
         """«Crear» (RF-017-28, RF-015-02): registra la propuesta —**la capa de líneas con Z editable en QGIS** y la operación, en una transacción— sin más confirmación que el botón (no graba ninguna superficie: la
