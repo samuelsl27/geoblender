@@ -22,6 +22,8 @@ Las pruebas, en el orden de sus letras sobre el mismo estado.
 - RF-017-03 (g): un ramal parte del eje de otra pista a una abscisa; la pista a una cota y su zona (la rampa).
 - RF-015-08, RF-015-01, RF-017-27, RF-017-03, D-13 (g·b, T29c): «Cambiar parámetro…» de una pista: renombrarla funciona, no la deja obsoleta y la capa de ejes dice el nombre nuevo; el nombre vacío o repetido
   se rechaza sin escribir; la cota que da a mano la persona queda suya.
+- RF-017-04, RF-017-07, RF-015-15, RF-017-03 (g·c y g·d, T40 y T49): «Cambiar parámetro…» de un valor del perfil (con el ámbito de la versión **y el del proyecto**), del origen y de las dependencias
+  declaradas de una pista rechaza lo que rechazaría crearla, sin escribir; el gancho del núcleo llama sin versión solo a la comprobación que lo pidió (``project_scope``).
 - RF-017-29, RF-015-28 (h): la orden sale desactivada con su motivo con el proyecto en solo lectura, con la versión activa no editable y sin versión activa.
 - RF-017-26, RF-017-30 (i, T45; D-3): «Crear» **por pasos** desde la interfaz (la vía real) quita la vista previa en cuanto lo guardado llega.
 - Principio 8 (z): desactivar Geoblender quita la orden y no deja nada.
@@ -755,28 +757,98 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
         (``des.roadprofile.{p}.*``) rechaza lo que rechaza «Perfil de pista…» —el radio mínimo menor que la semianchura de la sección (3 m con 5,75 m), mayor que el radio de las curvas (R = 5 m con
         Rmín = 12 m) y el ángulo de desmonte de 90°, que la definición admite y RF-017-04 excluye— y el **origen de una pista en el eje de otra que ya se apoya en ella** (el ciclo: el ramal sale de la
         pista principal y esta no puede salir del ramal), cada uno con su texto, el perfil o la pista, el campo y el valor, y **sin escribir nada** (antes se escribían y «Recalcular lo obsoleto»
-        daba ``FAILED`` hasta corregirlos)."""
+        daba ``FAILED`` hasta corregirlos). **T49 (hallazgos T47-1 y T47-2):** lo mismo con el **ámbito proyecto** (el que propone el diálogo cuando la versión no tiene valor propio: un valor del
+        proyecto llega a las versiones que no tienen el suyo) con los valores del proyecto del perfil —antes se aceptaban los cuatro: ``min_radius_m = 3``, ``curve_radius_m = 5``, ``berm_m = 20``
+        y ``cut_angle_deg = 90``—, y las **dependencias declaradas a mano** (``supports``) de una pista que cierran el ciclo."""
         self.refresh()
         self.assertEqual(bpy.ops.geoblender.core_set_active_version(version_uid=self.v01.uid), {"FINISHED"})
         branch = self.code_of(BRANCH)
         first = str(self.parameter_row(branch, "origin")[0]).partition("@")[0]  # la pista principal: de la que sale el ramal (el nombre de la primera lo cambió la prueba anterior)
         profile = "des.roadprofile.pista_principal"
 
-        def change(key: str, value: str) -> set[str]:
-            return bpy.ops.geoblender.core_set_parameter("EXEC_DEFAULT", key=key, value=value, scope="VERSION", decided_by=PERSON, reason=REASON, source="Criterio de la prueba")
+        def change(key: str, value: str, scope: str = "VERSION") -> set[str]:
+            return bpy.ops.geoblender.core_set_parameter("EXEC_DEFAULT", key=key, value=value, scope=scope, decided_by=PERSON, reason=REASON, source="Criterio de la prueba")
 
         before = self.state()
         origin = f"des.road.{first.lower().replace('-', '_')}.origin"
+        supports = f"des.road.{branch.lower().replace('-', '_')}.supports"  # la fila de las dependencias la tiene el ramal (apoyado en la principal), no la principal
         for key, value, text, field in ((f"{profile}.min_radius_m", "3", "es menor que la semianchura de su sección", f"{profile}.min_radius_m"),
                                         (f"{profile}.curve_radius_m", "5", "es mayor que el radio de sus curvas", f"{profile}.min_radius_m"),  # el rechazo nombra el radio mínimo, como «Perfil de pista…»
                                         (f"{profile}.cut_angle_deg", "90", "está fuera de su rango", f"{profile}.cut_angle_deg"),
-                                        (origin, f"{branch}@5", f"declara que se apoya en {branch}", origin)):
+                                        (origin, f"{branch}@5", f"declara que se apoya en {branch}", origin),
+                                        (supports, branch, f"declara que se apoya en {branch}", supports)):  # T49 (T47-2): lo que declara a mano (aquí, en sí mismo), igual que su origen
             with self.subTest(key=key), self.assertRaises(RuntimeError) as caught:
                 change(key, value)
             self.assertIn(text, str(caught.exception))
             self.assertIn(field, str(caught.exception))
             self.assertNotIn("Traceback", str(caught.exception))
             self.assertEqual(self.state(), before, "el rechazo no escribe nada")
+        # T49 (T47-1): lo mismo con el ámbito PROYECTO (el que propone el diálogo cuando la versión no tiene valor propio: lo del proyecto llega a las versiones que no tienen el suyo), con los valores del
+        # PROYECTO del perfil (los de V01 son de V01 y no se leen). Hasta la T49 se aceptaban los cuatro (``FINISHED``) y «Recalcular lo obsoleto» daba ``FAILED``.
+        profiles, dparams = platform_ops._module("design.road_profiles"), platform_ops._module("design.params")
+        reference = {param: getattr(rd.PROFILE, "class_name" if param.value == "class" else param.value) for param in dparams.RoadProfileParam
+                     if param.value not in ("mesh_factor", "metric")}  # los trece que se declaran siempre: el factor de malla y la métrica ya tienen su valor por defecto en el proyecto
+        profiles.edit_road_profiles(self.project, (profiles.ProfileEdit(code="pista_principal", values=reference),), profiles.ProfileDeclaration("ITC 07.1.03 de la prueba", PERSON, REASON))
+        before = self.state()
+        for key, value, text, field in ((f"{profile}.min_radius_m", "3", "es menor que la semianchura de su sección", f"{profile}.min_radius_m"),
+                                        (f"{profile}.curve_radius_m", "5", "es mayor que el radio de sus curvas", f"{profile}.min_radius_m"),
+                                        (f"{profile}.berm_m", "20", "es menor que la semianchura de su sección", f"{profile}.min_radius_m"),
+                                        (f"{profile}.cut_angle_deg", "90", "está fuera de su rango", f"{profile}.cut_angle_deg")):
+            with self.subTest(scope="PROJECT", key=key):
+                with self.assertRaises(RuntimeError) as caught:
+                    change(key, value, "PROJECT")
+                self.assertIn(text, str(caught.exception))
+                self.assertIn(field, str(caught.exception))
+                self.assertNotIn("Traceback", str(caught.exception))
+                self.assertEqual(self.state(), before, "el rechazo no escribe nada")
+        self.assertEqual(change(f"{profile}.min_radius_m", "6", "PROJECT"), {"FINISHED"}, "un valor bueno se admite en el ámbito proyecto")
+        ((stored,),) = self.rows("SELECT value FROM gb_parameter WHERE key = ? AND scope = 'project'", f"{profile}.min_radius_m")
+        self.assertEqual(json.loads(stored), 6.0)
+
+    # --- g·d: el gancho de «Cambiar parámetro…» sin versión (T49) ------------------------------------
+
+    def test_g_d_a_check_is_called_without_a_version_only_if_it_asked_for_it(self) -> None:
+        """RF-015-08, RF-017-04, RF-017-07 (T49; hallazgo T47-1): ``core_provenance.check_parameter_change`` sigue sin llamar a ninguna comprobación con el cambio **del proyecto** (sin versión)
+        —las reglas de las entidades de la 015 y la 016 son de una versión: sin cambio—, **salvo a la que se registró con ``project_scope=True``**, que recibe ``None`` por versión; con versión,
+        a todas las de su principio. ``des`` la pide solo para los valores del perfil de pista (``des.roadprofile.``): ningún principio de entidad la lleva. Volver a registrar un principio sin
+        ``project_scope`` se la quita y desregistrar quita la comprobación y el aviso."""
+        core, des_ops = platform_ops._module("bl.ops.core_provenance"), platform_ops._module("bl.ops.des")
+        self.assertEqual(core._PROJECT_SCOPE_CHECKS, {des_ops.ROAD_PROFILE_PARAMETER_PREFIX})  # noqa: SLF001
+        self.assertIs(core._PARAMETER_CHECKS[des_ops.ROAD_PROFILE_PARAMETER_PREFIX], des_ops._check_road_profile_parameter)  # noqa: SLF001
+        calls: list[tuple[str, str | None]] = []
+
+        def only_with_a_version(_project: Any, key: str, _value: Any, version: str | None) -> None:
+            calls.append(("versión", version))
+
+        def also_for_the_project(_project: Any, key: str, _value: Any, version: str | None) -> None:
+            calls.append(("proyecto", version))
+
+        core.register_parameter_check("des.zzt49a.", only_with_a_version)
+        self.addCleanup(core.unregister_parameter_check, "des.zzt49a.", only_with_a_version)
+        core.register_parameter_check("des.zzt49b.", also_for_the_project, project_scope=True)
+        self.addCleanup(core.unregister_parameter_check, "des.zzt49b.", also_for_the_project)
+        core.check_parameter_change("proyecto", "des.zzt49a.x.y", 1, None)
+        core.check_parameter_change("proyecto", "des.zzt49b.x.y", 1, None)
+        core.check_parameter_change("proyecto", "des.otro.x.y", 1, None)
+        self.assertEqual(calls, [("proyecto", None)])
+        calls.clear()
+        core.check_parameter_change("proyecto", "des.zzt49a.x.y", 1, "uid-v01")
+        core.check_parameter_change("proyecto", "des.zzt49b.x.y", 1, "uid-v01")
+        self.assertEqual(calls, [("versión", "uid-v01"), ("proyecto", "uid-v01")])
+        core.register_parameter_check("des.zzt49b.", also_for_the_project)  # sin la petición, vuelve a ser de una versión
+        self.assertNotIn("des.zzt49b.", core._PROJECT_SCOPE_CHECKS)  # noqa: SLF001
+        calls.clear()
+        core.check_parameter_change("proyecto", "des.zzt49b.x.y", 1, None)
+        self.assertEqual(calls, [])
+        core.register_parameter_check("des.zzt49b.", also_for_the_project, project_scope=True)
+        core.unregister_parameter_check("des.zzt49b.", lambda *_args: None)  # lo que otro registró es suyo: no se quita
+        self.assertIn("des.zzt49b.", core._PROJECT_SCOPE_CHECKS)  # noqa: SLF001
+        core.unregister_parameter_check("des.zzt49b.", also_for_the_project)
+        core.unregister_parameter_check("des.zzt49b.", also_for_the_project)  # idempotente
+        self.assertNotIn("des.zzt49b.", core._PARAMETER_CHECKS)  # noqa: SLF001
+        self.assertNotIn("des.zzt49b.", core._PROJECT_SCOPE_CHECKS)  # noqa: SLF001
+        for prefix in des_ops.PARAMETER_PREFIXES:
+            self.assertNotIn(prefix, core._PROJECT_SCOPE_CHECKS, prefix)  # noqa: SLF001
 
     # --- h: desactivada con su motivo ---------------------------------------------------------------
 

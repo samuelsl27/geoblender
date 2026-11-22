@@ -1092,6 +1092,19 @@ def support_cycle(project: StoreProject, version: Version, registry: EntityRegis
     return None if path is None else _cycle_reason(registry, path)
 
 
+def _check_declared_supports_cycle(registry: EntityRegistry, reads: Mapping[str, Sequence[str]], name: str, code: str, text: str | None, field: str, version_code: str) -> None:
+    """RF-015-15, RF-017-03 (spec 017, T49; hallazgo T47-2): ninguna de las dependencias que la persona declara a mano en la pista ``code`` (``name``; ``text``: los códigos separados por comas de
+    ``des.road.{e}.supports``, :func:`_declared`) es ella misma, depende de ella (lo que parte de su superficie, aguas abajo de su cadena) ni es una pista que la pisa por su origen o su destino
+    (``reads``: :func:`_point_reads`; :func:`~.entities.support_path`): cambiarlo cerraría un ciclo (``des.entity_supports_unknown`` con el recorrido en el motivo, el valor entero de la lista y la
+    primera dependencia que lo cierra). Un código que la versión no tiene no se comprueba aquí (lo dice el cálculo: ``_SUPPORT_MISSING``). ``field`` es la clave de lo que se rechaza
+    (``des.road.{e}.supports``)."""
+    for target in _declared(text):
+        path = entities.support_path(registry.records, reads, code, target)
+        if path is not None:
+            raise DesignError("des.entity_supports_unknown", obj=_entity_object(code, name), field=field, value=text, entity=name, target=target,
+                              reason=_cycle_reason(registry, path), version=version_code)
+
+
 def _check_reference_cycle(registry: EntityRegistry, reads: Mapping[str, Sequence[str]], name: str, code: str, param: str, text: str | None, field: str,
                            version_code: str) -> None:
     """RF-015-15, RF-017-03, RF-017-04 (spec 017, T40; hallazgo A-2): el origen o el destino ``text`` de la pista ``code`` (``name``) no es ella misma ni una
@@ -1488,8 +1501,16 @@ referencia de la cadena."""
 
 def _ruled(kind: str, param: str) -> bool:
     """Si el cambio del valor ``param`` de una entidad de tipo ``kind`` pasa por las reglas entre entidades (:data:`_COMMON_RULED`, la
-    superficie conocida de los tipos que la tienen, :data:`_KNOWN_SURFACES`, y el origen y el destino de la pista, :data:`_POINT_REFERENCES`)."""
-    return param in _COMMON_RULED or (kind in _KNOWN_SURFACES and param == _KNOWN_SURFACES[kind].value) or _is_point_reference(kind, param)
+    superficie conocida de los tipos que la tienen, :data:`_KNOWN_SURFACES`, el origen y el destino de la pista, :data:`_POINT_REFERENCES`,
+    y las dependencias que declara la pista, :func:`_is_declared_supports`)."""
+    return (param in _COMMON_RULED or (kind in _KNOWN_SURFACES and param == _KNOWN_SURFACES[kind].value) or _is_point_reference(kind, param)
+            or _is_declared_supports(kind, param))
+
+
+def _is_declared_supports(kind: str, param: str) -> bool:
+    """Si ``param`` son las **dependencias que declara a mano la persona** (``supports``: códigos separados por comas) de una pista (spec 017, T49; hallazgo T47-2). Solo la pista: las demás
+    entidades, sin cambio (su ciclo lo rechaza el cálculo, como siempre)."""
+    return kind == EntityKind.ROAD and param == RoadParam.SUPPORTS.value
 
 
 def _is_point_reference(kind: str, param: str) -> bool:
@@ -1533,6 +1554,9 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
       (``RDW-001@100``) o una entidad (``entity:PLT-001``)—, no pueden ser ella misma, lo que parte de su superficie ni una pista que **ya se
       apoya en ella**, directa o por otras (:func:`_check_reference_cycle`, :func:`~.entities.support_path`: ``des.entity_supports_unknown`` con
       el recorrido del ciclo); un punto de la capa o ningún valor no tiene regla.
+    - ``supports`` **de la pista** (spec 017, T49; hallazgo T47-2): las dependencias que la persona declara a mano (códigos separados por comas) pasan por la misma regla del
+      ciclo que su origen y su destino (:func:`_check_declared_supports_cycle`: ninguna es ella misma, lo que parte de su superficie ni una pista que ya se apoya en ella;
+      ``des.entity_supports_unknown`` con el valor entero y el recorrido); un código que la versión no tiene no se comprueba aquí (lo dice el cálculo). Los de los demás tipos, sin cambio.
     - ``mode``, ``protect`` y ``guard_m``: con lo que quedaría la entidad, no protege en «en corte y relleno»
       (``des.platform_protect_cut_fill``; solo la plataforma tiene modo) ni sin resguardo (``des.entity_param_missing``;
       :func:`_check_protection`: lo mismo que comprueba al declarar). Y **``protect`` verdadero solo en un tipo que declara** algo
@@ -1565,7 +1589,7 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
                 if item.value in spec.names}
         resolved = ParameterStore(project).resolve_many(
             conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=chosen.uid)
-        reads = _point_reads(project, conn, registry, chosen.uid) if _is_point_reference(str(kind), param) else {}
+        reads = _point_reads(project, conn, registry, chosen.uid) if _is_point_reference(str(kind), param) or _is_declared_supports(str(kind), param) else {}
     now = {item: (resolved[name].value if resolved.get(name) is not None else spec.template(item.value).default)
            for name, item in keys.items()}
     record = entry.record
@@ -1593,6 +1617,8 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
         _check_support_cycle(registry, record.name, code, surface, key, chosen.code)
     elif _is_point_reference(str(kind), param):  # el origen y el destino de una pista: lo que pisa (spec 017, T40; A-2)
         _check_reference_cycle(registry, reads, record.name, code, param, None if value is None else str(value), key, chosen.code)
+    elif _is_declared_supports(str(kind), param):  # las dependencias que la persona declara a mano en una pista (spec 017, T49; T47-2)
+        _check_declared_supports_cycle(registry, reads, record.name, code, None if value is None else str(value), key, chosen.code)
     else:
         if param == PlatformParam.PROTECT and value is True and kind not in _DECLARES:  # lo que no declara nada no protege (T48)
             words = _NO_DECLARATION.get(kind, (kind, kind))

@@ -2976,6 +2976,16 @@ CATALOG: tuple[Message, ...] = (
         "Capa «{layer}», pista «{entity}»: «{field}» = «{value}»: la línea repite el vértice {vertex} "
         "(x = {x} m, y = {y} m); quite el vértice repetido; no se crea nada.",
     ),
+    # T49 (hallazgo T47-3): una línea que vuelve por el mismo camino (A → B → A) no se corta a sí misma —sus dos tramos son contiguos—, pero su eje no tiene longitud.
+    Message(
+        "des.road_line_doubles_back",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}»: the line goes back over itself at x = {x} m, "
+        "y = {y} m (it returns along the same path), so its axis has no length; draw a line that does not return "
+        "along its own path; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}»: la línea vuelve sobre sí misma en x = {x} m, "
+        "y = {y} m (regresa por el mismo camino) y su eje no tiene longitud; dibuje una línea que no regrese por su "
+        "propio camino; no se crea nada.",
+    ),
     # T23-a (decisión de la sesión principal, 20/11/2026): una capa de entidades solo guarda X e Y; la Z llega por una capa de líneas
     # 3D (``gis_brk_``) o por la capa propuesta de «Proponer el trazado…».
     Message(

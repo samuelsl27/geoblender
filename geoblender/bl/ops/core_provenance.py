@@ -180,7 +180,10 @@ ADR-0025).
   (:func:`register_recompute_after`: sus pasos corren en el mismo modal antes de decir lo que pasó, y no si se canceló;
   **Esc vale también mientras corren** —se cierra el paso en curso, no corre lo que falta y el resultado dice que se
   canceló—, T49: hasta entonces se ignoraba y la capa de entidades se escribía entera tras Esc). Y, de la spec 017 (T29c), lo que
-  **añade** al cambio antes de escribirlo (:func:`register_parameter_adjust`: la pista deja suya la cota que la persona da a mano).
+  **añade** al cambio antes de escribirlo (:func:`register_parameter_adjust`: la pista deja suya la cota que la persona da a mano) y
+  que su comprobación valga también con el cambio **del proyecto** (``register_parameter_check(…, project_scope=True)``, T49: un valor del
+  perfil de pista que el proyecto da a las versiones que no tienen el suyo se comprueba antes de escribirlo; las reglas de las entidades
+  son de una versión y no cambian).
 
 ``core.i18n`` no tiene cómo quitar traducciones: :func:`unregister` las deja (como los
 trabajos de la 004), y volver a registrar las instala otra vez sin cambiar nada.
@@ -1687,31 +1690,43 @@ type ParameterCheck = Callable[[Any, str, Any, str], None]
 ``check(proyecto, clave, valor, uid de la versión)``, que lanza un error de Geoblender (con su texto en el idioma de
 la persona: :func:`error_text`) si el ``valor`` nuevo rompe una regla que el tipo y el rango de la definición no
 pueden decir (las reglas **entre** entidades de la 015: nombre único, una entidad por superficie, sin ciclos, no
-proteger en «en corte y relleno»), y **solo lee**: se llama antes de abrir la transacción que escribe."""
+proteger en «en corte y relleno»), y **solo lee**: se llama antes de abrir la transacción que escribe. **Con el cambio del proyecto
+(sin versión) solo se llama a la que se registró con ``project_scope=True``** (spec 017, T49), y entonces el último argumento es
+``None``: puede venirle ``None`` aunque aquí se anote ``str``."""
 _PARAMETER_CHECKS: dict[str, ParameterCheck] = {}
+_PROJECT_SCOPE_CHECKS: set[str] = set()
+"""Los principios de ``_PARAMETER_CHECKS`` cuya comprobación **también** se llama con el cambio del proyecto (sin versión): lo que un valor del
+proyecto causa en las versiones que lo heredan no se puede decir sin ellas, pero **una parte de la regla no las necesita** (spec 017, T49)."""
 
 
-def register_parameter_check(prefix: str, check: ParameterCheck) -> None:
+def register_parameter_check(prefix: str, check: ParameterCheck, *, project_scope: bool = False) -> None:
     """Registra ``check`` para las claves de parámetro que empiezan por ``prefix`` (``des.platform.``); el que había
-    con ese principio, si lo había, se sustituye (idempotente)."""
+    con ese principio, si lo había, se sustituye (idempotente). Con ``project_scope`` (**opcional**, falso por defecto: las
+    reglas de las entidades de la 015 y la 016 son de una versión), la comprobación se llama también cuando el cambio es **del
+    proyecto** (sin versión: ``version_uid`` es ``None``) y es **ella** quien decide qué comprobar sin una versión (spec 017, T49:
+    el rango de un valor del perfil de pista y sus reglas cruzadas con los valores del proyecto)."""
     _PARAMETER_CHECKS[prefix] = check
+    if project_scope:
+        _PROJECT_SCOPE_CHECKS.add(prefix)
+    else:
+        _PROJECT_SCOPE_CHECKS.discard(prefix)
 
 
 def unregister_parameter_check(prefix: str, check: ParameterCheck) -> None:
-    """Quita la comprobación de ``prefix`` si es ``check`` (lo que otro registró después es suyo); idempotente."""
+    """Quita la comprobación de ``prefix`` si es ``check`` (lo que otro registró después es suyo), y con ella su ``project_scope``; idempotente."""
     if _PARAMETER_CHECKS.get(prefix) is check:
         del _PARAMETER_CHECKS[prefix]
+        _PROJECT_SCOPE_CHECKS.discard(prefix)
 
 
 def check_parameter_change(project: Any, key: str, value: Any, version_uid: str | None) -> None:
     """Las comprobaciones registradas (:func:`register_parameter_check`) del cambio del valor de ``key`` a ``value`` en
-    la versión ``version_uid`` (``None``: el cambio es del proyecto, sin versión: ninguna de las de un módulo
-    se aplica). Lo que rechazan, lo lanzan; no escribe nada."""
-    if version_uid is None:
-        return
+    la versión ``version_uid`` (``None``: el cambio es del proyecto, sin versión: **solo** se aplican las registradas con
+    ``project_scope=True``, con ``None`` por versión; las demás, las reglas de las entidades, son de una versión y no se
+    aplican). Lo que rechazan, lo lanzan; no escribe nada."""
     for prefix, check in tuple(_PARAMETER_CHECKS.items()):
-        if key.startswith(prefix):
-            check(project, key, value, version_uid)
+        if key.startswith(prefix) and (version_uid is not None or prefix in _PROJECT_SCOPE_CHECKS):
+            check(project, key, value, version_uid)  # type: ignore[arg-type]
 
 
 # --- Lo que un módulo añade al cambio de sus parámetros (spec 017, T29c) ----------------------

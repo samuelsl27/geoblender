@@ -854,14 +854,15 @@ def _first_crossing(points: np.ndarray) -> tuple[float, float] | None:
 
 def _read_line(layer: FeatureLayer, index: int, name: str, request: RoadRequest, code: str) -> np.ndarray:
     """La línea de la geometría ``index`` de una capa de líneas en absolutas float64 ``(k, 2)``, **sin corregirla** (RF-017-18) y con los rechazos de RF-017-04, en este orden: de
-    varias partes (``des.road_line_multipart``), sin longitud (``des.road_line_no_length``), con un vértice repetido (``des.road_line_repeated_vertex``, con su número desde 1 y su
+    varias partes (``des.road_line_multipart``), sin longitud (``des.road_line_no_length``: ningún tramo pasa de la tolerancia con que el eje toma un punto por el anterior,
+    ``road_axis._REPEAT_M``, y no solo la igualdad exacta: T49, hallazgo T47-3), con un vértice repetido (``des.road_line_repeated_vertex``, con su número desde 1 y su
     lugar) y que se corta a sí misma (``des.road_line_self_intersects``, con el lugar del cruce)."""
     parts = layer.parts[index]
     field = RoadParam.FEATURE
     if len(parts) != 1:
         raise _reject("des.road_line_multipart", request, code, field, name, parts=len(parts))
     line = np.asarray(parts[0][0], dtype=np.float64).reshape(-1, 2)
-    if len(line) < 2 or bool((line == line[0]).all()):
+    if len(line) < 2 or not bool((np.hypot(*np.diff(line, axis=0).T) > road_axis._REPEAT_M).any()):  # noqa: SLF001  (la misma tolerancia que ``road_axis._distinct``)
         raise _reject("des.road_line_no_length", request, code, field, name)
     repeated = np.flatnonzero((np.diff(line, axis=0) == 0.0).all(axis=1))
     if repeated.size:
@@ -1802,9 +1803,22 @@ def _form_axis(job: RoadJob, route: road_route.Route | None, arrival: road_route
             assert route is not None and arrival is not None and job.route is not None
             destination = (arrival.x, arrival.y) if isinstance(geometry.destination, LevelDestination) else geometry.destination
             return road_axis.axis_of(route.centers, *radii, simplify_m=job.route.simplify_m, origin=geometry.origin, destination=destination)
-        return road_axis.axis_of(geometry.line, *radii, reject_below_minimum=job.mode is not RoadMode.AXIS_3D)
+        axis = road_axis.axis_of(geometry.line, *radii, reject_below_minimum=job.mode is not RoadMode.AXIS_3D)
     except road_axis.RadiusBelowMinimum as error:
         raise error.error(layer=job.request.layer, entity=job.request.name, profile=profile) from None
+    if len(axis.stations) < 2:  # T49 (T47-3): una línea que vuelve por el mismo camino (A → B → A) da un eje sin longitud, que en «eje 3D» no rechaza el radio (es un aviso)
+        raise _doubles_back_error(job, axis)
+    return axis
+
+
+def _doubles_back_error(job: RoadJob, axis: road_axis.Axis) -> DesignError:
+    """RF-017-04, RF-017-18 (T49; hallazgo T47-3): la línea de la pista vuelve sobre sí misma por el mismo camino (sus dos tramos contiguos se solapan: no cuentan como un cruce) y su eje no tiene
+    longitud (``des.road_line_doubles_back``, con el lugar del giro). El campo es la geometría de la pista y su valor, lo que pidió la persona (la línea por su nombre o su ``fid``; si el
+    trabajo no lo lleva, las coordenadas del giro)."""
+    turn = axis.curves[0] if axis.curves else None
+    x, y = (turn.x, turn.y) if turn is not None else (float(axis.vertices[0][0]), float(axis.vertices[0][1]))
+    value = job.request.feature if job.request.feature is not None else f"{x:.2f}, {y:.2f}"
+    return _reject("des.road_line_doubles_back", job.request, job.code, RoadParam.FEATURE, value, x=round(x, 2), y=round(y, 2))
 
 
 def _terrain_on(job: RoadJob, axis: road_axis.Axis, shown: str) -> np.ndarray:

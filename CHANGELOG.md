@@ -142,7 +142,7 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     pendiente máxima de diseño y la media máxima, el paso de la rasante, el radio y el radio mínimo, los ángulos de desmonte y de terraplén, el
     alcance, la clase normativa, el factor de malla y la métrica), cada uno con su fuente y quién lo decidió. Se enseñan también la calzada, la
     sección, su semianchura y la longitud mínima para salvar un desnivel, que se derivan y no se editan. Un perfil incompleto o con un valor fuera
-    de rango se rechaza con el perfil, el campo y el valor, sin escribir nada, y «Cambiar parámetro…» de un valor del perfil rechaza lo mismo.
+    de rango se rechaza con el perfil, el campo y el valor, sin escribir nada, y «Cambiar parámetro…» de un valor del perfil rechaza lo mismo, también si el cambio es para el proyecto (con los valores del proyecto del perfil).
   - **Pista…**, en **tres modos**: **Trazar**, de un origen a un destino (un punto, una plataforma o una cota dentro de una zona, que es la
     **rampa**; el origen puede ser un punto del eje de otra pista, y así sale un ramal); **Sobre un eje**, con una línea dibujada a la que se
     ajustan las curvas y se da la rasante; y **Eje 3D**, con una línea con su Z (una línea de rotura o la propuesta de «Proponer el trazado…»),
@@ -183,7 +183,7 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     también las pistas traídas de otra versión (el ramal, después de su pista), con el campo de nombres por defecto de su capa, y «Calcular…» lo avisa
     cuando la capa tiene más de un campo de texto; «Cambiar parámetro…» renombra una pista sin dejarla obsoleta y
     una cota que da la persona no se vuelve a derivar al recalcular; una pista no puede apoyarse en una que ya se apoya en ella (se rechaza, con el
-    recorrido del ciclo), y un ramal cuyo origen deja de estar en el eje de su pista deja de apoyarse en ella; la accesibilidad no se trae a otra versión (se vuelve a calcular). **Las tres
+    recorrido del ciclo, también si lo declara a mano en «Cambiar parámetro…»), y un ramal cuyo origen deja de estar en el eje de su pista deja de apoyarse en ella; la accesibilidad no se trae a otra versión (se vuelve a calcular). **Las tres
     órdenes provisionales** que había en ese grupo, la herramienta «Pista», «Ruta 3D con pendiente máxima…» y «Grabar las pistas en la
     superficie», **desaparecen** del menú: la pista graba al crearse y su ruta sale de **Pista…** y de **Proponer el trazado…**.
   - **Lo que no hace todavía**: **no se ha visto en pantalla** (sí con las órdenes reales, sin su interfaz) ni se ha contrastado con los datos

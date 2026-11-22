@@ -38,6 +38,7 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.road_line_no_length": ("error", "RF-017-04", GEOMETRY),
     "des.road_line_multipart": ("error", "RF-017-04", {*GEOMETRY, "parts"}),
     "des.road_line_repeated_vertex": ("error", "RF-017-04", {*GEOMETRY, "vertex", *POSITION}),
+    "des.road_line_doubles_back": ("error", "RF-017-04", {*GEOMETRY, *POSITION}),  # T49 (T47-3): la línea que vuelve por el mismo camino no tiene eje
     "des.road_line_no_z": ("error", "RF-017-04", GEOMETRY),
     # RF-017-04 y 07: el perfil de pista (inexistente, repetido, incompleto, fuera de rango, con un radio mínimo que no cabe).
     "des.road_profile_unknown": ("error", "RF-017-04", {*GEOMETRY, "profiles"}),

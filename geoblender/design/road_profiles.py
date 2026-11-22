@@ -442,10 +442,17 @@ def check_profile_change(project: OperationProject, key: str, value: object, *, 
     y, si no, los del proyecto) con él, el radio mínimo ni pasa del radio de las curvas ni es menor que la semianchura de la sección
     (:func:`~design.params.check_road_profile_radii`). ``DesignError`` ``des.road_profile_value_range``, ``_radius_order`` o ``_radius_narrow`` nombrando el perfil (su
     nombre, o su código si no lo tiene), la clave del campo y el valor, **sin escribir nada** (el contador de cambios de la base no se mueve); un perfil sin todos sus valores no
-    tiene con qué cruzarse y solo se mira su rango. No hace nada si ``key`` no es de un valor de un perfil de pista, ``version`` es ``None`` (el cambio es del proyecto: sus
-    valores no se leen con otro ámbito) o el valor no tiene valor (lo dice la definición del parámetro). Solo lee."""
+    tiene con qué cruzarse y solo se mira su rango.
+
+    **Con ``version`` ``None`` (el cambio es del proyecto; spec 017, T49, hallazgo T47-1)** se comprueba lo mismo con **los valores del proyecto** del perfil, que es lo que
+    «Perfil de pista…» hace con el ámbito proyecto: el **rango de cada valor, siempre**, y las reglas **cruzadas** (Rmín frente a R y a la semianchura) cuando el proyecto tiene los demás
+    valores del perfil con él. Un valor del proyecto llega a las versiones que no tienen el suyo (el diálogo propone el ámbito proyecto cuando la versión no tiene valor propio), y sin
+    esto se aceptaba lo que el ámbito versión rechaza y «Recalcular lo obsoleto» daba ``FAILED`` en cada pista que lo heredaba. **No lee ninguna versión**: lo que una versión con valores propios
+    de los demás cruzaría con el valor nuevo —los valores efectivos son los de la versión y, si no, los del proyecto— no se puede decir desde el proyecto y lo rechaza el cálculo de la pista
+    (``des.road_profile_radius_order`` o ``_radius_narrow``, legible, sin crear nada). No hace nada si ``key`` no es de un valor de un perfil de pista o el valor no tiene valor (lo dice la
+    definición del parámetro). Solo lee."""
     found = parse_profile_key(key)
-    if found is None or version is None or value is None:
+    if found is None or value is None:
         return
     code, param = found
     with project.read() as conn:

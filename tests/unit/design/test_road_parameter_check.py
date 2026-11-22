@@ -55,6 +55,8 @@ FREE_ROADS: dict[str, tuple[str, dict[str, Any]]] = {
 PROFILE = "pista_principal"
 """El perfil de pista de las pruebas (con los valores de referencia de IMGA, ``rd.PROFILE``: A 3,5 m, f 3, arcén 0, caballón 1 m —semianchura 5,75 m—, R 20 m y Rmín 12 m), escrito como parámetros de V01
 por ``RoadParameterTest``."""
+PROJECT_PROFILE = "pista_del_proyecto"
+"""El mismo perfil de referencia, pero con sus quince valores **del proyecto** (sin versión; spec 017, T49, hallazgo T47-1): lo que ven las versiones que no tienen valor propio."""
 
 
 def key(code: str, param: str) -> str:
@@ -66,7 +68,8 @@ class RoadParameterCase(efx.EntityProjectCase):
 
     @classmethod
     def write_extra(cls) -> None:
-        """Lo que solo necesita una clase (spec 017, T40): el perfil de pista de ``PROFILE`` con sus quince valores (A-1) y las dos pistas libres de ``FREE_ROADS`` (A-2), como parámetros de V01."""
+        """Lo que solo necesita una clase (spec 017, T40): el perfil de pista de ``PROFILE`` con sus quince valores (A-1) y las dos pistas libres de ``FREE_ROADS`` (A-2), como parámetros de V01 y, de la T49, el mismo
+        perfil con los quince valores del proyecto (``PROJECT_PROFILE``, T47-1)."""
         core_params.register_families(design_params.ROAD_PROFILE_FAMILIES)
         store = core_params.ParameterStore(cls.project)
         with cls.project.write_transaction() as conn:
@@ -77,6 +80,8 @@ class RoadParameterCase(efx.EntityProjectCase):
                 value = getattr(rd.PROFILE, "class_name" if item is design_params.RoadProfileParam.CLASS else item.value)
                 store.create(conn, design_params.road_profile_key(PROFILE, item), value, kind="ADOPTADO", source="Prueba de la T40 de la 017", source_kind="person", decided_by=PERSON,
                              reason="Prueba de la T40", version=cls.v1.code)
+                store.create(conn, design_params.road_profile_key(PROJECT_PROFILE, item), value, kind="ADOPTADO", source="Prueba de la T49 de la 017", source_kind="person", decided_by=PERSON,
+                             reason="Prueba de la T49")  # el del proyecto: sin versión
         cls.clock.advance(minutes=1)
 
     STEP_M = qfx.COARSE_STEP_M
@@ -125,6 +130,24 @@ class RoadParameterCase(efx.EntityProjectCase):
         before = self.snapshot()
         self.check(param_key, new)
         self.assertEqual(self.snapshot(), before)
+
+    def project_check(self, param: str, value: object, *, profile: str = PROJECT_PROFILE) -> None:
+        """La comprobación de «Cambiar parámetro…» de un valor del perfil ``profile`` **para el proyecto** (sin versión; spec 017, T49)."""
+        road_profiles.check_profile_change(self.project, design_params.road_profile_key(profile, param), value, version=None)
+
+    def refused_in_project(self, param: str, value: object, expected: str, field: str, shown: object) -> Any:
+        """Cambiar el valor ``param`` del perfil del proyecto (``PROJECT_PROFILE``) a ``value`` **para el proyecto** se rechaza con ``expected``, nombrando el perfil, el campo ``field`` y lo que se ve de él
+        (``shown``), con el mismo texto que «Perfil de pista…» en ese ámbito. Devuelve el error."""
+        with self.assertRaises(messages.DesignError) as caught:
+            self.project_check(param, value)
+        error = caught.exception
+        self.assertEqual((error.code, error.values["field"], error.values["value"], error.values["profile"]),
+                         (expected, design_params.road_profile_key(PROJECT_PROFILE, field), shown, PROJECT_PROFILE))
+        edited = {item.value: getattr(rd.PROFILE, "class_name" if item is design_params.RoadProfileParam.CLASS else item.value) for item in design_params.RoadProfileParam}
+        with self.assertRaises(messages.DesignError) as dialog:
+            design_params.check_road_profile(PROJECT_PROFILE, PROJECT_PROFILE, {**edited, param: value})
+        self.assertEqual((error.code, error.text, error.text_in("en")), (dialog.exception.code, dialog.exception.text, dialog.exception.text_in("en")))
+        return error
 
 
 class RoadParameterTest(RoadParameterCase):
@@ -251,7 +274,28 @@ class RoadParameterTest(RoadParameterCase):
             self.accepted(key("RDW-001", "origin"), point)
         self.accepted(key("RDW-001", "destination"), None)
 
-    # --- «Cambiar parámetro…» de un valor del perfil de pista: las reglas de «Perfil de pista…» (spec 017, T40; A-1) ---
+    # --- Las dependencias declaradas (``supports``): tampoco cierran un ciclo (spec 017, T49; hallazgo T47-2) ---
+
+    def test_i2_the_declared_supports_of_a_road_cannot_close_a_cycle(self) -> None:
+        """RF-015-15, RF-015-17, RF-017-03, RF-017-04 (T49; hallazgo T47-2): las dependencias que la persona **declara a mano** en una pista (``des.road.{e}.supports``: códigos separados por comas) pasan por la
+        misma regla del ciclo que su origen y su destino (T40): ninguna es ella misma ni una pista que **ya se apoya en ella** por su origen (RDW-004 sale de RDW-001@40: aquí solo por lo que pisa, no
+        por su cadena); se rechaza con ``des.entity_supports_unknown`` con la pista, el campo, **el valor entero**, a quién se apoyaría y el recorrido en el motivo, y sin escribir nada (la sonda de la
+        T47 declaraba ``RDW-001.supports = RDW-002`` y se aceptaba: «Recalcular lo obsoleto» lo paraba después, ``FAILED``). Una lista donde solo la segunda cierra el ciclo se rechaza por esa; lo que ya
+        declara el ramal (la pista) y un código que la versión no tiene (lo dice el cálculo) se admiten. La matriz entera, en ``milestone_road_parameter_matrix``."""
+        before = self.snapshot()
+        for code, value, target, around in (("RDW-001", "RDW-004", "RDW-004", ("RDW-004", "RDW-001")), ("RDW-001", "PLT-001, RDW-002", "RDW-002", ("RDW-002", "RDW-001")), ("RDW-001", "RDW-001", "RDW-001", ())):
+            with self.subTest(code=code, value=value):
+                with self.assertRaises(messages.DesignError) as caught:
+                    self.check(key(code, "supports"), value)
+                error = caught.exception
+                self.assertEqual((error.code, error.values["field"], error.values["value"], error.values["target"]), ("des.entity_supports_unknown", key(code, "supports"), value, target))
+                self.assertIn(value, error.text)
+                self.assertNotIn("{", error.text_in("en"))
+                for member in around:
+                    self.assertIn(member, str(error.values["reason"]))
+        self.check(key("RDW-002", "supports"), "RDW-001")
+        self.check(key("RDW-001", "supports"), "RDW-009")
+        self.assertEqual(self.snapshot(), before, "el rechazo ha escrito algo")
 
     def refused_profile(self, param: str, value: object, expected: str, field: str, shown: object) -> Any:
         """Cambiar el valor ``param`` del perfil de la prueba a ``value`` se rechaza con ``expected``, nombrando el perfil, el campo ``field`` (otro valor que el cambiado, en una regla cruzada) y lo
@@ -287,6 +331,25 @@ class RoadParameterTest(RoadParameterCase):
                 self.accepted_profile(param, value)
         self.accepted_profile("min_radius_m", 3.0, profile="sin_otros_valores")  # el perfil sin sus valores no tiene con qué cruzarse: solo su rango
         self.accepted_profile("min_radius_m", None)  # sin valor: lo dice la definición
+
+    def test_k_a_value_of_the_road_profile_changed_for_the_project_follows_the_same_rules_with_the_values_of_the_project(self) -> None:
+        """RF-017-04, RF-017-07, RF-015-08 (T49; hallazgo T47-1): «Cambiar parámetro…» con el ámbito **proyecto** (el que propone el diálogo cuando la versión no tiene valor propio: un valor del proyecto
+        llega a las versiones que no tienen el suyo) rechaza lo mismo que con el de la versión, con los valores **del proyecto** del perfil: el radio mínimo menor que la semianchura (3 m con 5,75 m),
+        el radio de las curvas menor que el mínimo (5 m con 12 m), el caballón de 20 m que sube la semianchura a 15,25 m y el ángulo de 90°, con el perfil, el campo y el valor y el texto de «Perfil de
+        pista…»; hasta la T49 salía sin hacer nada, se escribía y «Recalcular lo obsoleto» daba ``FAILED``. Un valor bueno se admite y el **rango se comprueba siempre**, también en un perfil sin los
+        demás valores del proyecto (las cruzadas que necesitan otro valor se quedan para el cálculo, **sin leer otra versión**). Todo sin escribir nada; la matriz entera, en
+        ``milestone_road_parameter_matrix``."""
+        before = self.snapshot()
+        for param, value, expected, field, shown in (("min_radius_m", 3.0, "des.road_profile_radius_narrow", "min_radius_m", 3.0), ("curve_radius_m", 5.0, "des.road_profile_radius_order", "min_radius_m", 12.0),
+                                                     ("berm_m", 20.0, "des.road_profile_radius_narrow", "min_radius_m", 12.0), ("cut_angle_deg", 90.0, "des.road_profile_value_range", "cut_angle_deg", 90.0)):
+            with self.subTest(param=param, value=value):
+                self.refused_in_project(param, value, expected, field, shown)
+        self.project_check("min_radius_m", 6.0)
+        self.project_check("min_radius_m", 3.0, profile="sin_otros_valores")  # el proyecto no tiene sus demás valores: no hay con qué cruzarlo
+        with self.assertRaises(messages.DesignError) as caught:  # el rango, siempre
+            self.project_check("cut_angle_deg", 90.0, profile="sin_otros_valores")
+        self.assertEqual(caught.exception.code, "des.road_profile_value_range")
+        self.assertEqual(self.snapshot(), before, "el rechazo ha escrito algo")
 
 
 class RoadNameRowTest(RoadParameterCase):

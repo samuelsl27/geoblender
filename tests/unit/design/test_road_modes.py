@@ -370,6 +370,32 @@ class ThreeDModeTest(unittest.TestCase):
                 self.assertEqual(notice.values["entity"], ENTITY)
                 self.assertTrue({"station", "x", "y"} <= set(notice.values))
 
+    def test_g_a_line_that_goes_back_over_itself_has_no_axis_and_is_refused_with_its_text(self) -> None:
+        """RF-017-04, RF-017-18 (T49; hallazgo T47-3): una línea que vuelve por el mismo camino (A → B → A: sus dos tramos son contiguos y no cuentan como un cruce) da un eje **sin longitud** (el radio del
+        giro es nulo: en «eje 3D» no se rechaza por Rmín) y hasta la T49 el cálculo lanzaba un ``ValueError`` pelado («la Z de la línea es un vector con al menos dos números: forma (1,)»): ahora es un
+        ``DesignError`` ``des.road_line_doubles_back`` con la capa, la pista, el campo, el valor y el lugar del giro (x = 100 m, y = 60 m locales), en los dos idiomas y sin marcadores sin llenar, y no se
+        crea nada. En «sobre un eje» la misma línea sigue dando ``des.road_radius_below_min`` (sin cambio)."""
+        turn = rd.absolute(((100.0, 60.0),), GRID)[0]
+        back = line_3d(((60.0, 60.0), (100.0, 60.0), (60.0, 60.0)), [100.0, 102.0, 104.0])
+        job = job_3d(back)
+        before = digest_of(job)
+        with self.assertRaises(messages.DesignError) as caught:
+            last(road_store.road_compute_steps(job, COMMON))
+        error = caught.exception
+        self.assertEqual(error.code, "des.road_line_doubles_back")
+        self.assertEqual(error.values["layer"], job.request.layer)
+        self.assertEqual(error.values["entity"], ENTITY)
+        self.assertTrue(error.field.endswith("feature"), error.field)
+        self.assertEqual((error.values["x"], error.values["y"]), (round(float(turn[0]), 2), round(float(turn[1]), 2)))
+        for text in (error.text, error.text_in("en")):
+            self.assertNotIn("{", text)
+            self.assertIn(ENTITY, text)
+        self.assertIn("no se crea nada", error.text)
+        self.assertEqual(digest_of(job), before)
+        with self.assertRaises(messages.DesignError) as on_axis:
+            last(road_store.road_compute_steps(axis_job(((60.0, 60.0), (100.0, 60.0), (60.0, 60.0))), COMMON))
+        self.assertEqual(on_axis.exception.code, "des.road_radius_below_min")
+
 
 def gpkg(rows: list[tuple[bytes, str]], *, table: str = "gis_brk_prueba") -> sqlite3.Connection:
     """Una base con la tabla de líneas de rotura ``table`` tal como la deja el proyecto (``fid``, ``geom``, ``line_id``, ``hard`` y ``code``) y las filas ``(geom, line_id)``."""
@@ -465,6 +491,30 @@ class ReadLines3dTest(unittest.TestCase):
         with self.assertRaises(messages.DesignError) as missing:
             road_store.line_3d(lines, request_3d(None), "RDW-001")
         self.assertEqual(missing.exception.code, "des.entity_param_missing")
+
+    def test_d2_a_line_whose_vertices_are_the_same_point_to_the_tolerance_of_the_axis_has_no_length(self) -> None:
+        """RF-017-04, RF-017-18 (T49; hallazgo T47-3): una línea de dos vértices a 10⁻⁷ m, o de tres con todos sus tramos por debajo de 10⁻⁶ m (la tolerancia con que el eje toma un punto por el anterior:
+        ``road_axis._REPEAT_M``, la misma constante), no tiene longitud: se rechaza con ``des.road_line_no_length`` —en «eje 3D» y en «sobre un eje», que leen la planta igual—, nombrando la capa, la pista, el
+        campo y el valor; hasta la T49 pasaba (solo se rechazaba la igualdad exacta) y el eje lanzaba un ``ValueError`` pelado («necesita al menos dos puntos distintos»). Con un tramo de 2·10⁻⁶ m o de
+        verdad entre los vértices, se lee."""
+        tol = road_axis._REPEAT_M  # noqa: SLF001  (la misma constante, no una copia)
+        base = rd.absolute(((50.0, 380.0),), GRID)[0]
+        lines = {"Casi nula": [(0.0, 0.0), (0.1 * tol, 0.0)], "Casi nula 3": [(0.0, 0.0), (0.2 * tol, 0.0), (0.5 * tol, 0.1 * tol)], "Apenas más": [(0.0, 0.0), (2.0 * tol, 0.0)],
+                 "Una": [(0.0, 0.0), (1.0, 0.0)]}
+        conn = gpkg([(blob(np.column_stack([base + np.array(points), [100.0 + k for k in range(len(points))]])), name) for name, points in lines.items()])
+        self.addCleanup(conn.close)
+        found = road_store.read_lines_3d(conn, "gis_brk_prueba")
+        for feature in ("Casi nula", "Casi nula 3"):
+            with self.subTest(feature=feature):
+                error = self.refused(request_3d(feature), "des.road_line_no_length", found)
+                self.assertEqual(error.value, feature)
+                with self.assertRaises(messages.DesignError) as plan:  # la misma planta de «sobre un eje»
+                    road_store._read_line(found.layer, list(lines).index(feature), feature, request_3d(feature), "RDW-001")  # noqa: SLF001
+                self.assertEqual(plan.exception.code, "des.road_line_no_length")
+        for feature in ("Apenas más", "Una"):
+            with self.subTest(feature=feature):
+                line, _fid = road_store.line_3d(found, request_3d(feature), "RDW-001")
+                self.assertEqual(len(line), 2)
 
     def test_e_the_line_is_read_without_modifying_the_stored_data(self) -> None:
         """Principio 7: leer no cambia la base (ni una fila) y la línea que se da es de solo lectura: quien la usa no puede tocarla."""

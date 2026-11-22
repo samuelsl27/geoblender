@@ -1019,10 +1019,11 @@ ROAD_PROFILE_PARAMETER_PREFIX = "des.roadprofile."
 """El principio de las claves de los valores de un perfil de pista (``des.roadprofile.{p}.*``, spec 017, T40): lo que vigila :func:`_check_road_profile_parameter` (no es de una entidad: el perfil es del proyecto)."""
 
 
-def _check_road_profile_parameter(project: Any, key: str, value: Any, version_uid: str) -> None:
+def _check_road_profile_parameter(project: Any, key: str, value: Any, version_uid: str | None) -> None:
     """Lo que ``des`` registra en «Cambiar parámetro…» de un valor de un perfil de pista (:func:`~.core_provenance.register_parameter_check`; spec 017, T40; hallazgo A-1; RF-017-04, RF-017-07): lo
     mismo que comprueba «Perfil de pista…» (``design.road_profiles.check_profile_change``: el rango, con el ángulo de 90° excluido, y los radios con el resto del perfil) antes de que la orden
-    escriba. Importa el módulo al usarlo, no al habilitar."""
+    escriba. **También con el ámbito proyecto** (``version_uid`` es ``None``; registrada con ``project_scope=True``, T49, hallazgo T47-1: un valor del proyecto llega a las versiones que no tienen el
+    suyo y el diálogo propone el proyecto cuando la versión no tiene valor propio). Importa el módulo al usarlo, no al habilitar."""
     from ...design import road_profiles  # al usarlo: habilitar no carga los perfiles de pista
 
     road_profiles.check_profile_change(project, key, value, version=version_uid)
@@ -1120,7 +1121,7 @@ def register() -> None:
         _UNDO.append(functools.partial(unregister_parameter_check, prefix, _check_entity_parameter))
         register_parameter_after(prefix, _after_entity_parameter)
         _UNDO.append(functools.partial(unregister_parameter_after, prefix, _after_entity_parameter))
-    register_parameter_check(ROAD_PROFILE_PARAMETER_PREFIX, _check_road_profile_parameter)  # los valores de un perfil de pista, con las reglas de «Perfil de pista…» (T40)
+    register_parameter_check(ROAD_PROFILE_PARAMETER_PREFIX, _check_road_profile_parameter, project_scope=True)  # los valores de un perfil de pista, con las reglas de «Perfil de pista…» (T40), también con el ámbito proyecto (T49)
     _UNDO.append(functools.partial(unregister_parameter_check, ROAD_PROFILE_PARAMETER_PREFIX, _check_road_profile_parameter))
     register_parameter_adjust(ROAD_PARAMETER_PREFIX, _adjust_entity_parameter)  # la cota y las dependencias que da la persona a mano (T29c y T40)
     _UNDO.append(functools.partial(unregister_parameter_adjust, ROAD_PARAMETER_PREFIX, _adjust_entity_parameter))
