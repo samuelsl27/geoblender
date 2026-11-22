@@ -12,7 +12,8 @@ cambiada, la pista principal descartada, el relleno posterior y traer a otra ver
   desde el final del corredor hasta ella **partiendo de la superficie que deja el relleno**: ruta, eje, rasante, sección y grabado, su resumen, la cadena cantera → plataforma → pista, la
   cubicación de la 011 entre la partida y la pista (el corte y el relleno del resumen a ≤ 10⁻⁹ relativo) y la verificación de la 012 de su superficie (la última de la cadena: «cumple», con 0 m³ en
   los intocables y fuera del perímetro); **sin avisar de la cantera de la que parte** (hallazgo H2-1); cambiado el relleno, la pista **sigue su cota** (T24b); sobre **la final restaurada** avisa de
-  que no llega al fondo (las dos cotas mínimas); y la accesibilidad da **125 m sobre la explotación y 140 m sobre la final**.
+  que no llega al fondo (las dos cotas mínimas); y la accesibilidad da **125 m sobre la explotación y 140 m sobre la final** y, con la superficie que propone el diálogo (la última de la
+  cadena), también los 140 m sobre la final de su cantera (T43, C-2).
 - **Antes del relleno** (:class:`BeforeTheFillTest`, CE-017-05): la pista sobre una superficie **anterior al relleno** avisa del área, la diferencia máxima y el lugar de lo que no tiene en cuenta
   (a mano sobre los ficheros) y, al cambiar el relleno, **queda obsoleta con su causa** (el hallazgo H2-2 impide aquí repetirla: véase la *Verificación* de la T25).
 - **La cantera con bancos** (:class:`BankTest`, E4, CE-017-07 y CE-017-09; en orden): la rampa a una cota por los bancos (con la confirmación de la calzada fuera de su rasante), la accesibilidad de la
@@ -51,6 +52,7 @@ from tests.unit.design.test_platform_operation import finish
 from tests.unit.design.test_road_prepare import BY, GRID, drive, request
 
 access = import_geoblender("gis.masks.access")
+access_store = import_geoblender("design.access_store")
 core_params = import_geoblender("core.params")
 cparams = import_geoblender("core.constraints.params")
 design_params = import_geoblender("design.params")
@@ -346,9 +348,13 @@ class PitTest(PitCase):
         self.assertEqual(self.recompute_plan(), [])
 
     def test_g_ce_017_05_on_the_restored_final_the_road_warns_that_it_does_not_reach_the_bottom_and_the_accessibility_gives_125_and_140(self) -> None:
-        """CE-017-05, RF-017-05 (a), RF-017-24, error 23: la pista sobre **la final restaurada** avisa, la primera, de que no llega al fondo con la cota mínima alcanzable sobre ella (140 m) y sobre
+        """CE-017-05, RF-017-05 (a), RF-017-24, E2, error 23: la pista sobre **la final restaurada** avisa, la primera, de que no llega al fondo con la cota mínima alcanzable sobre ella (140 m) y sobre
         la de explotación (125 m) sin impedir crearla, y la que parte del relleno no lo avisa; la accesibilidad da **125 m sobre la explotación y 140 m sobre la final** (a mano: el fondo del tajo
-        por el corredor y el fondo relleno), la de la explotación con el aviso de la final, y la plataforma del fondo, comunicada."""
+        por el corredor y el fondo relleno), la de la explotación con el aviso de la final, y la plataforma del fondo, comunicada. **C-2:** con la superficie que **propone el diálogo** (la última de la
+        cadena: la de la pista, que parte del relleno que parte de la explotación) da además **140 m sobre la final de su cantera**, junto a su cota mínima (la menor de las celdas alcanzables de su
+        rejilla), con el aviso de la final; sobre la final misma, o sobre la de una cadena que parte de ella, no se repite (su cota mínima ya es esa cifra)."""
+        default = access_store.default_surface(self.project, self.v1)  # antes de crear la pista de la final (otra cadena): la cola es una sola
+        self.assertEqual(default, surface_of(ROAD))
         calculation = self.calculate_in(self.asked_road(ON_FINAL, destination="En el relleno", surface=FINAL))
         first = calculation.summary.notices[0]
         self.assertEqual((first.code, first.values["surface"], first.values["z_final"], first.values["z_pit"]), ("des.road_start_is_final", FINAL, rd.PIT_Z_MIN_FINAL_M, rd.PIT_Z_MIN_EXPLOITATION_M))
@@ -357,18 +363,33 @@ class PitTest(PitCase):
         self.assertEqual(self.query("SELECT status FROM gb_operation WHERE uid = ?", self.uid(stored)), [("done",)])
         self.clock.advance(minutes=1)
         results: dict[str, Any] = {}
-        for surface in (EXPLOITATION, FINAL):
+        from_the_final = surface_of(ON_FINAL)  # la de la pista que parte de la final: su cadena no sale de la explotación
+        for surface in (EXPLOITATION, FINAL, default, from_the_final):
             asked = access_request(f"Accesibilidad sobre {surface}", layer=PIT_ENTRY_LAYER, surface=surface)
             made = finish_steps(steps.access_run(self.project, asked, version=self.v1.uid, masks=self.masks_v1))
             results[surface] = (made, made.create(decided_by=BY))
             self.clock.advance(minutes=1)
         pit_figures = {key: value for key, value, _scope in self.figures_of(self.uid(results[EXPLOITATION][1]))}
         final_figures = {key: value for key, value, _scope in self.figures_of(self.uid(results[FINAL][1]))}
+        chain_figures = {key: value for key, value, _scope in self.figures_of(self.uid(results[default][1]))}
         self.assertEqual((pit_figures["des.acc_z_min_m"], pit_figures["des.acc_z_min_final_m"]), (rd.PIT_Z_MIN_EXPLOITATION_M, rd.PIT_Z_MIN_FINAL_M))
         self.assertEqual(final_figures["des.acc_z_min_m"], rd.PIT_Z_MIN_FINAL_M)
-        self.assertNotIn("des.acc_z_min_final_m", final_figures)
+        self.assertNotIn("des.acc_z_min_final_m", final_figures, "sobre la final misma no se repite: su cota mínima ya es esa cifra")
         self.assertIn("des.access_final", [notice.code for notice in results[EXPLOITATION][0].notices])
         self.assertEqual((pit_figures["des.acc_platforms_reached"], final_figures["des.acc_platforms_reached"]), (1.0, 1.0))
+        # C-2: con la superficie por defecto (la última de la cadena) la cota sobre la final también sale, sobre la de su cantera (140 m), y la propia es la menor de las celdas alcanzables
+        reachable = np.asarray(results[default][0].outcome.reachable)
+        self.assertEqual(chain_figures["des.acc_z_min_final_m"], rd.PIT_Z_MIN_FINAL_M)
+        self.assertEqual(results[default][0].outcome.z_min_final_m, rd.PIT_Z_MIN_FINAL_M)
+        self.assertEqual(chain_figures["des.acc_z_min_m"], float(self.surface(default)[reachable].min()))
+        self.assertLess(chain_figures["des.acc_z_min_m"], rd.PIT_Z_MIN_FINAL_M, "sobre la última de la cadena se llega más abajo que sobre la final restaurada")
+        self.assertIn("des.access_final", [notice.code for notice in results[default][0].notices])
+        self.assertNotIn("des.access_final_none", [notice.code for notice in results[default][0].notices])
+        self.assertEqual(results[default][0].summary.final, FINAL)
+        # una cadena que parte de la final restaurada no sale de la explotación: sin cota sobre la final (no se repite) ni aviso de que falte
+        self.assertNotIn("des.acc_z_min_final_m", {key for key, _value, _scope in self.figures_of(self.uid(results[from_the_final][1]))})
+        self.assertIsNone(results[from_the_final][0].summary.final)
+        self.assertNotIn("des.access_final_none", [notice.code for notice in results[from_the_final][0].notices])
 
 
 class BeforeTheFillTest(PitCase):
@@ -712,6 +733,7 @@ MATRIX: dict[str, tuple[tuple[str, str], ...]] = {
     "RF-015-02": (("milestone_road_create.py", "RoadChainTest"), ("milestone_road_recompute.py", "RoadReproduceTest")),
     "RF-015-03": (("milestone_road_calculate.py", "CalculateTest"), ("milestone_road_ce.py", "PitTest")),
     "RF-015-04": (("milestone_road_chain.py", "BranchTest"), ("milestone_road_ce.py", "PitTest")),
+    "RF-015-05": (("blender/milestone_road_menu.py", "RoadEntityMenuTest"), ("blender/test_road_menu.py", "RoadMenuTest")),
     "RF-015-06": (("milestone_road_create.py", "RoadChainTest"), ("test_road_prepare.py", "RoadPrepareTest")),
     "RF-015-07": (("milestone_road_prepare.py", "PendingSectorTest"),),
     "RF-015-08": (("test_road_prepare.py", "RoadPrepareTest"), ("milestone_road_calculate.py", "CalculateTest")),
@@ -727,24 +749,33 @@ MATRIX: dict[str, tuple[tuple[str, str], ...]] = {
 }
 """**La matriz del marco de la 015 con la pista** (T25): para cada punto de RF-015-01 a 18, la prueba (fichero de ``tests/unit/design`` y clase) que lo comprueba **con la pista** y lo cita en su
 docstring, sin repetirlo aquí: los ficheros ``milestone_road_*`` (con proyecto; las ejecuta el paso «hito») y ``test_road_*`` (sin proyecto, en el «verde»). Las clases de este fichero son las
-composiciones de E1 a E5 (el marco **junto con** lo demás: la cantera, la accesibilidad, la cubicación de la 011 y la verificación de la 012)."""
+composiciones de E1 a E5 (el marco **junto con** lo demás: la cantera, la accesibilidad, la cubicación de la 011 y la verificación de la 012). Un fichero con el prefijo ``blender/`` es de
+``tests/blender`` (con Blender y las órdenes reales: lo ejecuta ``tools/run_blender_tests.py``, desde ``check.py``); RF-015-05, insertar antes o después, se prueba así (T43, C-6)."""
+LIMITS: dict[str, str] = {
+    "RF-015-05": "**una pista no se inserta**: el punto aplica a la pista **junto a** otra entidad (se inserta una plataforma antes o después de una pista y la sucesora pasa a partir de ella, con el ramal "
+                 "obsoleto con su causa: ``milestone_road_menu.test_fa``), pero «Pista…» no tiene ``insert_before`` y «Insertar antes o después de…» abre siempre «Plataforma…» (hallazgo H2-4, véase la "
+                 "*Verificación* de la T25; ``test_road_menu.RoadMenuTest``)",
+}
+"""Lo de la matriz que aplica **con un límite escrito** (lo que la pista no hace en ese punto), con el porqué: cada clave está en :data:`MATRIX`."""
 NOT_APPLICABLE: dict[str, str] = {
-    "RF-015-05": "insertar una entidad antes o después de otra de su cadena: lo hace la plataforma (``prepare_platform_units(insert_before=)``) y el texto del marco de la spec 017 (§4) no la nombra; la pista no admite "
-                 "``insert_before`` (hallazgo H2-4, véase la *Verificación* de la T25)",
-    "RF-015-11": "restricción declarada que se edita en QGIS: la pista **no declara ninguna restricción** (RF-017-01, D-15); lo prueba ``milestone_road_create.RoadChainTest.test_g`` (ni operación ni tabla de declaradas)",
+    "RF-015-11":"restricción declarada que se edita en QGIS: la pista **no declara ninguna restricción** (RF-017-01, D-15); lo prueba ``milestone_road_create.RoadChainTest.test_g`` (ni operación ni tabla de declaradas)",
 }
 """Lo del marco que no se aplica a la pista, con el porqué."""
 
 
 class MatrixTest(unittest.TestCase):
-    """La matriz de :data:`MATRIX` es verdad: cada prueba que cita existe y **cita el requisito** en su docstring o en el de alguno de sus métodos, y los 18 puntos del marco están, o en la matriz o
-    en :data:`NOT_APPLICABLE` con su porqué."""
+    """La matriz de :data:`MATRIX` es verdad: cada prueba que cita existe y **cita el requisito** en su docstring o en el de alguno de sus métodos, y los 18 puntos del marco están, o en la matriz
+    (con su límite escrito en :data:`LIMITS`, si lo tiene) o en :data:`NOT_APPLICABLE` con su porqué."""
 
     def test_every_point_of_the_frame_of_the_015_has_a_road_test_that_says_so(self) -> None:
-        """RF-015-01 a RF-015-18, RF-017-01 (§4: el marco de la 015 se prueba con la pista): los 18 puntos están repartidos; cada (fichero, clase) existe y cita el requisito."""
+        """RF-015-01 a RF-015-18, RF-017-01 (§4: el marco de la 015 se prueba con la pista): los 18 puntos están repartidos; cada (fichero, clase) existe y cita el requisito. **RF-015-05 aplica**
+        (T43, C-6: se inserta una plataforma detrás de una pista) y su límite es «una pista no se inserta», no un «no aplica»."""
         wanted = {f"RF-015-{number:02d}" for number in range(1, 19)}
         self.assertEqual(set(MATRIX) | set(NOT_APPLICABLE), wanted)
         self.assertFalse(set(MATRIX) & set(NOT_APPLICABLE))
+        self.assertIn("RF-015-05", MATRIX)
+        self.assertTrue(set(LIMITS) <= set(MATRIX) and all(LIMITS.values()))
+        self.assertIn("RF-015-05", LIMITS)
         here = Path(__file__).resolve().parent
         trees: dict[str, ast.Module] = {}
         for requirement, tests in MATRIX.items():
@@ -752,7 +783,8 @@ class MatrixTest(unittest.TestCase):
             for name, cls in tests:
                 with self.subTest(requirement=requirement, test=f"{name}::{cls}"):
                     if name not in trees:
-                        trees[name] = ast.parse((here / name).read_text(encoding="utf-8"))
+                        source = here.parents[1] / name if name.startswith("blender/") else here / name  # ``blender/…``: ``tests/blender/…``
+                        trees[name] = ast.parse(source.read_text(encoding="utf-8"))
                     (node,) = [item for item in trees[name].body if isinstance(item, ast.ClassDef) and item.name == cls]
                     docstrings = [ast.get_docstring(node) or "", *(ast.get_docstring(item) or "" for item in node.body if isinstance(item, ast.FunctionDef))]
                     self.assertTrue(any(re.search(re.escape(requirement) + r"(?!\d)", text) for text in docstrings), f"{cls} no cita {requirement}")

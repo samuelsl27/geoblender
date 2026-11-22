@@ -15,8 +15,8 @@ que no da, con su causa, para el aviso, T18) y :func:`read_zone_table` (la tabla
 - :func:`access_values` y :func:`prepare_access_units` (y :func:`prepare_access`, de una vez): el código ``ACC-nnn`` (correlativo por versión) y el nombre único, la capa de **puntos de
   entrada** (de puntos, con el campo de su nombre; sus puntos en absolutas float64), los parámetros resueltos y comprobados (la pendiente máxima y el ancho mínimo transitables y el área
   mínima de berma, **sin valor por defecto**: uno que falta se rechaza nombrando entidad, campo y valor, RF-015-08, D-17), la superficie (del proyecto o de la versión) y su rejilla,
-  CRS y datum comparados con los del proyecto antes de leer una celda (RF-011-02 y 03), **la superficie final de una cantera de la 014** si la superficie es su explotación
-  (``des_exp_<cantera>`` → ``des_fin_<cantera>``: la segunda superficie del trabajo, error 23), las **rejillas de cotas de berma** de la 013 (por defecto, todas las de la versión al día;
+  CRS y datum comparados con los del proyecto antes de leer una celda (RF-011-02 y 03), **la superficie final de una cantera de la 014** si la superficie es su explotación o sale de ella por
+  una cadena de entidades (``des_exp_<cantera>`` → ``des_fin_<cantera>``: la segunda superficie del trabajo, error 23; con la que propone el diálogo, la última de la cadena, también: T43, C-2), las **rejillas de cotas de berma** de la 013 (por defecto, todas las de la versión al día;
   o las que pide la persona) con sus tablas, las **huellas de las plataformas** de la 015 (también la que deja un acopio retirado «como plataforma») y las **zonas «requiere acceso»**
   de la 012 (por la clase de las máscaras, ADR-0028: una por restricción) y lo **intocable** (los intocables y las exclusiones: lo que las máscaras prohíben atravesar, T15-a). Da una
   :class:`PreparedAccess`: el ``AccessJob`` listo para calcular (todo lo leído y nada del proyecto), ``start`` (la ``OperationStart``: ajustes, entradas y parámetros) y las filas de los
@@ -331,13 +331,39 @@ def _platforms(project: StoreProject, version: Version, ncols: int) -> tuple[tup
 # --- La superficie final y las bermas -------------------------------------------------------------
 
 
+def _chain_origin(records: Iterable[entities.EntityRecord], surface: str) -> str | None:
+    """La superficie de la que **parte la cadena** de la entidad cuya superficie entera es ``surface`` (``des_psf_<nombre>``; RF-017-24, C-2): la partida de la primera entidad de esa cadena,
+    que se alcanza hacia atrás, de predecesora en predecesora (``entities.predecessor_of``; una entidad descartada sigue siendo un eslabón: la superficie salió de ella). Es lo que dice esa
+    primera: el nombre de una superficie (``des_exp_<cantera>`` si la cadena sale de una explotación) o ``entity:<código>`` si parte de una entidad que la versión ya no tiene. ``None`` si
+    ``surface`` no es la superficie de una entidad de ``records``, si la primera no tiene partida o si la cadena da la vuelta (no tiene principio). Puro."""
+    prefix = provenance.FAMILIES_BY_CODE[provenance.ENTITY_SURFACE_GRID].prefix
+    if not surface.startswith(prefix):
+        return None
+    items = tuple(records)
+    current = next((item for item in items if provenance.dataset_name(provenance.ENTITY_SURFACE_GRID, item.name) == surface), None)
+    seen: set[str] = set()
+    while current is not None and current.code not in seen:
+        seen.add(current.code)
+        previous = entities.predecessor_of(items, current.code)
+        if previous is None:
+            return None if current.start is None else current.start.strip()
+        current = previous
+    return None
+
+
 def _final_name(project: StoreProject, version: Version, surface: str) -> str | None:
-    """El nombre de la **superficie final** de la cantera de la 014 cuya **explotación** es ``surface`` (``des_exp_<cantera>`` → ``des_fin_<cantera>``, RF-017-24, error 23), si la
-    versión la tiene viva; ``None`` si ``surface`` no es la explotación de una cantera (una superficie del proyecto, la final misma…): sin cantera de dos superficies no hay otra con
-    que compararla."""
+    """El nombre de la **superficie final** de la cantera de la 014 cuya **explotación** es ``surface`` (``des_exp_<cantera>`` → ``des_fin_<cantera>``, RF-017-24, error 23) o **de la que
+    sale la cadena** de entidades de ``surface`` (:func:`_chain_origin`: con la que propone el diálogo, la última de la cadena, la cantera es la de la explotación de la que parte su primera
+    entidad; C-2), si la versión la tiene viva; ``None`` si ``surface`` no sale de la explotación de una cantera (una superficie del proyecto, la final misma, una cadena que parte del
+    terreno…): sin cantera de dos superficies no hay otra con que compararla, y sobre la final misma su cota mínima ya es esa cifra."""
     exploitation = provenance.FAMILIES_BY_CODE[provenance.EXPLOITATION_GRID].prefix
     if not surface.startswith(exploitation):
-        return None
+        if not surface.startswith(provenance.FAMILIES_BY_CODE[provenance.ENTITY_SURFACE_GRID].prefix):  # una del proyecto o la final: sin leer las entidades
+            return None
+        origin = _chain_origin(entities.registry(project, version.uid).records, surface)
+        if origin is None or not origin.startswith(exploitation):
+            return None
+        surface = origin
     wanted = provenance.FAMILIES_BY_CODE[provenance.FINAL_GRID].prefix + surface[len(exploitation):]
     with project.read() as conn:
         record = dataset_registry.get(conn, wanted, version_uid=version.uid)

@@ -35,6 +35,7 @@ access = import_geoblender("gis.masks.access")
 access_store = import_geoblender("design.access_store")
 core_params = import_geoblender("core.params")
 design_params = import_geoblender("design.params")
+entities = import_geoblender("design.entities")
 gis = import_geoblender("gis")
 messages = import_geoblender("design.messages")
 preview = import_geoblender("design.preview")
@@ -726,6 +727,44 @@ class PlacesTest(unittest.TestCase):
             self.assertIs(type(place.y), float)
             self.assertIs(type(place.area_m2), float)
         self.assertEqual(self.places.platforms["PLT-001"].y, absolute((30.0, 86.0))[1])
+
+
+class QuarryOfTheChainTest(unittest.TestCase):
+    """RF-017-24, CE-017-05, E2 (T43, hallazgo C-2; error 23): de qué superficie parte la cadena de una entidad —sin proyecto—, para dar la cota mínima sobre la **final** de su cantera también
+    con la superficie que propone el diálogo (la última de la cadena), no solo con la explotación."""
+
+    @staticmethod
+    def chain(*, start: str = "des_exp_tajo", discarded: tuple[str, ...] = ()) -> list[Any]:
+        """El relleno (``PLT-001``) que parte de ``start``, la pista que parte de él (``RDW-001``) y el ramal que parte de la pista (``RDW-002``)."""
+        kinds = {"PLT": entities.EntityKind.PLATFORM, "RDW": entities.EntityKind.ROAD}
+        names = (("PLT-001", "Relleno del fondo", start), ("RDW-001", "Pista al fondo", "entity:PLT-001"), ("RDW-002", "Ramal", "entity:RDW-001"))
+        return [entities.EntityRecord(code, name, kinds[code[:3]], origin, None, entities.EntityState.DISCARDED if code in discarded else entities.EntityState.CURRENT)
+                for code, name, origin in names]
+
+    def test_every_surface_of_the_chain_comes_from_the_exploitation_of_its_quarry(self) -> None:
+        """RF-017-24, C-2: la superficie de la plataforma, la de la pista (la última de la cadena, la que propone el diálogo) y la del ramal parten, las tres, de ``des_exp_tajo``."""
+        records = self.chain()
+        for surface in ("des_psf_relleno_del_fondo", "des_psf_pista_al_fondo", "des_psf_ramal"):
+            with self.subTest(surface=surface):
+                self.assertEqual(access_store._chain_origin(records, surface), "des_exp_tajo")
+
+    def test_a_chain_that_does_not_leave_the_exploitation_has_no_quarry(self) -> None:
+        """RF-017-24: una cadena que parte del terreno, de la final misma o de una entidad que la versión no tiene da su partida (que no es una explotación: sin cantera de dos superficies,
+        ninguna cota sobre la final); y lo que no es la superficie de una entidad (una del proyecto, la explotación, la final) o de una entidad que no existe, ninguna partida."""
+        for start in ("gis_dtm_tajo", "des_fin_tajo", "entity:PLT-009"):
+            with self.subTest(start=start):
+                self.assertEqual(access_store._chain_origin(self.chain(start=start), "des_psf_pista_al_fondo"), start)
+        records = self.chain()
+        for surface in ("gis_dtm_tajo", "des_exp_tajo", "des_fin_tajo", "des_psf_otra"):
+            with self.subTest(surface=surface):
+                self.assertIsNone(access_store._chain_origin(records, surface))
+
+    def test_a_discarded_entity_does_not_cut_the_chain_and_a_cycle_does_not_hang(self) -> None:
+        """RF-017-24: la pista sale de la superficie del relleno aunque este se haya descartado (sigue siendo un registro de la cadena: su partida es la explotación); una cadena que da la vuelta
+        no tiene principio y no se queda dando vueltas (ninguna partida)."""
+        self.assertEqual(access_store._chain_origin(self.chain(discarded=("PLT-001",)), "des_psf_pista_al_fondo"), "des_exp_tajo")
+        loop = [entities.EntityRecord("PLT-001", "A", entities.EntityKind.PLATFORM, "entity:PLT-002", None), entities.EntityRecord("PLT-002", "B", entities.EntityKind.PLATFORM, "entity:PLT-001", None)]
+        self.assertIsNone(access_store._chain_origin(loop, "des_psf_a"))
 
 
 if __name__ == "__main__":
