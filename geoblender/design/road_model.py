@@ -70,7 +70,10 @@ if TYPE_CHECKING:
     from .road_route import Arrival
 
 __all__ = [
+    "BUDGET_NOTICE_STATES",
     "DEFAULT_SEARCH_BUDGET",
+    "MAX_LEVELS",
+    "ROUTE_STATE_BYTES",
     "AccessCells",
     "AccessJob",
     "AccessOutcome",
@@ -92,12 +95,50 @@ __all__ = [
     "RouteParams",
     "RouteReport",
     "ZoneReach",
+    "budget_memory_gib",
+    "level_count",
+    "min_level_step_m",
 ]
 
 DEFAULT_SEARCH_BUDGET: int = int(entity_params("road").template(RoadParam.SEARCH_BUDGET.value).default)  # type: ignore[arg-type]
 """El presupuesto de estados expandidos de la ruta 3D cuando nadie lo pide (RF-017-10, P-3): el valor por defecto de la
 familia ``des.road.{e}.search_budget`` (5.000.000, ADOPTADO «sin confirmar»), **leído de** :mod:`design.params` y no escrito
 aquí."""
+
+MAX_LEVELS: int = 2000
+"""El tope del número de niveles a cada lado de un nodo, ``M = ⌊H/Δz⌋`` (la altura máxima de desmonte y terraplén entre el paso de cota; RF-017-10, RF-017-04; B-5 de la verificación única, T41): 2.000, 40 veces
+los 50 de la referencia (14 m / 0,28 m). **Un límite de validez de la búsqueda, no una cifra minera**: sus tablas de saltos de nivel y de costes crecen con ``M`` (con H = 14 m y un paso de 0,0001 m, 140.000 niveles,
+la preparación de una malla de 10 × 10 nodos tardaba 108 s en una sola llamada y 424 MiB, medido por el verificador B; con 0,001 m, 10 s y 43 MiB), de modo que un error de tecleo rompía RNF-017-06. Procedencia:
+HIPÓTESIS de la sesión principal (21/11/2026, revisable); la preparación lo rechaza con el campo, el valor y el paso mínimo (``des.road_level_step_small``)."""
+ROUTE_STATE_BYTES: int = 140
+"""Los bytes que ocupa cada estado visto de la ruta 3D (un entero de la etiqueta y otro de la cola): ≈ 135 a 140 medidos por la T07 y la T34 (965 MiB de pico del proceso con 5,98 M estados vistos y 167 MiB de base)."""
+BUDGET_NOTICE_STATES: int = 2 * DEFAULT_SEARCH_BUDGET
+"""El presupuesto de estados por encima del cual la preparación avisa de la memoria que puede ocupar la búsqueda (``des.road_budget_memory``; B-5, T41): **más del doble del que viene por defecto** (5 M estados ≈ 1 GiB
+medido); el parámetro admite hasta 10⁹ (``ROAD_RANGES``) y no se le pone un tope, que cambiaría el rango aprobado. Un umbral de aviso (HIPÓTESIS de la sesión principal, revisable), no una cifra minera."""
+_LEVEL_TOLERANCE = 1e-9
+"""El margen (en niveles) con que ``H/Δz`` da el número de niveles ``M``: ``14/0,28`` es 49,999… o 50,000… según el último bit."""
+_STEP_DIGITS = 6
+"""Los decimales (m: el micrómetro) a que :func:`min_level_step_m` redondea hacia arriba el paso de cota mínimo."""
+
+
+def level_count(height_m: float, step_m: float) -> int:
+    """El número de niveles a cada lado de un nodo de la ruta, ``M = ⌊H/Δz⌋`` (con ``H`` la altura máxima de desmonte y terraplén y ``Δz`` el paso de cota, m): la cota de un nodo es el terreno más ``m·Δz`` con ``m``
+    de ``−M`` a ``M``. La cuenta de la búsqueda (:func:`~design.road_route.route_steps`) y la del tope :data:`MAX_LEVELS` son esta."""
+    return math.floor(height_m / step_m + _LEVEL_TOLERANCE)
+
+
+def min_level_step_m(height_m: float) -> float:
+    """El paso de cota **menor** (m, redondeado hacia arriba al micrómetro) con que la altura máxima ``height_m`` (> 0) da como mucho :data:`MAX_LEVELS` niveles a cada lado: el que dice el rechazo de un paso de cota
+    demasiado pequeño (``des.road_level_step_small``)."""
+    return math.ceil(round(height_m / MAX_LEVELS * 10**_STEP_DIGITS, 3)) / 10**_STEP_DIGITS
+
+
+def budget_memory_gib(budget: int) -> float | None:
+    """La memoria (GiB de 2³⁰ bytes, :data:`ROUTE_STATE_BYTES` por estado) que puede ocupar una búsqueda con ``budget`` estados expandidos, **si** el presupuesto pasa de :data:`BUDGET_NOTICE_STATES` (más del doble
+    del de por defecto); si no, ``None``: no hay nada que avisar (``des.road_budget_memory``)."""
+    if budget <= BUDGET_NOTICE_STATES:
+        return None
+    return budget * ROUTE_STATE_BYTES / 1024**3
 
 Point = tuple[float, float]
 """Un punto absoluto ``(x, y)`` (m, float64)."""
@@ -416,6 +457,10 @@ class RouteParams:
             raise TypeError(f"«search_budget» de los parámetros de la ruta es un número entero, no {budget!r}")
         object.__setattr__(self, "search_budget",
                            int(_ranged(int(budget), "search_budget", ROAD_RANGES, "los parámetros de la ruta")))
+        levels = level_count(self.max_cut_fill_m, self.level_step_m)
+        if levels > MAX_LEVELS:  # B-5: la preparación lo rechaza antes con el campo (``des.road_level_step_small``); aquí, un error del programa
+            raise ValueError(f"«level_step_m» de los parámetros de la ruta = {self.level_step_m!r} da {levels} niveles a cada lado con la altura máxima de {self.max_cut_fill_m!r} m: el tope es {MAX_LEVELS}; "
+                             f"el paso de cota mínimo para esa altura es {min_level_step_m(self.max_cut_fill_m):g} m")
 
     @classmethod
     def from_values(cls, values: Mapping[str, object]) -> RouteParams:

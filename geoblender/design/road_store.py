@@ -128,6 +128,9 @@ from .preview import (
 )
 from .report import Previous, _thickness
 from .road_model import (
+    DEFAULT_SEARCH_BUDGET,
+    MAX_LEVELS,
+    ROUTE_STATE_BYTES,
     AccessJob,
     AccessRequest,
     EntryPoint,
@@ -141,6 +144,9 @@ from .road_model import (
     RoadRequest,
     RouteParams,
     RouteReport,
+    budget_memory_gib,
+    level_count,
+    min_level_step_m,
 )
 from .sectors import design_sectors, refuse_pending
 from .seeds import pace_progress, sector_layout
@@ -1047,6 +1053,46 @@ def _check_level(request: RoadRequest, code: str, param: RoadParam, value: float
         raise _reject("des.road_level_range", request, code, param, value, low=round(low, 3), high=round(high, 3), limit=_LEVEL_LIMIT_M)
 
 
+def _check_level_count(request: RoadRequest, code: str, values: Mapping[str, Any]) -> None:
+    """RF-017-04, RF-017-10 (B-5, T41): el paso de cota que con la altura máxima da más de ``MAX_LEVELS`` niveles a cada lado se rechaza **al preparar**, sin calcular nada (``des.road_level_step_small``: el
+    campo ``level_step_m``, el valor, los niveles que saldrían, el tope y el paso mínimo para esa altura). Los valores que faltan o salen de su rango los rechazan sus reglas, no esta."""
+    height, step = values.get(RoadParam.MAX_CUT_FILL.value), values.get(RoadParam.LEVEL_STEP.value)
+    numbers = (int, float)
+    if isinstance(height, bool) or isinstance(step, bool) or not isinstance(height, numbers) or not isinstance(step, numbers) or not (step > 0.0 and height >= 0.0):
+        return
+    levels = level_count(float(height), float(step))
+    if levels > MAX_LEVELS:
+        raise _reject("des.road_level_step_small", request, code, RoadParam.LEVEL_STEP, step, height=height, levels=levels, limit=MAX_LEVELS, minimum=min_level_step_m(float(height)))
+
+
+def _budget_notice(name: str, route: RouteParams) -> Notice | None:
+    """RNF-017-07 (B-5, T41): el aviso de la memoria que puede ocupar la búsqueda (``des.road_budget_memory``) si su presupuesto de estados pasa del doble del de por defecto (:data:`~.road_model.BUDGET_NOTICE_STATES`);
+    ``None`` si no. No impide crearla."""
+    memory = budget_memory_gib(route.search_budget)
+    if memory is None:
+        return None
+    return Notice("des.road_budget_memory", {"entity": name, "budget": route.search_budget, "default": DEFAULT_SEARCH_BUDGET, "bytes": ROUTE_STATE_BYTES, "memory": round(memory, 1)})
+
+
+def _check_apart(request: RoadRequest, code: str, grid: Grid, mesh_m: float, origin: tuple[float, float], destination: tuple[float, float]) -> None:
+    """RF-017-04 (B-3, T41): el origen y el destino (dos puntos) no caen en el mismo nodo de la malla de la ruta de ``mesh_m`` m sobre ``grid`` (``des.road_same_node``): la cuenta de
+    :meth:`~.road_net.RouteMesh.node_of` sin construir la malla."""
+    factor = road_net.mesh_factor(grid, mesh_m)
+    node = road_net.node_at(grid, factor, *origin)
+    if node == road_net.node_at(grid, factor, *destination):
+        raise _same_node_error(request, code, destination, mesh_m, (grid.west + (node[1] + 0.5) * mesh_m, grid.north - (node[0] + 0.5) * mesh_m))
+
+
+def _same_node_error(request: RoadRequest, code: str, destination: object, mesh_m: float, center: tuple[float, float]) -> DesignError:
+    """RF-017-04 (B-3, T41): el origen y el destino caen en el mismo nodo de la malla de la ruta (``des.road_same_node``, con la malla y el centro del nodo): la ruta tendría un solo nodo y no hay eje de un tramo que
+    inventar. El campo es el destino (o la zona del destino por cota) y su valor, lo que pidió la persona."""
+    if isinstance(destination, LevelDestination):
+        param, value = RoadParam.DEST_ZONE, str(request.dest_zone)
+    else:  # un punto de la capa por su nombre o su fid; si el trabajo no lo lleva (se armó a mano), sus coordenadas
+        param, value = RoadParam.DESTINATION, request.destination if request.destination is not None else f"{destination[0]:.2f}, {destination[1]:.2f}"  # type: ignore[index]
+    return _reject("des.road_same_node", request, code, param, value, mesh=mesh_m, x=round(center[0], 3), y=round(center[1], 3))
+
+
 def _resolve_points(project: StoreProject, version: Version, registry: EntityRegistry, request: RoadRequest, code: str, name: str, layer: FeatureLayer, grid: Grid,
                     surface: np.ndarray, surface_name: str, frame: Any) -> Generator[None, None, _Resolved]:
     """Lo que dicen el origen y el destino de «trazar» (RF-017-02, RF-017-03): cada uno, un punto de la capa (por su nombre o su ``fid``: dentro de la rejilla y con dato en la
@@ -1407,12 +1453,17 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     values = road_values(request, chosen, start_ref=start_ref, start_level_m=resolved_start, end_level_m=resolved_end)
     yield
     route: RouteParams | None = None
+    budget_notice: Notice | None = None
     if mode is RoadMode.TRACE:
         try:
             road_net.mesh_factor(grid, values[RoadParam.MESH.value])
         except ValueError:
             raise _reject("des.road_mesh_not_multiple", request, chosen, RoadParam.MESH, values[RoadParam.MESH.value], step=grid.dx) from None
+        _check_level_count(request, chosen, values)
         route = RouteParams.from_values(values)
+        if geometry_points[1] is not None:  # un destino que es un punto: no cae en el nodo del origen (el de una rampa lo dice la ruta, cuando la zona contiene el origen)
+            _check_apart(request, chosen, grid, route.mesh_m, geometry_points[0], geometry_points[1])
+        budget_notice = _budget_notice(name, route)
     destination: LevelDestination | None = None
     zone_layer: str | None = None
     if mode is RoadMode.TRACE and request.destination is None:
@@ -1445,7 +1496,7 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
         refuse_pending(item for item in sectors if item.code in touched)  # RF-015-07
     yield
     common = entity_store._common(project, version)
-    notices: list[Notice] = []
+    notices: list[Notice] = [] if budget_notice is None else [budget_notice]
     pit = _pit_name(project, version, start_name)
     if pit is not None:
         found = yield from read_surface_steps(project, pit, version_uid=version.uid, expect=frame, role=_PIT_ROLE)
@@ -1583,12 +1634,20 @@ def _route_steps(job: RoadJob, budget_s: float) -> Generator[Progress, None, tup
     yield _stage(0, f"Preparando la malla de la ruta de «{job.request.name}»…")
     mesh = road_net.route_mesh(job.grid, job.start, params.mesh_m, job.untouchable, avoid_weight=job.avoid_weight)
     target = road_route.route_target(job, mesh)
+    origin = mesh.node_of(*job.geometry.origin)
+    if isinstance(target, tuple) and target == origin:  # B-3: el mismo nodo (un punto de destino): no hay ruta de un tramo ni eje que inventar
+        raise _same_node_error(job.request, job.code, job.geometry.destination, params.mesh_m, mesh.center_of(*origin))
+    beyond = road_route.level_beyond(job, mesh, origin, target)
+    if beyond is not None:  # B-2: la cota de inicio o de fin no cabe en la altura máxima: no hay estado donde arrancar o acabar, y la red 2D no lo cambia
+        raise beyond.error(job)
     net_dest = yield from pipeline.forward(road_net.network_steps(mesh, target, pd, height, budget_s=budget_s))
-    net_origin = yield from pipeline.forward(road_net.network_steps(mesh, mesh.node_of(*job.geometry.origin), pd, height, budget_s=budget_s))
+    net_origin = yield from pipeline.forward(road_net.network_steps(mesh, origin, pd, height, budget_s=budget_s))
     corridor = road_net.corridor(net_origin, net_dest, params.margin_m)
     found = yield from pipeline.forward(road_route.route_steps(job, corridor, budget_s=budget_s))
     if not found.ok:
         raise road_route.no_route(job, net_origin, net_dest, found).error(job)
+    if len(found.nodes) < 2:  # B-3: una rampa cuya zona contiene el nodo del origen con la cota pedida: la ruta de un solo nodo
+        raise _same_node_error(job.request, job.code, job.geometry.destination, params.mesh_m, mesh.center_of(*origin))
     return found, corridor
 
 

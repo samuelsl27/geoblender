@@ -85,7 +85,13 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # RF-017-12: sin ruta, las tres causas (la red 2D, el pasillo y el presupuesto de estados) y el tramo limitante.
     "des.road_no_route_network": ("error", "RF-017-12", {"layer", "entity", "z_origin", "z_destination", "gradient"}),
     "des.road_no_route_corridor": ("error", "RF-017-12", {"layer", "entity", "z_origin", "z_destination", "gradient"}),
-    "des.road_budget": ("error", "RF-017-12", {"layer", "entity", "budget", "expanded", "margin"}),
+    "des.road_budget": ("error", "RF-017-12", {"layer", "entity", "budget", "seen", "margin"}),
+    # T41 (B-2, B-3 y B-5 de la verificación única): la cota que no cabe en la altura máxima (con el margen de los niveles de su nodo), el origen y el destino en el mismo nodo, el paso de cota que da
+    # demasiados niveles y el aviso de la memoria de un presupuesto de estados grande.
+    "des.road_level_beyond_height": ("error", "RF-017-12", {*GEOMETRY, "distance", "terrain", "low", "high", "height", "step"}),
+    "des.road_same_node": ("error", "RF-017-04", {*GEOMETRY, "mesh", *POSITION}),
+    "des.road_level_step_small": ("error", "RF-017-04", {*GEOMETRY, "height", "levels", "limit", "minimum"}),
+    "des.road_budget_memory": ("warning", "RF-017-10", {"entity", "budget", "default", "bytes", "memory"}),
     "des.road_limit_slope": ("note", "RF-017-12", {"gradient", *POSITION}),
     "des.road_limit_mask": ("note", "RF-017-12", POSITION),
     "des.road_limit_height": ("note", "RF-017-12", {"height", *POSITION}),
@@ -208,7 +214,8 @@ class RoadMessagesTest(unittest.TestCase):
                   "profile": "PISTA_PRINCIPAL", "other": "ACCESO_TAJO", "range": "(0; 90) °", "radius": 20.0,
                   "half_width": 5.75, "low": 100.0, "high": 140.0, "limit": 1000.0, "zone": "Cota 140",
                   "z_origin": 120.0, "z_destination": 128.5, "gradient": 12.5, "margin": 60.0, "budget": 5000000,
-                  "expanded": 5000001, "length_before": 14.0, "length_after": 18.0, "fitted": 9.0, "minimum": 12.0,
+                  "expanded": 5000001, "seen": 5000300, "distance": 3.0, "terrain": 100.0, "height": 14.0, "mesh": 4.0, "levels": 140000,
+                  "default": 5000000, "bytes": 140, "memory": 2.6, "length_before": 14.0, "length_after": 18.0, "fitted": 9.0, "minimum": 12.0,
                   "length": 200.0, "needed": 300.0, "drop": 30.0, "name": "Pista 1",
                   "fields": "nombre, cota", "version": "V01", "step": 2.0, "target": "PLT-001", "points": 2, "expected": "puntos",
                   "mean": 10.5, "area": 60.0, "difference": 0.4}
@@ -265,9 +272,9 @@ class RoadMessagesTest(unittest.TestCase):
             for word in words:
                 self.assertIn(word, text)
         text = messages.render("des.road_budget", layer="gis_fea_pistas_puntos", entity="Pista 1", budget=5000000,
-                               expanded=5000012, margin=60.0)
+                               seen=7654321, margin=60.0)
         self.assertIn("5000000", text)
-        self.assertIn("5000012", text)
+        self.assertIn("(7654321 estados explorados)", text)  # B-11: los estados vistos, no los expandidos (que son el presupuesto)
         self.assertIn("«Pista 1»", text)
 
     def test_the_start_from_the_final_surface_says_both_levels(self) -> None:

@@ -58,6 +58,20 @@ def build(surface: np.ndarray, origin: tuple[int, int], destination: tuple[int, 
     return job, mesh, corridor
 
 
+def build_at(surface: np.ndarray, origin: tuple[float, float], destination: Any, *, route: Any = None, pd_pct: float = 10.0, **options: Any) -> Any:
+    """El trabajo de una ruta entre dos **puntos** absolutos (o hasta un ``LevelDestination``) de la malla de ``route.mesh_m`` m sobre celdas de ese lado: como :func:`build` pero sin
+    pasar por el centro de un nodo (dos puntos pueden caer en el mismo nodo)."""
+    route = HYPOTHESES if route is None else route
+    rows, cols = surface.shape
+    grid = gis.Grid(west=500_000.0, north=4_400_000.0, dx=route.mesh_m, dy=route.mesh_m, ncols=cols, nrows=rows)
+    return rd.route_job(grid, surface, origin, destination, route=route, profile=rd.profile_with(max_gradient_pct=pd_pct), **options)
+
+
+def node_center(node: tuple[int, int], mesh_m: float = CELL_M) -> tuple[float, float]:
+    """El centro absoluto del nodo ``(i, j)`` de la malla de los casos (la de :func:`build` con ``factor`` 1)."""
+    return (500_000.0 + (node[1] + 0.5) * mesh_m, 4_400_000.0 - (node[0] + 0.5) * mesh_m)
+
+
 def run(steps: Any) -> Any:
     """Recorre los pasos: la ``Route`` del último (``Progress`` solo el último lleva el resultado)."""
     found, count = None, 0
@@ -234,6 +248,45 @@ class ConditionsTest(unittest.TestCase):
         verify(self, job, mesh, route)
         self.assertEqual((route.nodes, route.headings, route.turns), (((4, 2), (3, 4)), (3, 3), 0))
         self.assertAlmostEqual(route.cost, CELL_M * math.sqrt(5.0), delta=2e-9)
+
+
+def cliff_terrain(rows: int, cols: int, high: float, column: int) -> np.ndarray:
+    """Un llano con un escalón de ``high`` m en todas las filas desde la columna ``column``: no se puede rodear."""
+    terrain = flat(rows, cols)
+    terrain[:, column:] += high
+    return terrain
+
+
+def route_with_levels(height: float, step: float, **changes: Any) -> Any:
+    """Los parámetros de los casos de ``HYPOTHESES`` con otra altura máxima y otro paso de cota (y una holgura enorme: el pasillo es todo lo que alcanza la red 2D)."""
+    return rd.route_with(**{**dataclasses.asdict(HYPOTHESES), "max_cut_fill_m": height, "level_step_m": step, "margin_m": 100_000.0, **changes})
+
+
+class LevelJumpTest(unittest.TestCase):
+    """RF-017-10 (a), B-1 de la verificación única (T41): los saltos de nivel de un paso se recortan a ±2M y un intervalo **vacío** entero fuera de ellos no se da por bueno."""
+
+    def test_a_step_never_passes_pd_when_the_height_is_not_a_multiple_of_the_level_step(self) -> None:
+        """RF-017-10 (a), RF-017-12: con H = 0,5 m y un paso de cota de 0,28 m (H **no** es múltiplo: M = 1 y los niveles solo cubren ±0,28 m, aunque la red 2D admite |Δterreno| ≤ pd·L + 2H) la ruta que
+        cruza un escalón de 1,2 m o de 1,35 m no tiene un paso por encima de pd (antes cruzaba con el 16 % y el 19,75 % siendo pd el 10 %: ``verify`` recalcula la pendiente de cada paso); con el
+        paso de 0,25 m (H sí es múltiplo) y con un escalón que sí se salva, la ruta es la de siempre."""
+        for step, high in ((0.28, 1.2), (0.28, 1.35), (0.25, 1.2), (0.3, 1.0)):
+            job, mesh, corridor = build(cliff_terrain(9, 13, high, 7), (4, 2), (4, 11), route=route_with_levels(0.5, step))
+            route = solve(job, corridor)
+            with self.subTest(step=step, cliff=high):
+                self.assertTrue(corridor.reachable)
+                self.assertTrue(route.ok)
+                verify(self, job, mesh, route)
+
+    def test_a_level_step_bigger_than_the_height_follows_the_terrain_and_a_cliff_it_cannot_cross_is_no_route(self) -> None:
+        """RF-017-10 (a), RF-017-12: con un paso de cota mayor que H (M = 0: un solo nivel, la cota del terreno) la ruta sigue el terreno: un escalón de 0,35 m se cruza en un paso recto (pd · 4 m =
+        0,4 m) y uno de 1 m, que la red 2D admite (≤ pd·L + 2H), **no se cruza**: la búsqueda lo dice (``CORRIDOR``, sin ruta) en vez de cruzarlo con el 15 % de pendiente de más."""
+        job, mesh, corridor = build(cliff_terrain(9, 13, 0.35, 7), (4, 2), (4, 11), route=route_with_levels(0.5, 0.6))
+        verify(self, job, mesh, solve(job, corridor))
+        job, mesh, corridor = build(cliff_terrain(9, 13, 1.0, 7), (4, 2), (4, 11), route=route_with_levels(0.5, 0.6))
+        route = solve(job, corridor)
+        self.assertTrue(corridor.reachable)
+        self.assertEqual((route.ok, route.cause), (False, road_model.NoRouteCause.CORRIDOR))
+        self.assertEqual(route.nodes, ())
 
 
 class DeterminismTest(unittest.TestCase):

@@ -43,6 +43,7 @@ import numpy as np
 from tests.referencia.des import test_ref_roads as h1
 from tests.support import road_data as rd
 from tests.support.package import import_geoblender
+from tests.unit.design import test_road_route as route_base
 from tests.unit.design.test_road_no_route import strip_case
 
 access = import_geoblender("gis.masks.access")
@@ -414,6 +415,40 @@ class RejectionsTest(unittest.TestCase):
         rows, columns = np.nonzero(hole)
         self.assertEqual((error.values["x"], error.values["y"]), (GRID.west + (columns[0] + 0.5) * GRID.dx, GRID.north - (rows[0] + 0.5) * GRID.dy))
         self.assertEqual(self.assert_error(job, "des.entity_nodata", surface="des_dtm_partida").values["surface"], "des_dtm_partida")
+
+    def test_e_a_level_beyond_the_height_is_rejected_naming_the_height_before_the_search(self) -> None:
+        """RF-017-12, RF-017-04 (B-2 de la verificación única, T41): una cota de inicio a 3 m del terreno de su nodo con H = 1 m (o una de fin a 30 m) se rechaza con ``des.road_level_beyond_height``,
+        que nombra el campo (``start_level_m`` o ``end_level_m``), la cota y la altura máxima, **antes** de calcular la red 2D (no hay estado donde arrancar ni donde llegar: no hay nada que buscar)."""
+        for options, field, value in (({"start_level_m": 103.0}, "start_level_m", 103.0), ({"end_level_m": 130.0}, "end_level_m", 130.0)):
+            job, _mesh, _corridor = route_base.build(route_base.flat(9, 13), (4, 2), (4, 10), **options)
+            with self.subTest(field=field), mock.patch.object(road_net, "network_steps", side_effect=AssertionError("la red 2D no se calcula")):
+                error = self.assert_error(job, "des.road_level_beyond_height")
+                self.assertEqual((error.values["field"], error.values["value"]), (params.entity_key(job.code, field), value))
+                self.assertIn("altura máxima", error.text)
+                self.assertNotIn("pendiente mínima", error.text)
+
+    def test_f_origin_and_destination_in_the_same_node_of_the_mesh_are_rejected_with_the_mesh(self) -> None:
+        """RF-017-04, RF-017-12 (B-3 de la verificación única, T41): dos puntos distintos a menos de la malla de la ruta (3 m con la de 4 m: el mismo nodo) y una rampa cuya zona contiene el nodo del origen
+        con la cota pedida (la ruta de un solo nodo) se rechazan con ``des.road_same_node``, que nombra la capa, la pista, el campo y la malla, **nunca** con un ``ValueError`` pelado de ``axis_of`` («los puntos
+        del eje son al menos dos»): no se inventa un eje de un tramo."""
+        x, y = route_base.node_center((4, 4))
+        job = route_base.build_at(route_base.flat(9, 13), (x - 1.0, y), (x + 1.5, y + 0.5))
+        with mock.patch.object(road_net, "network_steps", side_effect=AssertionError("la red 2D no se calcula: es el mismo nodo")):  # dos puntos: antes de buscar nada
+            error = self.assert_error(job, "des.road_same_node")
+        self.assertEqual((error.values["field"], error.values["mesh"]), (params.entity_key(job.code, "destination"), 4.0))
+        self.assertEqual((error.values["x"], error.values["y"]), (x, y))
+        for expected in ("«Pista de prueba»", "mismo nodo de la malla de la ruta", "4 m", "no se crea nada"):
+            self.assertIn(expected, error.text)
+        self.assertNotIn("?", error.text)
+        self.assertNotIn("?", error.text_in("en"))
+        ring = np.array([[x - 2.0, y - 2.0], [x + 2.0, y - 2.0], [x + 2.0, y + 2.0], [x - 2.0, y + 2.0]])
+        ramp = route_base.build_at(route_base.flat(9, 13), (x - 1.0, y), road_model.LevelDestination(100.0, 0.25, ((ring,),)))
+        ramp = dataclasses.replace(ramp, request=dataclasses.replace(ramp.request, dest_zone="gis_fea_pistas_zonas"))
+        error = self.assert_error(ramp, "des.road_same_node")
+        self.assertEqual(error.values["field"], params.entity_key(ramp.code, "dest_zone"))
+        self.assertEqual(error.values["value"], "gis_fea_pistas_zonas")
+        apart = route_base.build_at(route_base.flat(9, 13), (x - 1.0, y), (x + 9.0, y))  # dos nodos de distancia: sí hay ruta
+        self.assertIsNotNone(last(road_store.road_compute_steps(apart, COMMON)))
 
 
 class CancelTest(unittest.TestCase):

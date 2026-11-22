@@ -3279,12 +3279,59 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.road_budget",
         "Layer «{layer}», haul road «{entity}»: the 3D search used up its budget of {budget} expanded states "
-        "({expanded} explored) without reaching the destination: that does not mean there is no route; reduce the slack "
-        "of the corridor ({margin} m) or raise the budget and calculate again; no limit is relaxed; nothing is "
+        "({seen} states explored) without reaching the destination: that does not mean there is no route; reduce the "
+        "slack of the corridor ({margin} m) or raise the budget and calculate again; no limit is relaxed; nothing is "
         "created.",
         "Capa «{layer}», pista «{entity}»: la búsqueda 3D agotó su presupuesto de {budget} estados expandidos "
-        "({expanded} explorados) sin llegar al destino: no significa que no haya ruta; reduzca la holgura del pasillo "
-        "({margin} m) o suba el presupuesto y calcule de nuevo; no se relaja ningún límite; no se crea nada.",
+        "({seen} estados explorados) sin llegar al destino: no significa que no haya ruta; reduzca la holgura del "
+        "pasillo ({margin} m) o suba el presupuesto y calcule de nuevo; no se relaja ningún límite; no se crea nada.",
+    ),
+    # RF-017-12 (B-2): la cota de inicio o de fin que no cabe en la altura máxima del terreno de su nodo no deja estado donde arrancar o acabar: la causa
+    # es la altura máxima (con el margen de los niveles de su nodo), no la pendiente ni la holgura; va con la nota de la altura máxima y su lugar.
+    Message(
+        "des.road_level_beyond_height",
+        "Layer «{layer}», haul road «{entity}»: there is no route: the level asked in «{field}» ({value} m) is {distance} "
+        "m from the terrain of its node of the route mesh ({terrain} m) and at that node the route can only lie "
+        "between {low} m and {high} m, because the maximum height of cut and fill is {height} m with levels of {step} "
+        "m; no route can start or end at that level: use a level inside that margin or raise the maximum height; no "
+        "limit is relaxed; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: no hay ruta: la cota pedida en «{field}» ({value} m) queda a {distance} m "
+        "del terreno de su nodo de la malla de la ruta ({terrain} m) y en ese nodo la ruta solo puede quedar entre "
+        "{low} m y {high} m, porque la altura máxima de desmonte y terraplén es de {height} m con niveles de {step} m; "
+        "ninguna ruta puede partir ni acabar a esa cota: ponga una cota dentro de ese margen o suba la altura máxima; "
+        "no se relaja ningún límite; no se crea nada.",
+    ),
+    # RF-017-04 (B-3): el origen y el destino en el mismo nodo de la malla de la ruta: no habría ningún tramo (la ruta de un solo nodo no tiene eje).
+    Message(
+        "des.road_same_node",
+        "Layer «{layer}», haul road «{entity}»: the origin and the destination («{field}»: {value}) fall in the same "
+        "node of the route mesh ({mesh} m, centre at x = {x} m, y = {y} m): the route would have no stretch; separate "
+        "the origin from the destination or reduce the route mesh; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: el origen y el destino («{field}»: {value}) caen en el mismo nodo de la "
+        "malla de la ruta ({mesh} m, centro en x = {x} m, y = {y} m): la ruta no tendría ningún tramo; separe el "
+        "origen del destino o reduzca la malla de la ruta; no se crea nada.",
+    ),
+    # RF-017-04 (B-5): un paso de cota que da demasiados niveles a cada lado con la altura máxima (la búsqueda tarda minutos y ocupa cientos de MiB).
+    Message(
+        "des.road_level_step_small",
+        "Layer «{layer}», haul road «{entity}»: the level step in «{field}» ({value} m) is too small for the maximum "
+        "height of cut and fill ({height} m): it would give {levels} levels on each side and the route search allows "
+        "at most {limit}; use a level step of {minimum} m or more, or lower the maximum height; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: el paso de cota de «{field}» ({value} m) es demasiado pequeño para la "
+        "altura máxima de desmonte y terraplén ({height} m): saldrían {levels} niveles a cada lado y la búsqueda de la "
+        "ruta admite como mucho {limit}; use un paso de cota de {minimum} m o más, o baje la altura máxima; no se "
+        "crea nada.",
+    ),
+    # RNF-017-07 (B-5): un presupuesto de estados de más del doble del de por defecto puede ocupar mucha memoria (≈ 140 bytes por estado visto).
+    Message(
+        "des.road_budget_memory",
+        "Haul road «{entity}»: the budget of the 3D search ({budget} states) is more than twice the default ({default}) "
+        "and the search can take about {memory} GiB of memory (about {bytes} bytes per state seen); if the computer "
+        "does not have so much, lower the budget; it can still be created.",
+        "Pista «{entity}»: el presupuesto de la búsqueda 3D ({budget} estados) es más del doble del de por defecto "
+        "({default}) y la búsqueda puede ocupar unos {memory} GiB de memoria (unos {bytes} bytes por estado visto); si "
+        "el equipo no los tiene, baje el presupuesto; se puede crear igualmente.",
+        "warning",
     ),
     Message(
         "des.road_limit_slope",

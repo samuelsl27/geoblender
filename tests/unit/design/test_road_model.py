@@ -230,6 +230,39 @@ class RouteParamsTest(unittest.TestCase):
             self.assertIn(name, str(caught.exception))
         self.assertEqual(route(max_cut_fill_m=0, lambda_per_m=0, turn_m=0, margin_m=0, simplify_m=0).margin_m, 0.0)
 
+    def test_the_levels_of_a_node_are_at_most_two_thousand_on_each_side(self) -> None:
+        """RF-017-10, RF-017-04, RNF-017-02, RNF-017-06, RNF-017-07 (B-5 de la verificación única, T41): el número de niveles a cada lado ``M = ⌊H/Δz⌋`` tiene un tope de 2.000 (``MAX_LEVELS``: 40 veces el de la
+        referencia, 14/0,28 = 50; un límite de **validez** de la búsqueda, no una cifra minera): con H = 14 m, un paso de 0,0001 m (140.000 niveles) tardaba 108 s en una sola llamada y 424 MiB; ``level_count`` da ``M``
+        como la búsqueda (14/0,28 es 50 aunque el cociente sea 49,999…), ``min_level_step_m`` el paso menor que lo cumple (redondeado hacia arriba al micrómetro) y ``RouteParams`` rechaza con el campo."""
+        self.assertEqual(road_model.MAX_LEVELS, 2000)
+        self.assertEqual(road_model.level_count(14.0, 0.28), 50)
+        self.assertEqual((road_model.level_count(0.5, 0.28), road_model.level_count(0.5, 0.6), road_model.level_count(0.0, 0.2)), (1, 0, 0))
+        self.assertEqual(road_model.level_count(14.0, 0.007), 2000)
+        self.assertEqual(road_model.min_level_step_m(14.0), 0.007)
+        self.assertEqual(road_model.min_level_step_m(1000.0), 0.5)
+        self.assertEqual(road_model.level_count(14.0, road_model.min_level_step_m(14.0)), 2000)
+        self.assertEqual(road_model.min_level_step_m(7.7777), 0.003889)  # hacia arriba: 3.888,85 µm son 3.889 (hacia abajo darían 2.000,4 niveles)
+        for height in (7.7777, 333.3, 0.3, 123.456):
+            self.assertLessEqual(road_model.level_count(height, road_model.min_level_step_m(height)), road_model.MAX_LEVELS, height)
+        self.assertEqual(route(max_cut_fill_m=14.0, level_step_m=0.007).level_step_m, 0.007)  # el límite se cumple
+        for wrong in (0.0001, 0.001, 0.00699):
+            with self.subTest(step=wrong), self.assertRaises(ValueError) as caught:
+                route(max_cut_fill_m=14.0, level_step_m=wrong)
+            self.assertIn("level_step_m", str(caught.exception))
+            self.assertIn("0.007", str(caught.exception))
+        self.assertEqual(route().max_cut_fill_m, 14.0)  # la de la referencia: 50 niveles
+
+    def test_a_big_search_budget_is_noticed_for_the_memory_it_can_take(self) -> None:
+        """RF-017-10, RNF-017-07 (B-5 de la verificación única, T41): el presupuesto de estados admite hasta 10⁹ (``ROAD_RANGES``) y cada estado visto ocupa ≈ 140 bytes (medidos por la T07 y la T34: 965 MiB con
+        5,98 M): un presupuesto de más del doble del que viene por defecto (5 M) da el aviso ``des.road_budget_memory`` con la memoria que puede ocupar (20 M estados, unos 2,6 GiB), y el de la referencia o menos, ninguno."""
+        self.assertEqual(road_model.ROUTE_STATE_BYTES, 140)
+        self.assertEqual(road_model.BUDGET_NOTICE_STATES, 2 * road_model.DEFAULT_SEARCH_BUDGET)
+        for budget in (1, road_model.DEFAULT_SEARCH_BUDGET, road_model.BUDGET_NOTICE_STATES):
+            self.assertIsNone(road_model.budget_memory_gib(budget), budget)
+        self.assertAlmostEqual(road_model.budget_memory_gib(20_000_000), 20_000_000 * 140 / 1024**3, places=9)
+        self.assertEqual(road_model.budget_memory_gib(1_000_000_000), 1_000_000_000 * 140 / 1024**3)
+        self.assertGreater(road_model.budget_memory_gib(road_model.BUDGET_NOTICE_STATES + 1), 1.3)
+
 
 class RoadRequestTest(unittest.TestCase):
     def test_a_request_asks_for_no_mining_figure(self) -> None:

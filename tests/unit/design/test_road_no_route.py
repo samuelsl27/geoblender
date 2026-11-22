@@ -25,6 +25,7 @@ from tests.unit.design import test_road_route as base
 road_route = import_geoblender("design.road_route")
 road_model = import_geoblender("design.road_model")
 messages = import_geoblender("design.messages")
+design_params = import_geoblender("design.params")
 gis = import_geoblender("gis")
 
 NoRouteCause = road_model.NoRouteCause
@@ -229,6 +230,12 @@ class StripTest(unittest.TestCase):
         for expected in ("3000", "no significa que no haya ruta", "holgura", "presupuesto", "60", "no se crea nada"):
             self.assertIn(expected, error.text)
         self.assertNotIn("?", error.text)
+        # B-11: «explorados» son los estados **vistos** (los que llegaron a tener coste), no los expandidos, que son siempre el presupuesto
+        self.assertGreater(found.seen, found.expanded)
+        self.assertEqual(error.values["seen"], found.seen)
+        self.assertIn(f"({found.seen} estados explorados)", error.text)
+        self.assertIn(f"({found.seen} states explored)", error.text_in("en"))
+        self.assertNotIn(f"({found.expanded} estados explorados)", error.text)
         tight = rd.route_with(**{**dataclasses.asdict(base.HYPOTHESES), "margin_m": 0.0})
         job_t, _mesh, corridor_t = base.build(base.flat(15, 20), (7, 5), (7, 10), route=tight, start_level_m=101.0, end_level_m=99.0)
         route_t = base.solve(job_t, corridor_t)
@@ -566,6 +573,80 @@ class LevelDestinationTest(unittest.TestCase):
         self.assertAlmostEqual(found.length_m, 8.0 * base.CELL_M, delta=1e-9)  # del nodo (5, 1) al (5, 9)
         self.assertEqual((found.limit.cause, found.limit.node, found.limit.heading), (LimitCause.MASK, (5, 5), EAST))
         self.assertEqual((found.limit.x, found.limit.y), mesh.center_of(5, 5))
+
+
+class LevelBeyondTest(unittest.TestCase):
+    """B-2 de la verificación única (T41; RF-017-12, RF-017-04): la cota de inicio o de fin que no cabe en la altura máxima del terreno de su nodo no deja estado de partida ni de llegada (``expanded = 0``);
+    el rechazo ya no es «no hay ruta» con la holgura y cifras que se contradicen («la ruta llega hasta la cota 99 m […] haría falta una pendiente mínima del 9,375 %» con un origen a 103 m y pd = 10 %): **nombra la
+    altura máxima como causa**, con el campo, el valor, el margen del terreno de su nodo y el tramo limitante."""
+
+    def beyond(self, **options: Any) -> tuple[Any, Any, Any, Any]:
+        """El caso del verificador B (un llano de 9 × 13 nodos de 4 m a 100 m, 1 m de altura máxima, paso de cota de 0,25 m, pd = 10 %): ``(trabajo, malla, ruta, diagnóstico)``."""
+        job, mesh, corridor = base.build(base.flat(9, 13), (4, 2), (4, 10), **options)
+        route = base.solve(job, corridor)
+        self.assertEqual((route.ok, route.cause, route.expanded), (False, NoRouteCause.CORRIDOR, 0))
+        return job, mesh, route, road_route.no_route(job, corridor.net_origin, corridor.net_dest, route)
+
+    def test_a_start_level_beyond_the_height_names_the_height_as_the_cause(self) -> None:
+        """RF-017-12, RF-017-04: con la cota de inicio a 103 m (3 m sobre el terreno) y H = 1 m, el diagnóstico es la altura máxima: ``beyond`` dice el campo (``start_level_m``), la cota pedida, la del terreno
+        de su nodo (100 m) y el margen (99 a 101 m) y el tramo limitante es el nodo del origen con la altura máxima como restricción; el rechazo (``des.road_level_beyond_height``) nombra la capa, la pista, el
+        campo y el valor, con la nota de la altura máxima y su lugar, **sin** la holgura ni «pendiente mínima» (la que contradecía a pd) y sin ningún marcador sin llenar en los dos idiomas."""
+        job, mesh, _route, found = self.beyond(start_level_m=103.0)
+        beyond = found.beyond
+        self.assertEqual((beyond.param, beyond.level_m, beyond.terrain_m, beyond.low_m, beyond.high_m), (design_params.RoadParam.START_LEVEL, 103.0, 100.0, 99.0, 101.0))
+        origin = mesh.node_of(*job.geometry.origin)
+        self.assertEqual(beyond.node, origin)
+        self.assertEqual((beyond.x, beyond.y), mesh.center_of(*origin))
+        self.assertEqual((found.limit.cause, found.limit.node, found.limit.heading), (LimitCause.HEIGHT, origin, None))
+        error = found.error(job)
+        self.assertEqual(error.code, "des.road_level_beyond_height")
+        self.assertEqual((error.field, error.value), ("des.road.rdw_001.start_level_m", 103.0))
+        self.assertEqual(error.values["layer"], "gis_fea_pistas_puntos")
+        self.assertEqual((error.values["terrain"], error.values["low"], error.values["high"], error.values["height"]), (100.0, 99.0, 101.0, 1.0))
+        self.assertEqual([code for code, _values in error.notes], ["des.road_limit_height"])
+        x, y = mesh.center_of(*origin)
+        self.assertEqual((error.notes[0][1]["x"], error.notes[0][1]["y"], error.notes[0][1]["height"]), (round(x, 3), round(y, 3), 1.0))
+        for expected in ("«Pista de prueba»", "103", "99", "101", "altura máxima de desmonte y terraplén", "no se relaja ningún límite", "no se crea nada"):
+            self.assertIn(expected, error.text)
+        for forbidden in ("pendiente mínima", "holgura", "?", "{"):
+            self.assertNotIn(forbidden, error.text)
+        for text in (error.text, error.text_in("en")):
+            self.assertNotIn("?", text)
+            self.assertNotIn("{", text)
+        self.assertIn("maximum height of cut and fill", error.text_in("en"))
+
+    def test_an_end_level_beyond_the_height_names_the_end_level_field(self) -> None:
+        """RF-017-12, RF-017-04: la cota de fin a 130 m (30 m sobre el terreno) con H = 1 m: el campo es ``end_level_m``, el nodo del destino y el margen del terreno de su nodo; el origen, que sí cabe, no
+        es el que se nombra."""
+        job, mesh, _route, found = self.beyond(end_level_m=130.0)
+        self.assertEqual((found.beyond.param, found.beyond.level_m, found.beyond.node), (design_params.RoadParam.END_LEVEL, 130.0, (4, 10)))
+        error = found.error(job)
+        self.assertEqual((error.code, error.field, error.value), ("des.road_level_beyond_height", "des.road.rdw_001.end_level_m", 130.0))
+        self.assertEqual((found.limit.cause, found.limit.node), (LimitCause.HEIGHT, (4, 10)))
+
+    def test_the_margin_is_the_levels_the_search_can_use_when_the_height_is_not_a_multiple_of_the_step(self) -> None:
+        """RF-017-12: con H = 0,5 m y el paso de cota de 0,28 m (M = 1: los niveles son −0,28, 0 y +0,28 m) una cota a 0,45 m del terreno, que cabe en H, no tiene nivel (el más próximo es el 2) y el rechazo
+        lo dice con **el margen de los niveles** (99,72 a 100,28 m), la altura máxima (0,5 m) y el paso (0,28 m) para que no se contradiga; a 0,4 m, el nivel 1, **sí hay ruta**."""
+        route = rd.route_with(**{**dataclasses.asdict(base.HYPOTHESES), "max_cut_fill_m": 0.5, "level_step_m": 0.28})
+        job, _mesh, _found_route, found = self.beyond(route=route, start_level_m=100.45)
+        self.assertEqual((found.beyond.low_m, found.beyond.high_m), (99.72, 100.28))
+        error = found.error(job)
+        self.assertEqual((error.values["low"], error.values["high"], error.values["height"], error.values["step"]), (99.72, 100.28, 0.5, 0.28))
+        for expected in ("99,72", "100,28", "0,5 m", "0,28 m"):
+            self.assertIn(expected, error.text)
+        job, mesh, corridor = base.build(base.flat(9, 13), (4, 2), (4, 10), route=route, start_level_m=100.4)
+        self.assertTrue(base.solve(job, corridor).ok)
+        self.assertIsNone(road_route.level_beyond(job, mesh, mesh.node_of(*job.geometry.origin), road_route.route_target(job, mesh)))
+
+    def test_without_a_level_beyond_the_height_the_diagnosis_is_the_usual_one(self) -> None:
+        """RF-017-12 (control): la franja de CE-017-04 (que no puede subir 30 m) sigue dando ``des.road_no_route_corridor`` con la pendiente mínima del 30 % y el tramo limitante de la pendiente, sin
+        ``beyond``; y con una cota de inicio que cabe (101 m con H = 1 m) tampoco hay ``beyond``."""
+        job, mesh, corridor = strip_case()
+        found = road_route.no_route(job, corridor.net_origin, corridor.net_dest, base.solve(job, corridor))
+        self.assertIsNone(found.beyond)
+        self.assertEqual((found.error(job).code, found.limit.cause), ("des.road_no_route_corridor", LimitCause.SLOPE))
+        job_ok, mesh_ok, _corridor_ok = base.build(base.flat(9, 13), (4, 2), (4, 10), start_level_m=101.0)
+        self.assertIsNone(road_route.level_beyond(job_ok, mesh_ok, mesh_ok.node_of(*job_ok.geometry.origin), road_route.route_target(job_ok, mesh_ok)))
 
 
 class StepsTest(unittest.TestCase):

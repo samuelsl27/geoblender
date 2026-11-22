@@ -37,7 +37,9 @@ Lo que da, todo en el dominio (Python y numpy, sin Blender), con las coordenadas
   recta entre los nodos**, que es la de cualquier ruta como mínimo) y el **tramo limitante** (:class:`LimitingStretch`): el nodo de lo
   alcanzado más próximo al otro extremo y la causa, leída de su primer paso inadmisible en la dirección del otro extremo (:func:`step_reason`:
   una zona que las máscaras prohíben, el borde de la rejilla, celdas sin dato, la altura máxima de desmonte y terraplén o, con altura 0, la
-  pendiente). Con el pasillo agotado las cifras del origen salen de **los estados vistos** (``Route.high_m`` y ``low_m``). Si la búsqueda
+  pendiente). Con el pasillo agotado las cifras del origen salen de **los estados vistos** (``Route.high_m`` y ``low_m``). Si lo que falta es **un estado donde arrancar o acabar** (la cota de inicio o de
+  fin no cabe en la altura máxima ajustada al paso de cota del terreno de su nodo: :func:`level_beyond`, :class:`LevelBeyond`; B-2, T41), la causa **es la altura máxima** y no la pendiente ni la
+  holgura: su propio rechazo (``des.road_level_beyond_height``) con el campo, la cota, el margen de los niveles de su nodo y el tramo limitante, **antes** de calcular la red 2D. Si la búsqueda
   **agotó su presupuesto**, una tercera causa distinta (``des.road_budget``): los estados explorados y que reducir la holgura o subir el
   presupuesto puede dar una ruta; no se dice que no la haya.
 - **El destino por cota** (la rampa, D-4; :func:`route_target` y :func:`arrival_of`): el conjunto de nodos de la zona (el centro del nodo dentro
@@ -71,7 +73,7 @@ from ..core.project.model import Progress
 from ..gis.grid import Grid
 from .messages import DesignError
 from .params import RoadParam, entity_key
-from .road_model import LevelDestination, LimitCause, NoRouteCause, RoadJob, RoadMode
+from .road_model import LevelDestination, LimitCause, NoRouteCause, RoadJob, RoadMode, level_count
 from .road_net import (
     _INTERMEDIATES,
     _STEP_TOLERANCE_M,
@@ -93,10 +95,12 @@ from .zones import polygons_cells
 __all__ = [
     "COST_SCALE",
     "Arrival",
+    "LevelBeyond",
     "LimitingStretch",
     "NoRoute",
     "Route",
     "arrival_of",
+    "level_beyond",
     "no_route",
     "node_reason",
     "route_steps",
@@ -112,8 +116,6 @@ _TURN_BITS = 24
 """Los bits de los giros en el coste empaquetado (hasta 16 millones de giros en una ruta)."""
 _SLOPE_TOLERANCE_M = 1e-9
 """El margen (m) con que se compara ``|Δcota| ≤ pd·L``: el mismo que el de ``road_net.step_masks``."""
-_LEVEL_TOLERANCE = 1e-9
-"""El margen (en niveles) con que ``H/Δz`` da el número de niveles ``M``: ``14/0,28`` es 49,999… o 50,000… según el último bit."""
 _HEURISTIC_SHRINK = 1e-8
 """La parte (relativa; mayor si la malla es menor de 1 m) en que se reduce la cota admisible al pasarla a enteros: el redondeo de
 un paso (±0,5 unidades) y del suelo de la cota cabe en ella, de modo que la cota entera sigue siendo **consistente** y ningún estado
@@ -237,7 +239,7 @@ def _search_units(job: RoadJob, corridor: Corridor) -> Generator[None, None, Rou
     rows, cols = mesh.shape
     pd = job.profile.max_gradient_pct / 100.0
     step_m, height, budget = params.level_step_m, params.max_cut_fill_m, params.search_budget
-    top = math.floor(height / step_m + _LEVEL_TOLERANCE)  # M: los niveles son −M..M
+    top = level_count(height, step_m)  # M: los niveles son −M..M (a lo sumo road_model.MAX_LEVELS: la preparación lo rechaza antes)
     span = 2 * top
     slots = 2 * top + 1  # los niveles de un nodo
     empty_levels, empty_centers = _readonly(np.empty(0)), _readonly(np.empty((0, 2)))
@@ -279,6 +281,10 @@ def _search_units(job: RoadJob, corridor: Corridor) -> Generator[None, None, Rou
         with np.errstate(invalid="ignore"):
             lowest = np.ceil((-pd * length - _SLOPE_TOLERANCE_M - drop) / step_m)
             highest = np.floor((pd * length + _SLOPE_TOLERANCE_M - drop) / step_m)
+            # El intervalo verdadero de saltos de nivel [lowest, highest] **sin recortar**: si no tiene ningún entero (lowest > highest) o cae entero fuera de ±2M, el paso no es admisible.
+            # Recortar antes de mirarlo (B-1) convertía un intervalo vacío fuera de ±2M en uno de un solo valor y daba por bueno un paso que pasa de pd (cuando H no es múltiplo del paso
+            # de cota o el paso es mayor que H la red 2D admite |Δterreno| ≤ pd·L + 2H y los niveles solo cubren 2·M·Δz).
+            allowed &= (lowest <= highest) & (highest >= -span) & (lowest <= span)
         lowest = np.where(allowed, np.clip(lowest, -span, span), 1.0).astype(np.int32)
         highest = np.where(allowed, np.clip(highest, -span, span), 0.0).astype(np.int32)
         floats = [COST_SCALE * length * (1.0 + params.lambda_per_m * step_m * both * 0.5) for both in range(span + 1)]
@@ -592,6 +598,83 @@ class LimitingStretch:
 
 
 @dataclass(frozen=True, slots=True)
+class LevelBeyond:
+    """La cota de inicio o de fin que **no cabe en la altura máxima** del terreno de su nodo (B-2 de la verificación única, T41; RF-017-12, RF-017-04): ``param`` (``START_LEVEL``, ``END_LEVEL`` o
+    ``DEST_LEVEL``: el campo que la pide), la cota pedida (``level_m``), la del terreno de su nodo (``terrain_m``: la media de su bloque), el **margen de los niveles** que la búsqueda puede usar en ese nodo
+    (``low_m`` a ``high_m``: el terreno ± M·Δz, con M el número de niveles, que es la altura máxima ajustada al paso de cota) y el ``node`` ``(i, j)`` con su lugar (``x`` e ``y``: el centro, absoluto, float64).
+    Con ella no hay estado donde arrancar o donde llegar (``Route.expanded`` 0): **no es** «no hay ruta» por la pendiente ni por la holgura, y su texto (:meth:`error`) no da las cifras de esas
+    causas. :attr:`limit` es el tramo limitante, con la altura máxima como restricción."""
+
+    param: RoadParam
+    level_m: float
+    terrain_m: float
+    low_m: float
+    high_m: float
+    node: tuple[int, int]
+    x: float
+    y: float
+
+    @property
+    def limit(self) -> LimitingStretch:
+        """El tramo limitante de RF-017-12: el nodo de la cota, con **la altura máxima de desmonte y terraplén** como restricción (sin primer paso inadmisible: el propio nodo)."""
+        return LimitingStretch(LimitCause.HEIGHT, self.node, self.x, self.y, None)
+
+    def error(self, job: RoadJob) -> DesignError:
+        """El rechazo de la persona (``des.road_level_beyond_height``: RF-017-04 y RF-017-12) con la capa, la pista, el campo y la cota, el margen del nodo y, detrás, la nota de la altura máxima con su lugar
+        (:attr:`limit`). No registra nada ni relaja ningún límite."""
+        if not isinstance(job, RoadJob) or job.route is None:
+            raise TypeError(f"el trabajo de una pista en el modo «trazar» es RoadJob, no {job!r}")
+        params, request = job.route, job.request
+        note = {"x": _shown(self.x), "y": _shown(self.y), "height": params.max_cut_fill_m}
+        return DesignError("des.road_level_beyond_height", obj=f"Pista «{request.name}» de la capa «{request.layer}»", field=entity_key(job.code, self.param.value), value=self.level_m,
+                           layer=request.layer, entity=request.name, distance=_shown(abs(self.level_m - self.terrain_m)), terrain=_shown(self.terrain_m), low=_shown(self.low_m),
+                           high=_shown(self.high_m), height=params.max_cut_fill_m, step=params.level_step_m, notes=[(self.limit.cause.value, note)])
+
+
+def _nodes_of(target: object, cols: int) -> list[tuple[int, int]]:
+    """Los nodos ``(i, j)`` de un destino: un nodo, una máscara de la malla (el destino por cota) o los índices planos de los nodos."""
+    if isinstance(target, tuple):
+        return [(int(target[0]), int(target[1]))]
+    array = np.asarray(target)
+    flat = np.flatnonzero(array.ravel()) if array.dtype == np.bool_ else array.ravel()
+    return [divmod(int(index), cols) for index in flat.tolist()]
+
+
+def level_beyond(job: RoadJob, mesh: RouteMesh, origin: tuple[int, int], target: object) -> LevelBeyond | None:
+    """La cota de inicio o de fin de ``job`` que no cabe en la altura máxima del terreno de su nodo, o ``None`` si cabe (B-2, T41; RF-017-12). Es **el criterio de la búsqueda** (:func:`_search_units`): un nodo
+    tiene estado de partida o de llegada si el nivel más próximo a la cota pedida (:func:`_levels_toward`) está entre ``−M`` y ``M`` (``M = ⌊H/Δz⌋``: la altura máxima ajustada al paso de cota, que con una
+    altura que no es múltiplo del paso es menos que ``H``); sin él, la búsqueda sale sin estados expandidos. ``origin`` es el nodo del origen y ``target`` el destino (como lo da :func:`route_target`: un nodo, o
+    la máscara de los nodos del destino por cota); solo cuentan los nodos que se pisan (los demás los explica la red 2D). **Primero** la cota de inicio y luego la de fin (la del destino por cota si lo es); del
+    destino por cota, el nodo cuyo terreno más se acerca a la cota pedida. Solo lee."""
+    params = job.route
+    assert params is not None
+    step_m = params.level_step_m
+    top = level_count(params.max_cut_fill_m, step_m)
+    cols = mesh.shape[1]
+    destination = job.geometry.destination
+    wanted_end = destination.level_m if isinstance(destination, LevelDestination) else job.end_level_m
+    end_param = RoadParam.DEST_LEVEL if isinstance(destination, LevelDestination) else RoadParam.END_LEVEL
+    for param, wanted, nodes in ((RoadParam.START_LEVEL, job.start_level_m, [origin]), (end_param, wanted_end, _nodes_of(target, cols))):
+        if wanted is None:
+            continue
+        nearest: tuple[float, tuple[int, int]] | None = None
+        for node in nodes:
+            if not bool(mesh.walkable[node]):
+                continue
+            ground = float(mesh.z[node])
+            if -top <= _levels_toward(wanted, ground, step_m) <= top:
+                nearest = None
+                break
+            if nearest is None or abs(wanted - ground) < abs(wanted - nearest[0]):
+                nearest = (ground, node)
+        if nearest is not None:
+            ground, node = nearest
+            x, y = mesh.center_of(*node)
+            return LevelBeyond(param, float(wanted), ground, ground - top * step_m, ground + top * step_m, node, x, y)
+    return None
+
+
+@dataclass(frozen=True, slots=True)
 class NoRoute:
     """Por qué no hay ruta (A3, RF-017-12): la ``cause`` (:class:`~design.road_model.NoRouteCause`; su valor es el código del rechazo) y la
     holgura del pasillo (``margin_m``). Con la red 2D que no llega al origen (``NETWORK``) y con el pasillo sin ruta 3D (``CORRIDOR``): las cotas
@@ -602,6 +685,9 @@ class NoRoute:
     extremos y no hay una más corta, la distancia en línea recta entre los nodos —``"straight"``—) y el **tramo limitante** (``limit``; ``None``
     si no se buscó o no hay a quien atribuirlo). Con el presupuesto agotado (``BUDGET``: **no** es «no hay ruta»), solo ``budget``, ``expanded``
     y ``seen`` (los estados explorados) y ``margin_m``: no se sabe si la hay.
+
+    **Una cota de inicio o de fin que no cabe en la altura máxima** (``beyond``, B-2: ninguna ruta puede arrancar o acabar a esa cota, y el «sin ruta» no es por la pendiente ni por la holgura): el tramo
+    limitante es el nodo con la altura máxima como restricción y :meth:`error` da ``des.road_level_beyond_height`` (no el de ``cause``), sin las cifras de la pendiente mínima que se contradirían.
 
     **No registra nada ni relaja ningún límite** (B2): es un resultado. :meth:`error` lo convierte en el rechazo del catálogo."""
 
@@ -619,6 +705,7 @@ class NoRoute:
     budget: int | None = None
     expanded: int | None = None
     seen: int | None = None
+    beyond: LevelBeyond | None = None
 
     def error(self, job: RoadJob) -> DesignError:
         """El rechazo de la persona (``des.road_no_route_network``, ``des.road_no_route_corridor`` o ``des.road_budget``: RF-017-12) con la
@@ -630,9 +717,11 @@ class NoRoute:
         request = job.request
         obj = f"Pista «{request.name}» de la capa «{request.layer}»"
         shared = {"layer": request.layer, "entity": request.name}
+        if self.beyond is not None:  # la cota de inicio o de fin no cabe en la altura máxima: no hay estado donde arrancar o acabar (B-2)
+            return self.beyond.error(job)
         if self.cause is NoRouteCause.BUDGET:
             return DesignError(self.cause.value, obj=obj, field=entity_key(job.code, RoadParam.SEARCH_BUDGET.value), value=self.budget,
-                               budget=self.budget, expanded=self.expanded, margin=_shown(self.margin_m), **shared)
+                               budget=self.budget, expanded=self.expanded, seen=self.seen, margin=_shown(self.margin_m), **shared)
         param = _ERROR_FIELD[self.cause]
         value = job.route.max_cut_fill_m if param is RoadParam.MAX_CUT_FILL else self.margin_m
         notes: list[tuple[str, dict[str, object]]] = []
@@ -790,5 +879,8 @@ def no_route(job: RoadJob, net_origin: Network, net_dest: Network, route: Route 
         limit = _frontier_limit(mesh, np.isfinite(route.high_m), pivot, targets, pd, hmax, route)
     else:
         limit = None
+    beyond = level_beyond(job, mesh, origin, targets)  # B-2: sin estado donde arrancar o acabar, la causa es la altura máxima y no la pendiente ni la holgura
+    if beyond is not None:
+        limit = beyond.limit
     return NoRoute(NoRouteCause.CORRIDOR if reachable else NoRouteCause.NETWORK, params.margin_m, z_origin, z_destination, rising,
-                   reached_origin, reached_destination, length, basis, gradient, limit)
+                   reached_origin, reached_destination, length, basis, gradient, limit, beyond=beyond)

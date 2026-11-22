@@ -66,6 +66,7 @@ __all__ = [
     "corridor",
     "mesh_factor",
     "network_steps",
+    "node_at",
     "route_mesh",
     "step_masks",
 ]
@@ -160,6 +161,16 @@ def mesh_factor(grid: Grid, mesh_m: float) -> int:
     return int(factor)
 
 
+def node_at(grid: Grid, factor: int, x: float, y: float) -> tuple[int, int]:
+    """El nodo ``(i, j)`` de la malla de bloques de ``factor × factor`` celdas de ``grid`` que contiene el punto absoluto ``(x, y)`` (:meth:`RouteMesh.node_of` sin construir la malla: la preparación de una pista
+    comprueba con ella que el origen y el destino no caen en el mismo nodo, B-3). ``ValueError`` si el punto cae fuera de la rejilla."""
+    column = math.floor((float(x) - grid.west) / grid.dx)
+    row = math.floor((grid.north - float(y)) / grid.dy)
+    if not (0 <= row < grid.nrows and 0 <= column < grid.ncols):
+        raise ValueError(f"el punto ({x}, {y}) cae fuera de la rejilla del proyecto: no es de ningún nodo")
+    return (row // factor, column // factor)
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class RouteMesh:
     """La malla de la ruta (A0, A1; D-10, P-6): ``grid`` (la del proyecto), el factor ``k`` (cada nodo es un bloque de ``k × k``
@@ -192,12 +203,7 @@ class RouteMesh:
     def node_of(self, x: float, y: float) -> tuple[int, int]:
         """El nodo ``(i, j)`` que contiene el punto absoluto ``(x, y)`` (el de su celda: un punto en el borde de dos celdas va a la del
         este y a la del sur). ``ValueError`` si cae fuera de la rejilla del proyecto."""
-        grid = self.grid
-        column = math.floor((float(x) - grid.west) / grid.dx)
-        row = math.floor((grid.north - float(y)) / grid.dy)
-        if not (0 <= row < grid.nrows and 0 <= column < grid.ncols):
-            raise ValueError(f"el punto ({x}, {y}) cae fuera de la rejilla del proyecto: no es de ningún nodo")
-        return (row // self.k, column // self.k)
+        return node_at(self.grid, self.k, x, y)
 
     def center_of(self, i: int, j: int) -> tuple[float, float]:
         """El centro (absoluto, float64) del bloque del nodo ``(i, j)`` (el nominal, de ``k × k`` celdas, también en los bloques

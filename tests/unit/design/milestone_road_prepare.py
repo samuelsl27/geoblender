@@ -10,6 +10,8 @@
   con los que se compara (b: T19-b).
 - **Una plataforma de destino** (:class:`PlatformDestinationTest`, RF-017-03, RF-017-04, T19-c, RF-015-15): el destino ``entity:PLT-001`` es el punto de la capa que cae en su huella
   (ni ninguno ni varios), su cota es la de su ``des_psf_`` y la pista **se apoya en ella** (la superficie y la tabla de su huella son entradas; la fila ``supports`` lo dice).
+- **Los parámetros de la ruta** (:class:`RouteGuardsTest`, RF-017-04, RF-017-10, RF-017-12, RNF-017-07; B-3 y B-5 de la verificación única, T41): preparando de verdad, el paso de cota que da más de 2.000 niveles a
+  cada lado, el origen y el destino en el mismo nodo de la malla y el aviso de la memoria de un presupuesto de estados de más del doble del de por defecto; los comprobadores puros son de ``test_road_prepare``.
 
 Sobre el proyecto de las pistas (``tests.support.road_data``, rejilla de 2 m, 200 × 200 celdas). **Nada se escribe** al preparar; lo que cambia el proyecto es el montaje de cada clase.
 """
@@ -270,3 +272,38 @@ class PlatformDestinationTest(PrepareCase):
         self.assertIn(prepared.start_surface, [use.item for use in prepared.start.inputs if str(use.role) == provenance.SURFACE_ROLE])
         error = self.refused(request("Otra pista", origin="Origen rampa", destination="Destino rampa", surface=RAMP), "des.entity_start_taken")
         self.assertEqual((error.values["entity"], error.values["other"]), ("Otra pista", self.PLATFORM))
+
+
+class RouteGuardsTest(PrepareCase):
+    """B-3 y B-5 de la verificación única (T41; RF-017-04, RF-017-10, RF-017-12; RNF-017-07) **preparando de verdad** sobre el proyecto: el paso de cota que da demasiados niveles, el origen y el destino en el
+    mismo nodo de la malla y el aviso de la memoria de un presupuesto de estados grande; los comprobadores puros son de ``test_road_prepare.RouteGuardsTest`` (el «verde»)."""
+
+    def test_preparing_rejects_a_level_step_that_gives_too_many_levels(self) -> None:
+        """RF-017-04, RF-017-10, RNF-017-06 (B-5 de la verificación única, T41): con H = 14 m, un paso de cota de 0,0001 m (140.000 niveles a cada lado: 108 s en una sola llamada y 424 MiB) se rechaza al
+        preparar, sin calcular nada, con el campo (``level_step_m``), el valor, los niveles que saldrían, el tope (2.000) y **el paso mínimo para esa altura** (0,007 m); los 50 niveles de la referencia (14 m,
+        0,28 m) y el límite exacto (0,007 m: 2.000 niveles) se preparan."""
+        error = self.refused(request(max_cut_fill_m=14.0, level_step_m=0.0001), "des.road_level_step_small")
+        self.assertEqual((error.values["field"], error.values["value"]), (f"{KEY}level_step_m", 0.0001))
+        self.assertEqual((error.values["height"], error.values["levels"], error.values["limit"], error.values["minimum"]), (14.0, 140_000, 2000, 0.007))
+        for text in (error.text, error.text_in("en")):
+            self.assertIn("0,007" if text is error.text else "0.007", text)
+        self.assertEqual(self.prepare(request(max_cut_fill_m=14.0, level_step_m=0.28)).job.route.level_step_m, 0.28)
+        self.assertEqual(self.prepare(request(max_cut_fill_m=14.0, level_step_m=0.007)).job.route.level_step_m, 0.007)
+
+    def test_preparing_rejects_two_points_in_the_same_node_of_the_mesh(self) -> None:
+        """RF-017-04, RF-017-12 (B-3 de la verificación única, T41): el origen y el destino que caen en el mismo nodo de la malla de la ruta (con una malla de 400 m, la rejilla entera: un nodo) se rechazan al
+        preparar con ``des.road_same_node`` —la capa, la pista, el campo ``destination``, el valor y la malla—, nunca con un ``ValueError``; con la malla de la referencia (4 m) no."""
+        error = self.refused(request(mesh_m=400.0), "des.road_same_node")
+        self.assertEqual((error.values["field"], error.values["value"], error.values["mesh"]), (f"{KEY}destination", "Destino rampa", 400.0))
+        self.assertEqual(error.values["layer"], rd.POINTS_LAYER)
+        self.assertIn("400 m", error.text)
+        self.assertEqual(self.prepare(request()).job.route.mesh_m, 4.0)
+
+    def test_preparing_carries_the_memory_notice_of_a_big_search_budget(self) -> None:
+        """RF-017-10, RNF-017-07 (B-5 de la verificación única, T41): un presupuesto de estados de 20 M (admite hasta 10⁹) deja entre los avisos de la partida ``des.road_budget_memory`` con la memoria que puede
+        ocupar (≈ 2,6 GiB con 140 bytes por estado visto), que no impide crearla; con el de la referencia, ninguno."""
+        found = [notice for notice in self.prepare(request(search_budget=20_000_000)).notices if notice.code == "des.road_budget_memory"]
+        self.assertEqual(len(found), 1)
+        self.assertEqual((found[0].values["entity"], found[0].values["budget"]), ("Pista de la rampa", 20_000_000))
+        self.assertAlmostEqual(found[0].values["memory"], 2.6, places=1)
+        self.assertEqual([notice.code for notice in self.prepare(request()).notices if notice.code == "des.road_budget_memory"], [])

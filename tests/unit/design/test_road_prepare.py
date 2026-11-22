@@ -12,6 +12,7 @@ Sobre el proyecto de las pistas (``tests.support.road_data``: la cantera de la 0
 
 from __future__ import annotations
 
+import dataclasses
 import unittest
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -162,6 +163,65 @@ class PrepareCase(rd.RoadProjectCase):
         for text in ((error.text, error.text_in("en")) if isinstance(error, DesignError) else (str(error),)):
             self.assertNotIn("{", text)
         return error
+
+
+class RouteGuardsTest(unittest.TestCase):
+    """Los tres comprobadores de la preparación de la ruta de la T41 (B-3 y B-5 de la verificación única), **puros** (sin proyecto: el «verde» no suma ni 5 ms); preparar con ellos sobre el proyecto es de
+    ``milestone_road_prepare.RouteGuardsTest``."""
+
+    def test_a_level_step_that_gives_too_many_levels_is_rejected_with_the_minimum_step(self) -> None:
+        """RF-017-04, RF-017-10, RNF-017-06 (B-5): con H = 14 m, un paso de cota de 0,0001 m (140.000 niveles a cada lado: 108 s en una sola llamada y 424 MiB) se rechaza **sin calcular**, con el campo
+        (``level_step_m``), el valor, los niveles que saldrían, el tope (2.000) y **el paso mínimo para esa altura** (0,007 m); los 50 niveles de la referencia (14 m, 0,28 m) y el límite exacto (0,007 m: 2.000
+        niveles) pasan, y un valor que falta o fuera de rango lo dicen sus reglas, no esta."""
+        values = {"max_cut_fill_m": 14.0, "level_step_m": 0.0001}
+        with self.assertRaises(DesignError) as caught:
+            road_store._check_level_count(request(), CODE, values)
+        error = caught.exception
+        self.assertEqual(error.code, "des.road_level_step_small")
+        self.assertEqual((error.values["field"], error.values["value"]), (f"{KEY}level_step_m", 0.0001))
+        self.assertEqual((error.values["height"], error.values["levels"], error.values["limit"], error.values["minimum"]), (14.0, 140_000, 2000, 0.007))
+        self.assertIn("0,007", error.text)
+        self.assertIn("0.007", error.text_in("en"))
+        for text in (error.text, error.text_in("en")):
+            self.assertNotIn("{", text)
+            self.assertNotIn("?", text)
+        for fine in ({"max_cut_fill_m": 14.0, "level_step_m": 0.28}, {"max_cut_fill_m": 14.0, "level_step_m": 0.007}, {"max_cut_fill_m": 14.0},
+                     {"max_cut_fill_m": 14.0, "level_step_m": 0.0}, {"max_cut_fill_m": 0.0, "level_step_m": 0.0001}):
+            self.assertIsNone(road_store._check_level_count(request(), CODE, fine), fine)
+
+    def test_two_points_in_the_same_node_of_the_mesh_are_rejected_before_calculating(self) -> None:
+        """RF-017-04, RF-017-12 (B-3): el origen y el destino que caen en el mismo nodo de la malla de la ruta (la rejilla de 2 m con la malla de 400 m: un nodo; o dos puntos a 3 m con la de 4 m) se
+        rechazan con ``des.road_same_node`` —la capa, la pista, el campo ``destination``, el valor, la malla y el centro del nodo—, nunca con un ``ValueError``; con la malla de la referencia (4 m) y puntos
+        de nodos distintos no."""
+        origin, destination = absolute(rd.RAMP_ORIGIN), absolute(rd.RAMP_DESTINATION)
+        with self.assertRaises(DesignError) as caught:
+            road_store._check_apart(request(), CODE, GRID, 400.0, origin, destination)
+        error = caught.exception
+        self.assertEqual(error.code, "des.road_same_node")
+        self.assertEqual((error.values["field"], error.values["value"], error.values["mesh"]), (f"{KEY}destination", "Destino rampa", 400.0))
+        self.assertEqual((error.values["layer"], error.values["x"], error.values["y"]), (rd.POINTS_LAYER, GRID.west + 200.0, GRID.north - 200.0))
+        self.assertIn("400 m", error.text)
+        for text in (error.text, error.text_in("en")):
+            self.assertNotIn("{", text)
+            self.assertNotIn("?", text)
+        with self.assertRaises(DesignError):
+            road_store._check_apart(request(), CODE, GRID, 4.0, origin, (origin[0] + 3.0, origin[1]))
+        self.assertIsNone(road_store._check_apart(request(), CODE, GRID, 4.0, origin, destination))
+
+    def test_a_search_budget_over_twice_the_default_carries_the_memory_notice(self) -> None:
+        """RF-017-10, RNF-017-07 (B-5): un presupuesto de estados de 20 M (admite hasta 10⁹) da el aviso ``des.road_budget_memory`` con la memoria que puede ocupar (≈ 2,6 GiB con 140 bytes por estado
+        visto), que no impide crearla; con el de la referencia o el doble del de por defecto, ninguno."""
+        reference = road_model.RouteParams(**{field: getattr(rd.ROUTE, field) for field in ROUTE_FIELDS})
+        self.assertIsNone(road_store._budget_notice("Pista de la rampa", reference))
+        big = dataclasses.replace(reference, search_budget=20_000_000)
+        notice = road_store._budget_notice("Pista de la rampa", big)
+        self.assertEqual(notice.code, "des.road_budget_memory")
+        self.assertEqual((notice.values["entity"], notice.values["budget"], notice.values["default"], notice.values["bytes"]), ("Pista de la rampa", 20_000_000, 5_000_000, 140))
+        self.assertAlmostEqual(notice.values["memory"], 2.6, places=1)
+        self.assertEqual(notice.severity, "warning")
+        for language in ("es", "en"):
+            self.assertNotIn("?", notice.text(language))
+        self.assertIsNone(road_store._budget_notice("Pista de la rampa", dataclasses.replace(reference, search_budget=10_000_000)))
 
 
 class RoadPrepareTest(PrepareCase):
