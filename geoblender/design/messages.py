@@ -3725,6 +3725,39 @@ CATALOG: tuple[Message, ...] = (
         "Slope rose «{profile}»: the ranges overlap between {from_deg}° and {to_deg}°; they must not overlap.",
         "Roseta de taludes «{profile}»: los rangos se solapan entre {from_deg}° y {to_deg}°; no deben solaparse.",
     ),
+    # La roseta y la definición de rampa (spec 018, T04; RF-018-07, 15): nombres, rangos y la pendiente frente a la pd. -------------------
+    Message(
+        "des.pit_rose_name_missing",
+        "Slope rose «{profile}» has no name; give it one.",
+        "La roseta de taludes «{profile}» no tiene nombre; póngale uno.",
+    ),
+    Message(
+        "des.pit_rose_name_repeated",
+        "Slope rose «{profile}» has the name «{value}», which rose «{other}» already has; give each rose its own name.",
+        "La roseta de taludes «{profile}» se llama «{value}», como la roseta «{other}»; dé a cada roseta su propio nombre.",
+    ),
+    Message(
+        "des.pit_rose_no_ranges",
+        "Slope rose «{profile}» has no ranges; it needs at least one that covers 0° to 360°.",
+        "La roseta de taludes «{profile}» no tiene rangos; necesita al menos uno que cubra de 0° a 360°.",
+    ),
+    Message(
+        "des.pit_ramp_name_missing",
+        "Ramp «{profile}» has no name; give it one.",
+        "La rampa «{profile}» no tiene nombre; póngale uno.",
+    ),
+    Message(
+        "des.pit_ramp_name_repeated",
+        "Ramp «{profile}» has the name «{value}», which ramp «{other}» already has; give each ramp its own name.",
+        "La rampa «{profile}» se llama «{value}», como la rampa «{other}»; dé a cada rampa su propio nombre.",
+    ),
+    Message(
+        "des.pit_ramp_gradient_over",
+        "Ramp «{profile}»: the design gradient «{field}» = {value} % is over the maximum design gradient {limit} % of the haul road "
+        "profile «{other}»; nothing is relaxed.",
+        "Rampa «{profile}»: la pendiente de diseño «{field}» = {value} % pasa de la pendiente máxima de diseño de {limit} % del perfil "
+        "de pista «{other}»; no se relaja nada.",
+    ),
     Message(
         "des.pit_profiles_differ",
         "Pit «{name}»: the bench profiles «{profile}» ({value}) and «{other}» ({other_value}) have a different height or anchor; "

@@ -172,7 +172,8 @@ API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
                 "### 4.2 Lo que entrega la spec 014 (R-34)",
                 "### 4.3 Lo que entrega la spec 015 (R-36)",
                 "### 4.4 Lo que entrega la spec 016 (R-36)",
-                "### 4.5 Lo que entrega la spec 017 (R-40)")
+                "### 4.5 Lo que entrega la spec 017 (R-40)",
+                "### 4.5.1 Lo que entrega la spec 018 (R-35; en curso: lo hecho hasta T04)")
 
 # El mecanismo de la 014, la 015, la 016 y la 017 para una spec que añade API pública mientras se construye: cada tarea
 # añade aquí sus nombres (y los módulos nuevos, que aún no tienen fila en la ficha) y la tarea de documentación los
