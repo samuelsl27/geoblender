@@ -12,7 +12,9 @@ Sobre el proyecto de las pistas (``tests.support.road_data``: la cantera de la 0
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import sqlite3
 import unittest
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -611,6 +613,41 @@ class PureTest(unittest.TestCase):
         self.assertEqual(road_store.other_design_notices("Pista", grid, footprint, start, {"Relleno": other}, 8.0), ())
         self.assertEqual(road_store.other_design_notices("Pista", grid, np.zeros(grid.shape, dtype=bool), start, {"Relleno": other}, 0.5), ())
         self.assertEqual(road_store.other_design_notices("Pista", grid, footprint, start, {}, 0.5), ())
+
+
+class DefaultStartTest(unittest.TestCase):
+    """``default_start`` sobre una base de mentira (la tabla de datos y la caché de lo obsoleto de SQLite en memoria; el registro de entidades y la cola de la cadena, dados): lo que lee es el
+    **nombre** de los datos de explotación vivos y al día, y lo demás lo decide la función."""
+
+    @staticmethod
+    def project_with(live: tuple[str, ...], stale: tuple[str, ...] = ()) -> Any:
+        """Un proyecto cuya versión ``v1`` tiene los datos ``live`` al día y los ``stale`` obsoletos (con su causa en la caché)."""
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE gb_dataset (uid TEXT, name TEXT, version_uid TEXT, status TEXT)")
+        conn.execute("CREATE TABLE gb_stale (item_kind TEXT, item_uid TEXT, cause_kind TEXT, subject_uid TEXT)")
+        for name in (*live, *stale):
+            conn.execute("INSERT INTO gb_dataset VALUES (?, ?, 'v1', 'current')", (f"uid-{name}", name))
+        for name in stale:
+            conn.execute("INSERT INTO gb_stale VALUES ('dataset', ?, 'dataset_changed', ?)", (f"uid-{name}", f"uid-{name}"))
+        return SimpleNamespace(read=lambda: contextlib.nullcontext(conn))
+
+    def start(self, project: Any, *, tails: tuple[Any, ...] = ()) -> Any:
+        version = SimpleNamespace(uid="v1")
+        with mock.patch.object(entities, "registry", return_value=SimpleNamespace(records=())), mock.patch.object(entities, "chain_tails", return_value=tails):
+            return road_store.default_start(project, version)
+
+    def test_only_one_live_quarry_is_the_default_start_and_several_are_none(self) -> None:
+        """RF-017-05, D-3, A-5 de la verificación única (T45; mutante M10: ``default_start`` con varias canteras vivas propone la primera): con **una** cantera de la 014 viva y al día (otra, obsoleta, no
+        cuenta) la partida es su superficie de explotación; con **varias** no se elige una por la persona (ninguna partida, aunque haya una cola de cadena que sí lo sería); sin ninguna cantera, la
+        última de la cadena si es una sola."""
+        tail = SimpleNamespace(code="PLT-001", name="Carga", state=entities.EntityState.CURRENT)
+        found = self.start(self.project_with(("des_exp_cantera",), stale=("des_exp_otra",)), tails=(tail,))
+        self.assertEqual((found.ref, found.kind, found.name, found.conflict), ("des_exp_cantera", "exploitation", "des_exp_cantera", None))
+        self.assertIsNone(self.start(self.project_with(("des_exp_cantera", "des_exp_otra")), tails=(tail,)), "dos canteras vivas: ninguna")
+        self.assertIsNone(self.start(self.project_with(("des_exp_cantera", "des_exp_otra"))), "dos canteras vivas y ninguna cola: ninguna")
+        found = self.start(self.project_with(()), tails=(tail,))
+        self.assertEqual((found.ref, found.kind, found.name), ("entity:PLT-001", "chain_tail", "Carga"))
+        self.assertIsNone(self.start(self.project_with(()), tails=(tail, tail)), "dos colas de cadena: ninguna")
 
 
 if __name__ == "__main__":

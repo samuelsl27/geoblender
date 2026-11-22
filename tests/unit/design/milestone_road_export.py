@@ -25,7 +25,7 @@ from tests.support.provenance_contract import registered
 from tests.support.versions_fixtures import change_counter, files
 from tests.unit.design import test_access_operation as tao
 from tests.unit.design.milestone_road_recompute import RecomputeCase, recompute_function
-from tests.unit.design.test_road_prepare import BY, request
+from tests.unit.design.test_road_prepare import BY, GRID, request
 
 core_params = import_geoblender("core.params")
 design_params = import_geoblender("design.params")
@@ -117,9 +117,9 @@ class RoadGeoTiffTest(ExportCase):
 class RoadCsvProjectTest(ExportCase):
     """RF-017-27, T27-a: la rasante de la pista a CSV."""
 
-    def axis(self) -> np.ndarray:
-        """El eje por estaciones registrado de la pista (``des_rdx_``): ``(n, 6)`` en el orden del CSV."""
-        locator = provenance.dataset_locator(provenance.ROAD_AXIS_TABLE, ROAD, "V01")
+    def axis(self, name: str = ROAD) -> np.ndarray:
+        """El eje por estaciones registrado de la pista ``name`` (``des_rdx_``): ``(n, 6)`` en el orden del CSV."""
+        locator = provenance.dataset_locator(provenance.ROAD_AXIS_TABLE, name, "V01")
         return np.asarray(self.query(f'SELECT station_m, x, y, terrain_m, level_m, gradient_pct FROM "{locator}" ORDER BY station_m'), dtype=np.float64)
 
     @staticmethod
@@ -178,6 +178,23 @@ class RoadCsvProjectTest(ExportCase):
         with self.assertRaises(Exception) as unknown:
             export.export_road_csv(self.project, ROAD, self.out / "y.csv", version="V99", read_only=NO_READ_ONLY)
         self.assertEqual(unknown.exception.code, "core.version_unknown")
+
+    def test_d_the_terrain_and_the_level_columns_are_not_swapped_in_a_road_that_moves_earth(self) -> None:
+        """RF-017-27, C-5 de la verificación única (T45; mutante: ``_ROAD_AXIS_COLUMNS`` con ``terrain_m`` y ``level_m`` intercambiadas): la «Pista de la rampa» tiene la rasante **igual** al terreno y no
+        distingue las columnas; una pista con cotas de inicio y de fin de la persona (105 y 111 m sobre un terreno de 104 a 112 m: **mueve tierra**) sí: la columna del **terreno** del CSV es la cota del plano
+        de la partida en la x y la y de cada estación (el plano de la rampa, hecho a mano: ``100 + 0,04·x + 0,2·(y − 200)``; la bilineal de un plano), la de la **rasante** la del eje registrado, y las dos
+        difieren; la última fila repite la pendiente del último tramo."""
+        name = "Pista con cotas"
+        self.made(request(name, mode="on_axis", layer=rd.AXES_LAYER, surface=rd.dataset_of("rampa_lateral"), start_level_m=105.0, end_level_m=111.0))
+        found = export.export_road_csv(self.project, name, self.out / "con_cotas.csv", version=self.v1.uid, read_only=NO_READ_ONLY, overwrite=True)
+        _data, rows = self.read_csv(found)
+        values = np.array([[float(cell.replace(",", ".")) for cell in row] for row in rows[1:]])
+        west, south = rd.origin_of(GRID)
+        plane = rd.RAMP_Z0_M + rd.RAMP_SLOPE_PCT / 100.0 * (values[:, 1] - west) + rd.RAMP_CROSS_PCT / 100.0 * ((values[:, 2] - south) - rd.RAMP_AXIS_Y_M)
+        np.testing.assert_allclose(values[:, 3], plane, rtol=0.0, atol=1e-9, err_msg="la columna del terreno es la cota de la partida")
+        np.testing.assert_allclose(values[:, 4], self.axis(name)[:, 4], rtol=0.0, atol=1e-9, err_msg="la de la rasante es la del eje registrado")
+        self.assertGreater(float(np.abs(values[:, 3] - values[:, 4]).max()), 0.5, "esta pista mueve tierra: las dos columnas se distinguen")
+        self.assertEqual(float(values[-1, 5]), float(values[-2, 5]), "la última fila repite la pendiente del último tramo")
 
 
 if __name__ == "__main__":

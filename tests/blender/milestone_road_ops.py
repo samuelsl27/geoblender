@@ -23,6 +23,7 @@ Las pruebas, en el orden de sus letras sobre el mismo estado.
 - RF-015-08, RF-015-01, RF-017-27, RF-017-03, D-13 (g·b, T29c): «Cambiar parámetro…» de una pista: renombrarla funciona, no la deja obsoleta y la capa de ejes dice el nombre nuevo; el nombre vacío o repetido
   se rechaza sin escribir; la cota que da a mano la persona queda suya.
 - RF-017-29, RF-015-28 (h): la orden sale desactivada con su motivo con el proyecto en solo lectura, con la versión activa no editable y sin versión activa.
+- RF-017-26, RF-017-30 (i, T45; D-3): «Crear» **por pasos** desde la interfaz (la vía real) quita la vista previa en cuanto lo guardado llega.
 - Principio 8 (z): desactivar Geoblender quita la orden y no deja nada.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
@@ -839,6 +840,28 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
             self.assertIn(self.session.version_required_text(), str(caught.exception))
         self.assertEqual(self.state(), before)
         self.assertEqual(bpy.ops.geoblender.core_set_active_version(version_uid=self.v01.uid), {"FINISHED"})
+
+    # --- i: crear por pasos y la vista previa -------------------------------------------------
+
+    def test_i_creating_by_steps_from_the_interface_removes_the_preview(self) -> None:
+        """RF-017-26, RF-017-30 (D-3 de la verificación única, T45; mutante M4: ``_after_registered`` de «Pista…» no quita la vista previa): «Crear» **por pasos** —la vía real de la interfaz
+        (``_CreatesInSteps._creation_steps`` → ``_after_registered``), con ventana— quita la vista previa en cuanto lo guardado llega: la pista ya existe, ya no se prepara; antes, con el cálculo
+        abierto, sigue encendida. (La de «Crear» de una vez, la de ``test_f``, es otra rama.) Va después de la «g»: crea una pista más, que cambia la cadena que esas miran."""
+        entity = self.des_ops._entity_preview()
+        self.addCleanup(entity.disable)
+        form = self.form(name="Creada por pasos", start=self.write_grid("Suave 3", smooth()))
+        self.refresh()
+        self.assertEqual(bpy.ops.geoblender.des_create_road("EXEC_DEFAULT", preview=True, **form), {"FINISHED"})
+        self.assertTrue(entity.enabled())
+        with mock.patch.object(self.des_ops, "_ask_confirmation"):
+            self.assertEqual(bpy.ops.geoblender.des_create_road("EXEC_DEFAULT", **{**form, "in_steps": True}), {"RUNNING_MODAL"})
+            self.assertEqual(step_modals.drive(self.running_road(), bpy.context)[0], {"FINISHED"})
+            self.assertTrue(entity.enabled(), "calculada y sin crear, la vista previa sigue")
+            self.assertIsNotNone(self.des_ops.calculation())
+            self.assertEqual(bpy.ops.geoblender.des_create_road("EXEC_DEFAULT", confirm=True, in_steps=True), {"RUNNING_MODAL"})
+            self.assertEqual(step_modals.drive(self.running_road(), bpy.context)[0], {"FINISHED"})
+        self.assertFalse(entity.enabled(), "se quita al crear la pista por pasos")
+        self.assertEqual(self.entities.registry(self.project, self.v01.uid).get(self.code_of("Creada por pasos")).record.name, "Creada por pasos")
 
     # --- z: desactivar ---------------------------------------------------------------------------
 

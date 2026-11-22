@@ -13,6 +13,7 @@ rejilla, las rejillas de cotas de berma de V01 (una banda al sur y otra al norte
 
 - RF-017-29, RF-015-28 (a): la orden es real, del catálogo (entrada 017, entregada); sus propiedades tienen nombre y descripción; el diálogo propone el nombre, la capa y la superficie (la última de la cadena) y
   dibuja sus campos, con el tipo de cada umbral.
+- RF-017-05, RF-017-24 (a, T45; D-4): con una cantera de la 014, «Pista…» y «Proponer el trazado…» proponen su superficie de explotación y la accesibilidad, la última de la cadena.
 - RF-017-24, RF-017-04 (b): la petición del diálogo es la que arma ``AccessRequest``, con coma decimal y los umbrales vacíos sin cifra.
 - RF-017-24, RF-017-25, RF-015-03, RF-015-02 (c): Calcular sobre ``Suave`` (todo se alcanza) deja el cálculo abierto, con su resumen y las tres listas, y nada en el proyecto; Crear registra ``des.road_access``,
   sus cifras, la entidad y los parámetros de la persona y encadena la capa de entidades.
@@ -298,6 +299,26 @@ class RoadAccessOpsTest(platform_ops.CreatePlatformTest):
             self.assertIn(heading, texts)
         self.assertEqual(len([text for text in texts if text == "HIPÓTESIS: sin valor por defecto, lo elige usted"]), 3, "los tres umbrales son hipótesis sin valor por defecto")
         self.assertEqual(self.dprov.ACCESS_COMMAND, cls.COMMAND)
+
+    def test_a_b_the_dialogs_of_the_roads_propose_the_exploitation_of_the_quarry_and_the_accessibility_the_last_of_the_chain(self) -> None:
+        """RF-017-05, RF-017-24, D-3, E2 (D-4 de la verificación única, T45; mutante M20: el diálogo de «Pista…» no propone la partida por defecto): con una cantera de la 014 en la versión
+        (``des_exp_cantera``, la única viva y al día, y libre: ninguna entidad parte de ella) y la plataforma «Carga» como cola de la cadena, los diálogos de «Pista…» y de «Proponer el trazado…» proponen
+        **la superficie de explotación de la cantera** y el de «Accesibilidad de las pistas…» **la última de la cadena** (``des_psf_carga``): son dos reglas distintas."""
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window=platform_ops.window(), selected_objects=(), view_layer=bpy.context.view_layer, window_manager=SimpleNamespace(invoke_props_dialog=dialog))
+
+        def proposed(command: str) -> Any:
+            cls = self.commands.registered_class(command)
+            fake = operator_self(cls, name="", layer="", profile="", start="", surface="", properties=SimpleNamespace(is_property_set=lambda _name: False), provenance_dialog=False,
+                                 in_steps=False, confirm=False, code="", report=lambda *_args: None)
+            self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"}, command)
+            return fake
+
+        self.panels.refresh_road_choices(self.project)
+        self.assertEqual(self.panels.road_default_start(), EXPLOITATION, "la cantera: la partida por defecto de una pista")
+        for command in ("geoblender.des_create_road", "geoblender.des_propose_road"):
+            self.assertEqual(proposed(command).start, EXPLOITATION, command)
+        self.assertEqual(proposed(ACCESS).surface, self.dprov.dataset_name("psf", platform_ops.LOADING), "la accesibilidad: la última de la cadena, no la cantera")
 
     # --- b: la petición ----------------------------------------------------------------------------
 

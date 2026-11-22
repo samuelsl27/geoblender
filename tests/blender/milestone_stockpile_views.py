@@ -346,6 +346,16 @@ class StockpileViewsTest(platform_ops.CreatePlatformTest):
                           sorted(group.name for group in again.vertex_groups)), before)
         self.assertEqual((self.files(), self.operations()), (files, operations))
 
+    def test_c_z_the_object_of_the_detection_notes_the_surface_it_was_detected_on_as_its_companion(self) -> None:
+        """RF-015-25, RF-010-02, RF-016-14 (D-6 de la verificación única, T45; mutante M26: ``stockpile_companions`` vacío, T31c): el objeto de la detección anota, al cargarse, **la superficie con que se
+        detectó** (``des_stp_``: la que da la cota de la huella de cada acopio) como su dato compañero, con su uid y su hash; sin él, un cambio de esa superficie que no cambie la tabla de acopios no
+        dejaría el objeto «no al día»."""
+        surface = self.rows("SELECT uid, content_sha256 FROM gb_dataset WHERE name = ? AND status = 'current'", self.dprov.dataset_name("stp", "Acopios"))
+        self.assertEqual(len(surface), 1)
+        self.load("Acopios")
+        obj = self.loaded()[self.uids["Acopios"]]
+        self.assertEqual(obj.geoblender.companions, f"{surface[0][0]}={surface[0][1]}")
+
     def test_d_the_removal_the_buttress_and_the_bodies_have_their_objects(self) -> None:
         """RF-015-25, RF-016-17 (M5): la retirada, el contrafuerte y los dos cuerpos se cargan como objetos ``DESIGN_ENTITY`` con la huella en
         alambre a la cota de su superficie (la media de las celdas de la huella que tocan el vértice, a mano); **el contrafuerte lleva además el

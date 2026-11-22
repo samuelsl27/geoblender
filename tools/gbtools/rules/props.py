@@ -15,7 +15,8 @@ El tipo de la propiedad se reconoce también con otro nombre: importado con ``as
 fichero (``Real = bpy.props.FloatProperty``), antes de la llamada (convergencia de la
 spec 001, T52). Entre los términos están también los de la boca de un sondeo y las
 coordenadas de un punto, ``collar``, ``coord``, ``coords`` y ``xyz`` (``collar:
-FloatVectorProperty(size=3)`` guardaría en float32 la boca en UTM; T58).
+FloatVectorProperty(size=3)`` guardaría en float32 la boca en UTM; T58), y los de la cota,
+``level``, ``cota`` y ``elev`` (``dest_level: FloatProperty()``; spec 017, T45).
 
 Límite declarado: no ve propiedades creadas con ``setattr`` o diccionarios (las
 cubren las pruebas de ida y vuelta de la spec 002), ni un tipo que llega por otro
@@ -53,6 +54,12 @@ ABS_COORD_TOKENS: frozenset[str] = frozenset(
         "coord",
         "coords",
         "xyz",
+        # La cota: ninguna propiedad es una coordenada ni una cota en ``FloatProperty``
+        # (ADR-0005); verificación única de la spec 017, T45 (hallazgo E-5): nada de
+        # ``geoblender/`` las usa hoy con un flotante.
+        "level",
+        "cota",
+        "elev",
     }
 )
 FLOAT_PROPERTIES: frozenset[str] = frozenset({"FloatProperty", "FloatVectorProperty"})

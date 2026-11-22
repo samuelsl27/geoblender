@@ -153,6 +153,33 @@ class GeoOriginTest(unittest.TestCase):
         self.assertEqual(len(expected), 5)
         self.assertEqual(found, expected)
 
+    def test_elevation_tokens(self) -> None:
+        """RF-001-15 / ARQ-13, E-5 de la verificación única de la spec 017 (T45; mutante M3c: la regla sin términos de cota): la cota también es una coordenada absoluta y ninguna propiedad
+        es «una coordenada ni una cota en ``FloatProperty``» (ADR-0005): ``dest_level: FloatProperty()``, ``start_level``, ``cota_min``, ``elev`` y ``Scene.cota_z`` en flotantes fallan; los mismos
+        nombres en texto o en entero, ``levels``, ``cotangent`` y ``elevated`` en flotantes, no."""
+        text = (
+            "class GEOBLENDER_PG_des_road(bpy.types.PropertyGroup):\n"
+            "    dest_level: FloatProperty()\n"
+            "    start_level: bpy.props.FloatProperty(default=100.0)\n"
+            "    cota_min: FloatVectorProperty(size=2)\n"
+            "    elev: FloatProperty()\n"
+            "    dest_level_text: StringProperty()\n"
+            "    level: IntProperty()\n"
+            "    levels: FloatProperty()\n"
+            "    cotangent: FloatProperty()\n"
+            "    elevated: FloatProperty()\n"
+            "bpy.types.Scene.cota_z = bpy.props.FloatProperty()\n"
+        )
+        found = _found({"bl/props/levels.py": text})
+        offset = (SPDX + HEAD).count("\n")
+        expected = [
+            ("bl/props/levels.py", offset + number, "ARQ-13")
+            for number, line in enumerate(text.splitlines(), start=1)
+            if line.strip().startswith(("dest_level:", "start_level:", "cota_min:", "elev:", "bpy.types.Scene.cota_z"))
+        ]
+        self.assertEqual(len(expected), 5)
+        self.assertEqual(found, expected)
+
     def test_int_origin_ok(self) -> None:
         """RF-001-15 / ARQ-13: el GeoOrigin en ``IntProperty`` pasa."""
         found = _found(
@@ -190,23 +217,27 @@ class GeoOriginTest(unittest.TestCase):
     def test_tokens(self) -> None:
         """RF-001-15 / ARQ-13: la lista cerrada de términos, por trozos separados por
         «_» y sin distinguir mayúsculas (con ``collar``, ``coord``, ``coords`` y ``xyz``
-        desde la convergencia, T58)."""
+        desde la convergencia, T58; y ``level``, ``cota`` y ``elev``, de las cotas, desde la
+        verificación única de la spec 017, T45)."""
         self.assertEqual(
             props.ABS_COORD_TOKENS,
             frozenset(
                 {"origin", "x0", "y0", "z0", "easting", "northing", "utm", "abs",
-                 "absolute", "world", "georef", "collar", "coord", "coords", "xyz"}
+                 "absolute", "world", "georef", "collar", "coord", "coords", "xyz",
+                 "level", "cota", "elev"}
             ),
         )
         for name in (
             "Origin", "UTM_X", "x0_offset", "abs", "Absolute_Z", "georef_y",
             "Collar", "coord_x", "COORDS", "head_xyz",
+            "dest_level", "Level", "cota_min", "ELEV",
         ):
             with self.subTest(nombre=name):
                 self.assertTrue(props.has_abs_coord_token(name))
         for name in (
             "origins", "x00", "absorption", "worldwide", "section_step",
             "collars", "coordinate", "xyzw",
+            "levels", "cotangent", "elevated",
         ):
             with self.subTest(nombre=name):
                 self.assertFalse(props.has_abs_coord_token(name))

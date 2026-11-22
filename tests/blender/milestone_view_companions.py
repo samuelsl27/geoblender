@@ -13,6 +13,7 @@ cada una de su terreno) y otro con una **pista** (el de ``milestone_road_ops``: 
 cuentas, a mano, con SQL y las mallas de Blender):
 
 - (a) el mundo, con las órdenes reales; «Cargar en la vista» da el objeto de cada entidad a la cota de su superficie (la rasante de la pista en la Z de su eje).
+- (a·b, T45; D-6) la pista anota como compañeros **su superficie y su eje** (``des_psf_`` y ``des_rdx_``).
 - (b) RF-010-02: con todo al día **nada se marca** (ni «no al día», ni Refrescar resaltado) y Refrescar no vuelve a cargar nada.
 - (c) RF-010-02, RF-010-01: cambiada la cota por «Cambiar parámetro…» y **antes de recalcular**, el objeto dice «OBSOLETO» pero **no** «no al día» (su superficie no ha cambiado) y
   Refrescar no lo recarga.
@@ -291,6 +292,17 @@ class RoadCompanionsTest(Companions, road_ops.RoadOpsTest):
         self.load(FIRST)
         np.testing.assert_allclose(self.axis_of(FIRST), self.stations(FIRST), atol=1e-4, rtol=0)
         self.assertEqual(self.shown(self.uids[FIRST])[0], "CURRENT")
+
+    def test_a_b_the_object_of_a_road_notes_its_surface_and_its_axis_as_companions(self) -> None:
+        """RF-010-02, RF-015-25, RF-017-23 (D-6 de la verificación única, T45; mutante M6: el objeto de la pista no declara su eje ``des_rdx_`` como compañero): el objeto de «Pista de la carga» anota, al
+        cargarse, el uid y el hash de **sus dos compañeros vivos**, su superficie (``des_psf_``) y su eje por estaciones (``des_rdx_``) —la rasante en la Z—, y de ninguno más (una pista no deja una base
+        ``des_bds_``); con solo la superficie, un cambio de la rasante que no cambie la superficie no la dejaría «no al día»."""
+        found = {family: self.rows("SELECT uid, content_sha256 FROM gb_dataset WHERE name = ? AND status = 'current'", self.dprov.dataset_name(family, FIRST))[0]
+                 for family in ("psf", "rdx")}
+        self.assertEqual(self.rows("SELECT count(*) FROM gb_dataset WHERE name = ? AND status = 'current'", self.dprov.dataset_name("bds", FIRST)), [(0,)])
+        noted = self.loaded()[self.uids[FIRST]].geoblender.companions
+        self.assertEqual(set(noted.split()), {f"{uid}={sha}" for uid, sha in found.values()})
+        self.assertEqual(len(noted.split()), 2)
 
     def test_b_with_everything_up_to_date_nothing_is_marked_and_refresh_loads_nothing(self) -> None:
         """RF-010-02, RF-010-01: con la pista cargada y el proyecto como estaba, la marca en vivo no la pone «no al día» y Refrescar no la vuelve a cargar."""

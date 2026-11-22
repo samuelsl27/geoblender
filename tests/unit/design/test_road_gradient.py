@@ -493,6 +493,51 @@ class Axis3dTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             road_gradient.check_axis_3d(axis, z[:-1], PROFILE, "RDW-3D")
 
+    def test_the_threshold_of_pd_is_exact_up_to_the_nine_decimals_and_not_a_hair_wider(self) -> None:
+        """RF-017-18, B-6 de la verificación única (T45; mutante M22: el umbral de pd +5 %): un tramo exactamente en pd, o en pd (1 + 10⁻¹⁰) —la cifra de la última posición—, no es un aviso; en pd (1 + 10⁻⁶),
+        1,03 pd y 1,049 pd **sí** (un umbral ancho de un 5 % dejaría pasar los dos últimos); el aviso dice la pendiente del tramo y su abscisa."""
+        profile = rd.road_profile(rd.profile_with(max_gradient_pct=10.0, max_mean_gradient_pct=10.0, station_step_m=10.0))
+        axis = road_axis.axis_of(np.array([[0.0, 0.0], [200.0, 0.0]]), 20.0, 12.0, 10.0, reject_below_minimum=False)
+        for factor, noticed in ((1.0, False), (1.0 + 1e-10, False), (1.0 + 1e-6, True), (1.03, True), (1.049, True)):
+            with self.subTest(factor=factor):
+                z = np.clip(axis.stations - 50.0, 0.0, 10.0) * 0.10 * factor  # llano salvo el tramo de 50 a 60 m
+                found = road_gradient.check_axis_3d(axis, z, profile, "RDW-3D")
+                self.assertEqual([notice.values["station"] for notice in found], [50.0] if noticed else [])
+                if noticed:
+                    self.assertAlmostEqual(found[0].values["gradient"], 10.0 * factor, delta=1e-9)
+
+    def test_the_last_stretch_is_checked_too(self) -> None:
+        """RF-017-18, B-6 (T45; mutante N10: el modo «eje 3D» no comprueba el último tramo): la Z que sube un 12 % **solo en el último tramo** (de 190 a 200 m, con pd = 10 %) da su aviso, con la
+        abscisa del tramo."""
+        profile = rd.road_profile(rd.profile_with(max_gradient_pct=10.0, max_mean_gradient_pct=10.0, station_step_m=10.0))
+        axis = road_axis.axis_of(np.array([[0.0, 0.0], [200.0, 0.0]]), 20.0, 12.0, 10.0, reject_below_minimum=False)
+        z = np.zeros(len(axis.stations))
+        z[-1] = 10.0 * 0.12
+        found = road_gradient.check_axis_3d(axis, z, profile, "RDW-3D")
+        self.assertEqual([(notice.code, notice.values["station"]) for notice in found], [("des.road_axis3d_gradient", float(axis.stations[-2]))])
+        self.assertAlmostEqual(found[0].values["gradient"], 12.0, delta=1e-9)
+
+    def test_the_threshold_of_the_radius_is_rmin_and_not_a_tenth_below(self) -> None:
+        """RF-017-18, B-6 (T45; mutantes M23 y N01: el umbral del radio, Rmín −10 %): un arco dibujado de 11,9 m de radio con Rmín = 12 m da avisos de radio (cada uno con un radio entre 11,8 y 12 m, por
+        debajo de Rmín y por encima del 90 % de Rmín) y uno de 12,1 m, ninguno; la línea no cambia."""
+        profile = rd.road_profile(rd.profile_with(max_gradient_pct=10.0, max_mean_gradient_pct=10.0, station_step_m=1.0, min_radius_m=12.0))
+        for radius, noticed in ((11.9, True), (12.1, False)):
+            with self.subTest(radius=radius):
+                angle = np.linspace(0.0, math.pi / 2.0, 91)
+                arc = np.column_stack([radius * np.sin(angle), radius * (1.0 - np.cos(angle))])
+                line = np.vstack([[[-30.0, 0.0]], arc, [[radius, radius + 30.0]]])
+                before = digest(line)
+                axis = road_axis.axis_of(line, 20.0, 12.0, 1.0, reject_below_minimum=False)
+                found = road_gradient.check_axis_3d(axis, np.zeros(len(axis.stations)), profile, "RDW-3D", line=line)
+                self.assertEqual(digest(line), before)
+                radii = [notice.values["radius"] for notice in found if notice.code == "des.road_axis3d_radius"]
+                self.assertEqual(len(radii), len(found), "solo avisos de radio")
+                if noticed:
+                    self.assertGreater(len(radii), 0)
+                    self.assertTrue(all(11.8 < value < 12.0 for value in radii), radii)
+                else:
+                    self.assertEqual(found, ())
+
     def test_the_check_of_five_kilometres_is_fast(self) -> None:
         """RNF-017-03: comprobar la Z de un eje de 5 km con estaciones cada metro (hasta miles de avisos) tarda menos de 0,2 s."""
         heading, points = 0.0, [(0.0, 0.0)]

@@ -345,6 +345,39 @@ class ComparisonsTest(unittest.TestCase):
             expected = 0 if module is READS else 1
             self.assertEqual(result.code, expected, result.out + result.err)
 
+    def test_the_unloaded_modules_leave_no_stale_attribute_in_their_loaded_package(self) -> None:
+        """RF-001-11 (verificación única de la spec 017, T45; causa del fallo al azar de ``test_road_bank.LatestTest``): lo que el arnés carga al ejecutar las comparaciones
+        (``tests.support.bank_folder`` entre ellas) se retira de ``sys.modules`` **y del atributo de su paquete ya cargado** (``tests.support``); si no, quien importa después el módulo
+        de dos maneras (``from paquete import modulo`` y ``from paquete.modulo import clase``) obtiene **dos copias** del módulo y dos clases de error distintas. El paquete de la prueba
+        (``gbfake``, con ``support`` ya cargado) usa un módulo nuevo ``support.helper``: tras ejecutar, ni está en ``sys.modules`` ni es atributo de ``support``."""
+        import importlib
+        import sys
+
+        files = {
+            "gbfake/__init__.py": SPDX,
+            "gbfake/support/__init__.py": SPDX,
+            "gbfake/support/helper.py": SPDX + "ERROR = ValueError\n",
+            "gbfake/comparaciones/__init__.py": SPDX,
+            "gbfake/comparaciones/test_uses.py": SPDX + (
+                "import unittest\n\nfrom gbfake.support import helper\n\n\n"
+                "class Uses(unittest.TestCase):\n"
+                "    def test_it(self):\n"
+                "        self.assertIs(helper.ERROR, ValueError)\n"
+            ),
+        }
+        with temp_tree(files) as root:
+            sys.path.insert(0, str(root))
+            self.addCleanup(lambda: sys.path.remove(str(root)) if str(root) in sys.path else None)
+            self.addCleanup(lambda: [sys.modules.pop(name, None) for name in ("gbfake", "gbfake.support", "gbfake.support.helper")])
+            support = importlib.import_module("gbfake.support")
+            with contextlib.redirect_stderr(io.StringIO()):
+                result = bench_silvestre._run_comparisons(root / "gbfake" / "comparaciones", root)
+        self.assertIsNotNone(result)
+        self.assertTrue(result.wasSuccessful())
+        self.assertNotIn("gbfake.support.helper", sys.modules)
+        self.assertFalse(hasattr(support, "helper"), "el atributo viejo de su paquete también se retira")
+        self.assertIn("gbfake.support", sys.modules, "lo que ya estaba cargado se queda")
+
     def test_usage(self) -> None:
         """RF-001-11: sin opciones; una opción desconocida es un error de uso (2)."""
         err = io.StringIO()

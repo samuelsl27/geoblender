@@ -343,6 +343,14 @@ class RejectionTest(unittest.TestCase):
                     self.assertIn(part, error.text)
                 self.assertEqual(error.field, "des.access.acc_001.entries_layer")
 
+    def test_an_entry_point_on_the_edge_of_two_cells_belongs_to_the_east_and_the_south_one(self) -> None:
+        """RF-017-24, C-7 de la verificación única (T45; mutante ``floor`` → ``ceil − 1`` de la celda de la entrada): un punto de entrada **exactamente en el borde** de dos celdas es de la del este y de la del
+        sur (la regla de la malla de la pista); uno dentro de una celda, de ella. Rejilla de 60 × 40 celdas de 1 m, con la fila 0 al norte y las coordenadas locales desde el suroeste."""
+        # (x, y) locales: el 1.º, en el borde de columnas (9 | 10) y de filas (19 | 20: la fila 19 cubre de y = 20 a 21 m); el 2.º, solo en el de columnas; el 3.º, solo en el de filas; el 4.º, dentro
+        job = steps_of(FLAT, walk_pct=10.0, width_m=1.0, entries=[(10.0, 20.0), (10.0, 20.5), (10.5, 20.0), (10.5, 20.5)])
+        rows, cols = road_access.entry_cells(job)
+        self.assertEqual(list(zip(rows.tolist(), cols.tolist())), [(20, 10), (19, 10), (20, 10), (19, 10)])
+
     def test_a_grid_of_non_square_cells_is_a_program_error(self) -> None:
         """RF-017-24: la apertura con un disco exacto es de celdas cuadradas (la rejilla del proyecto lo es: ``project_grid``); otra es un error del programa (``ValueError``)."""
         grid = gis.Grid(cfx.BASE[0], cfx.BASE[1] + 60.0, 2.0, 3.0, 30, 20)

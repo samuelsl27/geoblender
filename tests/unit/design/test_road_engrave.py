@@ -24,6 +24,7 @@ from typing import Any
 import numpy as np
 
 from tests.support import constraints_fixtures as cfx
+from tests.support import design_oracles as oracles
 from tests.support import road_data as rd
 from tests.support.package import import_geoblender
 
@@ -284,6 +285,27 @@ class EdgeTest(unittest.TestCase):
         self.assertGreater(found.edge_cut_m3 + found.edge_fill_m3, 0.0)
         self.assertEqual(found.cut_angle_deg, 60.0)
         self.assertEqual(found.fill_angle_deg, 35.0)
+
+    def test_where_the_two_envelopes_of_the_edge_cross_the_descending_one_wins(self) -> None:
+        """RF-017-21 (A9), C-4 de la verificación única (T45; mutante: ``final[filled & ~changed]``, que hace ganar a la ascendente): en una **horquilla** (dos tramos paralelos a 5 m de eje a eje y
+        a 6 m de diferencia de cota, sobre un terreno a 108 m) hay celdas del borde que cumplen a la vez «por encima de la envolvente ascendente» (el corte las bajaría) y «por debajo de la
+        descendente» (el relleno las subiría); **gana la descendente** —el borde sigue a la sección que está más alta—, como en la plataforma, de donde se copia el borde: el relleno se aplica después
+        del corte. La superficie, las celdas movidas y las cifras son las de la fuerza bruta en las mismas celdas."""
+        grid = gis.Grid(cfx.BASE[0], cfx.BASE[1] + 40.0, 1.0, 1.0, 50, 40)
+        narrow = rd.profile_with(vehicle_width_m=1.0, lane_factor=2.0, shoulder_m=0.0, berm_m=0.0, reach_m=5.0, curve_radius_m=2.0, min_radius_m=2.0)
+        line = ((10.0, 15.0), (35.0, 15.0), (35.0, 20.0), (10.0, 20.0))
+        case = build(flat(108.0), line=line, profile=narrow, level_of=lambda s: 100.0 + 0.30 * s, grid=grid)
+        found = case.engrave()
+        assert_like_by_hand(self, case, found)
+        seeds = np.where(found.at_level & found.footprint, found.applied, np.nan)
+        up = oracles.brute_force_euclidean(seeds, math.tan(math.radians(narrow.cut_angle_deg)), 1.0, direction="up")
+        down = oracles.brute_force_euclidean(seeds, math.tan(math.radians(narrow.fill_angle_deg)), 1.0, direction="down")
+        start = case.terrain[case.window]
+        crossing = found.in_reach & ~found.footprint & (start > up) & (start < down)
+        self.assertGreater(int(crossing.sum()), 100, "la horquilla tiene celdas donde las dos envolventes se cruzan")
+        np.testing.assert_allclose(found.surface[crossing], down[crossing], rtol=0, atol=TOL)
+        self.assertTrue((found.surface[crossing] > start[crossing]).all(), "esas celdas se rellenan (la ascendente las cortaría)")
+        self.assertTrue(found.changed[crossing].all())
 
     def test_the_two_angles_are_the_ones_of_the_profile_and_each_side_uses_its_own(self) -> None:
         """RF-017-21: con un terreno llano 2 m sobre la rasante (todo desmonte) el borde sube con la tangente del ángulo de **desmonte**, y con uno 2 m bajo ella (todo

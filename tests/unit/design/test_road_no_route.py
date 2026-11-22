@@ -378,6 +378,22 @@ class CausesTest(unittest.TestCase):
         self.assertEqual(road_route.node_reason(mesh, 2, 1), LimitCause.MASK)
         self.assertIsNone(road_route.node_reason(mesh, 0, 0))
 
+    def test_a_node_that_is_without_data_and_forbidden_at_once_is_said_to_be_without_data(self) -> None:
+        """RF-017-12, B-11 de la verificación única (T45; mutante R05: ``MASK`` antes que ``NO_DATA``): un nodo cuyo bloque no tiene dato **y** es intocable tiene dos causas y se dice **la primera** de «el
+        borde de la rejilla, las celdas sin dato y las zonas prohibidas» (sin dato: lo que se arregla antes que una máscara), en ``node_reason``, en el primer paso inadmisible que lo cruza (``step_reason``,
+        también «de caballo»)."""
+        grid = self.grid_of_cells(12, 14)
+        surface = np.full(grid.shape, 100.0)
+        surface[8:12, 4:8] = np.nan
+        wall = np.zeros(grid.shape, dtype=bool)
+        wall[8:12, 4:8] = True
+        job = rd.route_job(grid, surface, (grid.west + 2.0, grid.north - 6.0), (grid.west + 10.0, grid.north - 6.0), route=base.HYPOTHESES, untouchable=wall)
+        mesh, _corridor = rd.route_corridor(job)
+        pd, height = 0.10, 1.0
+        self.assertEqual(road_route.node_reason(mesh, 2, 1), LimitCause.NO_DATA)
+        self.assertEqual(road_route.step_reason(mesh, 1, 1, 8, pd, height), LimitCause.NO_DATA)  # el sur del nodo (1, 1): el nodo (2, 1)
+        self.assertEqual(road_route.step_reason(mesh, 1, 0, 5, pd, height), LimitCause.NO_DATA)  # un paso de caballo (2, -1): su nodo intermedio es el (2, 1)
+
 
 class GuardsTest(unittest.TestCase):
     def test_a_route_that_exists_has_nothing_to_explain_and_the_inputs_are_checked(self) -> None:

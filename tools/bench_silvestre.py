@@ -90,7 +90,13 @@ def _run_comparisons(folder: Path, top_level: Path) -> unittest.TestResult | Non
 
     Los módulos de las comparaciones que se cargan (los del paquete de ``folder``) y la
     entrada que ``discover`` añade a ``sys.path`` se retiran al terminar, para que otra
-    ejecución no reutilice comparaciones de otra carpeta con el mismo nombre.
+    ejecución no reutilice comparaciones de otra carpeta con el mismo nombre. Se retiran
+    también del paquete que ya estaba cargado (``tests.support.bank_folder`` de
+    ``tests.support``): quitarlos solo de ``sys.modules`` dejaba su atributo viejo y el
+    siguiente que importaba ``bank_folder`` de dos maneras (``from tests.support import
+    bank_folder`` y ``from tests.support.bank_folder import …``) obtenía **dos copias**,
+    con dos clases ``BankShapeError`` (la verificación única de la spec 017, T45:
+    ``test_road_bank.LatestTest`` fallaba al azar en el mismo proceso que estas pruebas).
     """
     package = Path(folder).resolve().relative_to(Path(top_level).resolve()).parts[0]
     saved_path = list(sys.path)
@@ -113,9 +119,13 @@ def _run_comparisons(folder: Path, top_level: Path) -> unittest.TestResult | Non
             return unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(suite)
     finally:
         sys.path[:] = saved_path
-        for name in set(sys.modules) - saved_modules:
+        for name in sorted(set(sys.modules) - saved_modules, reverse=True):
             if name == package or name.startswith(package + "."):
-                del sys.modules[name]
+                module = sys.modules.pop(name)
+                parent_name, _, child = name.rpartition(".")
+                parent = sys.modules.get(parent_name) if parent_name else None
+                if parent is not None and getattr(parent, child, None) is module:
+                    delattr(parent, child)
 
 
 def _plural(count: int, singular: str, plural: str) -> str:
