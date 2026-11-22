@@ -115,6 +115,8 @@ HEAVY: frozenset[str] = frozenset({
     "design.pit_model",
     # La distancia por arista de la corta y su desfase (spec 018, T08): lo pide quien calcula, no habilitar.
     "design.pit_offset",
+    # Los bancos de la corta ascendente (spec 018, T10): lo pide quien calcula, no habilitar.
+    "design.pit_bench",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 

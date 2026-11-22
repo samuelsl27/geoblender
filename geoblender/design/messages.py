@@ -3778,8 +3778,8 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.pit_not_reaching_surface",
-        "Pit «{name}»: it does not reach the surface in {limit} benches (bench {bench}); nothing is registered.",
-        "Corta «{name}»: no sale a superficie en {limit} bancos (banco {bench}); no se registra nada.",
+        "Pit «{name}»: it does not reach the surface in {limit} benches (bench {bench}, near {place}); nothing is registered.",
+        "Corta «{name}»: no sale a superficie en {limit} bancos (banco {bench}, cerca de {place}); no se registra nada.",
     ),
     Message(
         "des.pit_floor_too_small",

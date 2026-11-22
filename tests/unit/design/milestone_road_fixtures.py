@@ -1138,9 +1138,11 @@ class PlanNamesTest(unittest.TestCase):
         self.assertTrue(hasattr(combine.ClassBit, "ACCESS"))
         self.assertTrue(hasattr(combine.Masks, "access"))
         self.assertEqual(provenance._BERMS_ROLE, "berms")
-        self.assertEqual(provenance.ENTITY_OP_NAMES,
-                         ("des.platform", "des.stockpile_detect", "des.stockpile_removal", "des.buttress",
-                          "des.body", "des.road", "des.road_access"))
+        # Las de la 017 y, detrás, las que añade la 018 (``des.pit``, T02): la lista crece por el final, sin tocar el orden.
+        names = ("des.platform", "des.stockpile_detect", "des.stockpile_removal", "des.buttress",
+                 "des.body", "des.road", "des.road_access")
+        self.assertEqual(provenance.ENTITY_OP_NAMES[:len(names)], names)
+        self.assertLessEqual(set(provenance.ENTITY_OP_NAMES[len(names):]), {"des.pit"})
         self.assertEqual(provenance.ENTITY_LAYER, "des.entity_layer")
 
     def test_blender_names(self) -> None:
