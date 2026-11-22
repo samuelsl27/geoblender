@@ -33,6 +33,42 @@ def distance_to_ring(points: np.ndarray, ring: np.ndarray) -> np.ndarray:
     return out
 
 
+def _segment_gaps(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """La distancia de cada punto de ``points`` ``(p, 2)`` a cada segmento ``a[e]–b[e]`` (``(p, e)``), por fuerza bruta."""
+    ax, ay = a[:, 0][None, :], a[:, 1][None, :]
+    ex, ey = (b[:, 0] - a[:, 0])[None, :], (b[:, 1] - a[:, 1])[None, :]
+    length2 = ex * ex + ey * ey
+    wx, wy = points[:, 0][:, None] - ax, points[:, 1][:, None] - ay
+    t = np.clip((wx * ex + wy * ey) / length2, 0.0, 1.0)
+    return np.hypot(wx - t * ex, wy - t * ey)
+
+
+def edge_limits(ring: np.ndarray, worked: np.ndarray, worked_distance: np.ndarray, reach: float) -> np.ndarray:
+    """La distancia que le toca a cada arista de ``ring`` (el anillo original), dada la del anillo de trabajo ``worked`` (el simplificado,
+    con sus aristas partidas en los sectores) y su ``worked_distance``: la menor de las distancias de las aristas de ``worked`` a
+    ``reach`` o menos de uno de los puntos de la arista (extremos y medio). ``reach`` es lo que el anillo pudo moverse al simplificarlo."""
+    a, b = ring, np.roll(ring, -1, axis=0)
+    samples = np.concatenate([a, 0.5 * (a + b), b])
+    wa, wb = worked, np.roll(worked, -1, axis=0)
+    per_sample = np.empty(len(samples))
+    for low in range(0, len(samples), BLOCK):
+        near = _segment_gaps(samples[low:low + BLOCK], wa, wb) <= reach + 1e-9
+        per_sample[low:low + BLOCK] = np.where(near, worked_distance[None, :], np.inf).min(axis=1)
+    return per_sample.reshape(3, len(ring)).min(axis=0)
+
+
+def capsule_shortfall(points: np.ndarray, ring: np.ndarray, limit: np.ndarray) -> float:
+    """Lo que más le falta a un punto de ``points`` para estar a ``limit[e]`` o más de **cada** arista ``e`` de ``ring`` (0 si ninguno
+    se queda corto): el desfase con distancia por arista es el borde de la unión de las cápsulas de sus aristas (cada una, a su
+    distancia), y no hay punto suyo a menos de ``limit[e]`` de la arista ``e``."""
+    a, b = ring, np.roll(ring, -1, axis=0)
+    worst = 0.0
+    for low in range(0, len(points), BLOCK):
+        gap = _segment_gaps(points[low:low + BLOCK], a, b)
+        worst = max(worst, float((limit[None, :] - gap).max()))
+    return max(worst, 0.0)
+
+
 def _turn(p: np.ndarray, q: np.ndarray, r: np.ndarray) -> np.ndarray:
     return (q[..., 0] - p[..., 0]) * (r[..., 1] - p[..., 1]) - (q[..., 1] - p[..., 1]) * (r[..., 0] - p[..., 0])
 

@@ -190,6 +190,91 @@ class OffsetRingTest(unittest.TestCase):
             offset.offset_ring_steps(L_SHAPE, 3.0, 1, tol=TOL, edges_per_step=0)
 
 
+def _capsule_area(source: np.ndarray, dist: np.ndarray, side: int, cell: float = 0.5) -> float:
+    """El área de ``P ∪ {a ≤ d_j de la arista j}`` (fuera) o de ``P ∖ {a < d_j de la arista j}`` (dentro) por una rejilla: la
+    definición del desfase con distancia por arista (T09b), independiente del motor."""
+    a, b = source, np.roll(source, -1, axis=0)
+    along = b - a
+    length2 = np.einsum("ej,ej->e", along, along)
+    low, high = source.min(axis=0) - (dist.max() + 1.0), source.max(axis=0) + (dist.max() + 1.0)
+    xs = np.arange(low[0] + cell / 2, high[0], cell)
+    ys = np.arange(low[1] + cell / 2, high[1], cell)
+    total = 0
+    for y in ys:
+        pts = np.column_stack([xs, np.full_like(xs, y)])
+        w = pts[:, None, :] - a[None, :, :]
+        t = np.clip(np.einsum("pej,ej->pe", w, along) / length2, 0.0, 1.0)
+        rest = w - t[:, :, None] * along[None, :, :]
+        near = (np.hypot(rest[..., 0], rest[..., 1]) <= dist[None, :]).any(axis=1)
+        inside = _inside(pts, source)
+        total += int(np.sum(inside | near)) if side > 0 else int(np.sum(inside & ~near))
+    return total * cell * cell
+
+
+def _shortfall(loops: list[np.ndarray], source: np.ndarray, dist: np.ndarray) -> float:
+    """Lo que más le falta a un vértice del resultado para estar a ``d_j`` de cada arista ``j`` de la fuente."""
+    a, b = source, np.roll(source, -1, axis=0)
+    along = b - a
+    length2 = np.einsum("ej,ej->e", along, along)
+    worst = -math.inf
+    for loop in loops:
+        w = loop[:, None, :] - a[None, :, :]
+        t = np.clip(np.einsum("pej,ej->pe", w, along) / length2, 0.0, 1.0)
+        rest = w - t[:, :, None] * along[None, :, :]
+        worst = max(worst, float((dist[None, :] - np.hypot(rest[..., 0], rest[..., 1])).max()))
+    return worst
+
+
+class SteppedDistanceTest(unittest.TestCase):
+    """T09b: el desfase con un salto de distancia (la roseta) es la unión de las cápsulas de las aristas: el escalón es mayor que la
+    arista, y el desfase de una sola curva dejaba puntos a menos de ``d`` de las aristas de mayor distancia."""
+
+    @staticmethod
+    def _circle(count: int, radius: float, noise: float = 0.0, seed: int = 0) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        angle = np.linspace(0.0, 2.0 * math.pi, count, endpoint=False)
+        r = radius + rng.uniform(-noise, noise, count)
+        return np.column_stack([r * np.cos(angle), r * np.sin(angle)])
+
+    def test_two_sectors_match_the_grid_area_outward_and_inward(self) -> None:
+        ring = self._circle(120, 30.0)
+        half = np.arange(len(ring)) < len(ring) // 2
+        dist = np.where(half, 5.77, 10.0)
+        for side, scale in ((1, 1.0), (-1, 0.8)):
+            result = offset.offset_ring(ring, dist * scale, side, tol=TOL)
+            self.assertTrue(result.verified, (side, result.defect, result.defect_at))
+            self.assertEqual((len(result.rings), len(result.holes)), (1, 0))
+            area = _area(result.rings[0])
+            exact = _capsule_area(ring, dist * scale, side)
+            self.assertLess(abs(area - exact), 0.012 * exact, (side, area, exact))
+            self.assertTrue(_simple(result.rings[0]))
+            self.assertLessEqual(_shortfall(list(result.rings), ring, dist * scale), TOL + 1e-9)
+
+    def test_rough_line_with_a_step_larger_than_the_edges_is_accepted(self) -> None:
+        for seed in range(3):
+            ring = self._circle(300, 50.0, 0.5, seed)
+            dist = np.where(np.arange(len(ring)) % 150 < 75, 5.77, 10.0)
+            for side in (1, -1):
+                result = offset.offset_ring(ring, dist, side, tol=TOL)
+                self.assertTrue(result.verified, (seed, side, result.defect, result.defect_at))
+                loops = list(result.rings) + list(result.holes)
+                self.assertTrue(loops)
+                for loop in loops:
+                    self.assertTrue(_simple(loop), (seed, side))
+                self.assertLessEqual(_shortfall(loops, ring, dist), TOL + 1e-9, (seed, side))
+
+    def test_the_cap_of_the_far_edge_may_pass_closer_to_a_neighbour_of_smaller_distance(self) -> None:
+        """El defecto se mide con la distancia de cada arista: el vértice de la tapa de la arista de 10 m, a menos de 10 m de la de 5,77 m, es válido."""
+        square = _poly((0, 0), (100, 0), (100, 100), (0, 100))
+        dist = np.array([10.0, 5.77, 5.77, 5.77])
+        result = offset.offset_ring(square, dist, 1, tol=TOL)
+        self.assertTrue(result.verified, (result.defect, result.defect_at))
+        # La tapa de 10 m en la esquina (0, 0) pasa por encima de la berma de 5,77 m del lado oeste.
+        corner = np.array([0.0, 0.0])
+        cap = result.rings[0][np.hypot(*(result.rings[0] - corner).T) <= 10.0 + TOL + 1e-9]
+        self.assertTrue(np.any(cap[:, 0] < -5.77 - 1e-6))
+
+
 class NoisyRingTest(unittest.TestCase):
     """T-1 y T-2 del plan: los trozos de menos de 1 mm y los vértices que se multiplican."""
 

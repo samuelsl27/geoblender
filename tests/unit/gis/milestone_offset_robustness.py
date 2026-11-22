@@ -6,19 +6,20 @@ plan 018 §5.8 H-1, §7.1, §8 y §11 S-1). Paso «hito» (P-16).
 descendentes, **con y sin roseta** (la de CE-018-02, con la ventana de azimut de la hipótesis), pasadas por ``design.pit_offset``
 (distancia por arista + ``gis.offset``). El anillo se simplifica antes (A1, Douglas–Peucker) con ``simplify_m``; el motor verifica el
 resultado contra el anillo simplificado (``simplify_m = 0``) y el **oráculo de fuerza bruta** (``tests/support/offset_oracle.py``, que
-no usa el motor) lo comprueba contra el anillo **original**: simple, y cada vértice a ``≥ d − arco − simplify_m`` de él, con ``d`` la
-menor distancia de las aristas de origen del vértice y de sus dos vecinas.
+no usa el motor) lo comprueba contra el anillo **original**: simple, y cada vértice a ``≥ d_e − arco − simplify_m`` de **cada** arista ``e``
+de él, con ``d_e`` la distancia que le toca a la arista (la menor de las aristas del anillo de trabajo a ``simplify_m`` de ella). Esa es la
+definición del desfase con distancia por arista (T09b): el borde de la unión de las cápsulas de las aristas, donde la tapa de la de
+mayor distancia pasa más cerca de una vecina de menor distancia (hasta ``d_mayor − d_menor``); la de la T09 (``d`` la menor de las del
+vértice y sus dos vecinas) no la cumple ningún desfase correcto en un escalón de la roseta.
 
 Dos regímenes de simplificación: ``noise`` (la simplificación igual al ruido del caso, con 0,05 m de mínimo: las condiciones en que el
 plan midió el desfase de distancia constante, H-1) con los 300 casos, y ``fixed`` (0,05 m, la hipótesis de inv. 07 §3.4, **menor que
 el ruido** en casi todos) con los 60 primeros.
 
 **Criterio** (S-1): 0 resultados no simples y defecto de distancia ≤ arco + simplificación en lo que el desfase **da por bueno**; lo
-que su verificación (A4) rechaza con diagnóstico no cuenta como no simple, pero se anota con su causa. Eso lo cumple la batería. **Lo que
-no cumple** es la utilidad de ese desfase con una roseta: la gran mayoría de los casos con roseta los rechaza la verificación (el
-escalón de distancia entre rangos deja puntos a menos de ``d``). Esa medición está en
-``test_rose_cases_are_not_rejected``, que **falla a propósito** con las cifras (sin marcas: TST-07): **el criterio de robustez no está alcanzado y la T09 no se da por hecha** (S-1: el plan vuelve a
-Samuel). El paso «hito» queda en rojo hasta que se mejore el desfase o se decida otra cosa."""
+que su verificación (A4) rechaza con diagnóstico no cuenta como no simple, pero se anota con su causa; y, con roseta, ningún rechazo
+(``test_rose_cases_are_not_rejected``). La T09 midió 135 y 138 de 150 casos con roseta rechazados con el desfase de una sola curva; la
+T09b (unión de losas, plan §5.4 A4) los acepta todos."""
 
 from __future__ import annotations
 
@@ -78,10 +79,10 @@ def run_case(regime: str, case: Any) -> Outcome:
     result = last.result
     loops = list(result.rings) + list(result.holes)
     shortfall = 0.0
-    for loop, source in zip(loops, result.source_edge_of_vertex, strict=True):
-        near = np.minimum(found.distance[source], np.minimum(np.roll(found.distance[source], 1), np.roll(found.distance[source], -1)))
-        gap = oracle.distance_to_ring(loop, case.ring)
-        shortfall = max(shortfall, float((near - H.arc_m - simplify_m - gap).max()))
+    limit = oracle.edge_limits(case.ring, found.ring, found.distance, simplify_m)
+    limit = limit - H.arc_m - simplify_m
+    for loop in loops:
+        shortfall = max(shortfall, oracle.capsule_shortfall(loop, case.ring, limit))
     return Outcome(case, result.verified, result.defect, result.defect_at is not None,
                    oracle.crossing_count(loops), shortfall, result.max_defect_m)
 
@@ -140,10 +141,9 @@ class RobustnessTest(unittest.TestCase):
         self.assertEqual(rejected, [])
 
     def test_rose_cases_are_not_rejected(self) -> None:
-        """RF-018-10 (S-1): el desfase con roseta de una línea rugosa debería salir verificado. **No se cumple**: medido el 22/11/2026
-        (T09, ``gis/offset.py`` y ``design/pit_offset.py`` tal como los dejó la T08), con la simplificación igual al ruido, 135 de los
-        150 casos con roseta se rechazan por ``distance`` (la verificación halla vértices a menos de d, con hasta ≈ 3,9 m de falta) y,
-        con 0,05 m, 138 de 150 (136 por ``distance`` y 2 por ``crossing``); sin roseta, 0 y 6 de 150. Criterio no alcanzado."""
+        """RF-018-10 (S-1): el desfase con roseta de una línea rugosa sale verificado. Medido el 22/11/2026 con el desfase de una sola
+        curva (T09): 135 de los 150 casos con roseta rechazados por ``distance`` con la simplificación igual al ruido y 138 con 0,05 m;
+        con la unión de losas (T09b), ninguno."""
         rejected = [row.case.index for row in outcomes("noise") if row.case.with_rose and not row.verified]
         self.assertEqual(rejected, [], f"{len(rejected)} de {pd.ROUGH_CASES // 2} casos con roseta rechazados")
 
