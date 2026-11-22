@@ -181,7 +181,7 @@ API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
 # nuevos y lo que la 016 añade a los demás) y **desde la T35 de la 017** (``des.md`` §4.5 nombra los trece módulos nuevos
 # de las pistas y la accesibilidad y lo que la 017 añade a los demás); una spec posterior los usará con los suyos. El nombre
 # ``PENDING_015_*`` se conserva porque otras pruebas lo importan.
-PENDING_015_API: frozenset[str] = frozenset()
+PENDING_015_API: frozenset[str] = frozenset({"PitParam", "pit_operation_defs", "reproduce_pit"})  # spec 018, T02: la tarea de documentación de la 018 los cita
 PENDING_015_MODULES: frozenset[str] = frozenset()
 
 
@@ -2550,9 +2550,9 @@ class RoadsGuideDocTest(unittest.TestCase):
         menos la de inicio (positivo si la pista sube), que con un relleno posterior que no parte de la explotación hay que elegir la partida, y ya no habla de «estas siete» ni de «las siete»."""
         styles = import_geoblender("core.constraints.styles")
         rules, _symbols = styles._entity_rules()
-        self.assertEqual(rules.count("<rule "), 24)
+        self.assertEqual(rules.count("<rule "), 27)
         self.assertEqual(rules.count("<rule ") // 3 - 1, len(styles.ENTITY_KINDS), "el estilo de hoy: cada tipo y «otra entidad», con tres reglas cada uno")
-        self.assertEqual(len(styles.ENTITY_KINDS) - 2, 5, "las versiones de la 016 tenían cinco tipos con estilo: 6 × 3 = 18 reglas")
+        self.assertEqual(len(styles.ENTITY_KINDS) - 3, 5, "las versiones de la 016 tenían cinco tipos con estilo: 6 × 3 = 18 reglas")
         self.assert_told("## 12. Lo que se ve, lo que se exporta y lo que llega a QGIS", (
             "de 18 reglas", "las pistas salen como «Otra entidad»", "24 reglas", "solo escribe el estilo de una capa que no tiene ninguno por defecto",
             "`layer_styles`", "`des_enl_<vNN>`", "leído en el código y no probado en QGIS", "cota de fin menos cota de inicio", "positivo si la pista sube"))

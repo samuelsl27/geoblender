@@ -376,7 +376,7 @@ class RoadLayerStyleTest(unittest.TestCase):
     def test_f_the_style_of_the_entities_layer_and_the_project_layers_do_not_change(self) -> None:
         """RF-015-27, RF-012-20: añadir la capa de ejes no cambia el estilo de la capa de entidades ni el de las del proyecto (la 015 y la 012 sin editar): sus reglas siguen siendo las de siempre."""
         entities_style = cstyles.style_for("des_enl_v01")
-        self.assertEqual(len(self.rules(entities_style.qml)), 24)
+        self.assertEqual(len(self.rules(entities_style.qml)), 27)
         self.assertEqual(cstyles.ENTITY_STYLE_NAME, entities_style.name)
         project = cstyles.style_for(next(iter(cstore.CONSTRAINT_LAYERS.values())))
         self.assertEqual(len(self.rules(project.qml)), 12)

@@ -169,6 +169,9 @@ __all__ = [
     "REMOVAL_ENTITY",
     "REMOVAL_FAMILIES",
     "REMOVAL_RANGES",
+    "PIT_ENTITY",
+    "PIT_FAMILIES",
+    "PitParam",
     "ROAD_ENTITY",
     "ROAD_FAMILIES",
     "ROAD_PROFILE_FAMILIES",
@@ -1328,6 +1331,21 @@ def check_entity_param(entity: str, code: str, param: str, value: object, *,
 
 # --- La pista, la accesibilidad y el perfil de pista (spec 017, T02; plan 017 §5.2.2; D-2, D-10, D-11, D-13, D-17) ------------
 
+class PitParam(StrEnum):
+    """Los valores de una corta (``des.pit.{e}.<valor>``; spec 018, T02; plan 018 §5.2.2), en su orden: **los comunes** y los de su origen
+    (el modo, la capa) **que registra la T02**; los demás (perfiles, rosetas, rampas, cotas y tolerancias) los pone la T03. **No tiene**
+    ``protect`` **ni** ``guard_m``: la corta no declara restricción alguna (RF-018-01, D-9)."""
+
+    NAME = "name"
+    MODE = "mode"
+    LAYER = "layer"
+    START = "start"
+    SUPPORT = "support"
+    SUPPORTS = "supports"
+    DISCARDED = "discarded"
+    REASON = "reason"
+
+
 class RoadParam(StrEnum):
     """Los valores de una pista (``des.road.{e}.<valor>``; plan 017 §5.2.2), en su orden: el nombre, el modo, la capa de
     origen y su geometría, el perfil, la partida y el apoyo, el origen y el destino (un punto de una capa, el eje de otra
@@ -1545,6 +1563,20 @@ ACCESS_ENTITY = _supported_entity(
 """Los parámetros de una accesibilidad (``access``, ``ACC-001``): **sin cadena** (sin ``start``): no parte de ninguna
 superficie y nadie parte de su dato; la superficie de la que se pregunta es un valor más (``surface``)."""
 
+_018_PIT = ("Spec 018, RF-018-01 y RF-018-02: sin valor por defecto; lo elige una persona al crear la corta (Samuel, IMGA, 22/11/2026)")
+
+PIT_ENTITY = _supported_entity(
+    "pit", "PIT", "Corta", PitParam, (
+        _common("name"),
+        _item("mode", "text", None, ("RF-018-02",), _018_PIT, "Mode of the pit", choices=("up", "down")),
+        _item("layer", "text", None, ("RF-018-01", "RF-018-02"), _018_PIT, "Layer the pit comes from"),
+        _common("start"), _common("support"), _common("supports"), _common("discarded"),
+        _item("reason", "text", None, ("RF-015-17",), _018_PIT, "Reason of the pit"),
+    ), {}, ("support", "supports", "reason"))
+"""Los parámetros de una corta (``pit``, ``PIT-001``): encadena (tiene ``start``) y no declara nada (sin ``protect`` ni ``guard_m``). La T02
+registra solo los comunes, el modo y la capa; la T03 añade los demás de plan 018 §5.2.2."""
+PIT_FAMILIES: tuple[ParamFamily, ...] = PIT_ENTITY.families
+"""Las familias de la corta, de versión, en su orden (``bl`` las registra junto a las demás)."""
 ROAD_FAMILIES: tuple[ParamFamily, ...] = ROAD_ENTITY.families
 ACCESS_FAMILIES: tuple[ParamFamily, ...] = ACCESS_ENTITY.families
 """Las familias de la pista (26) y de la accesibilidad (8), de versión, en su orden (plan 017 §5.2.2). Van aparte de

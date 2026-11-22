@@ -284,7 +284,7 @@ class EntityOperationTypesTest(unittest.TestCase):
                                                  *provenance.QUARRY_OPERATION_TYPES,
                                                  *provenance.ENTITY_OPERATION_TYPES,
                                                  *provenance.SUPPORTED_OPERATION_TYPES,
-                                                 *provenance.ROAD_OPERATION_TYPES)})
+                                                 *provenance.ROAD_OPERATION_TYPES, *provenance.PIT_OPERATION_TYPES)})
         for declared in provenance.ENTITY_OPERATION_TYPES:
             op_type = declared.op_type
             with self.subTest(op_type=op_type):

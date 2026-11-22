@@ -153,6 +153,7 @@ from .provenance import (
     ENTITY_SCOPE_KEY,
     ENTITY_SURFACE_ROLE,
     OPERATION_TYPES_BY_NAME,
+    PIT,
     PLATFORM,
     REMOVAL_RESTING,
     REMOVED_STOCKPILE_ROLE,
@@ -260,6 +261,7 @@ class EntityKind(StrEnum):
     BODY = "body"
     ROAD = "road"
     ACCESS = "access"
+    PIT = "pit"
 
     @classmethod
     def _missing_(cls, value: object) -> EntityKind | None:
@@ -428,7 +430,12 @@ _TYPES["road"] = EntityType(
 _TYPES["access"] = EntityType(
     entity_params("access"), ROAD_ACCESS, "des.access_declared_reason", "des.access_support_removed",
     None, ROAD_ACCESS_ZONES_ROLE)
-_PERMANENT_TYPES.update(("platform", "stockpile", "removal", "buttress", "body", "road", "access"))
+# La corta (018, T02): encadena (tiene ``start``), deja su superficie entera y la tabla de su huella (sale en la capa de entidades y se puede
+# apoyar en ella) y **no declara** restricciones (D-9: no tiene ``protect``). Su motivo declarado es obligatorio en la clase y no se usa.
+_TYPES["pit"] = EntityType(
+    entity_params("pit"), PIT, "des.pit_declared_reason", "des.pit_support_removed",
+    ENTITY_SURFACE_ROLE, ENTITY_ROLE)
+_PERMANENT_TYPES.update(("platform", "stockpile", "removal", "buttress", "body", "road", "access", "pit"))
 
 
 class EntityState(StrEnum):

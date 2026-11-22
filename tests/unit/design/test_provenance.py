@@ -206,7 +206,7 @@ class OperationTypesTest(unittest.TestCase):
                                                  *provenance.QUARRY_OPERATION_TYPES,
                                                  *provenance.ENTITY_OPERATION_TYPES,
                                                  *provenance.SUPPORTED_OPERATION_TYPES,
-                                                 *provenance.ROAD_OPERATION_TYPES)})
+                                                 *provenance.ROAD_OPERATION_TYPES, *provenance.PIT_OPERATION_TYPES)})
         self.assertEqual(provenance.MODULE, "des")
         self.assertEqual(provenance.OP_VERSION, "1.0")
         self.assertEqual(provenance.FIGURE_TOLERANCE, contract.Tolerance(relative=1e-9))

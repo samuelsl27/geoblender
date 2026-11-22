@@ -11532,3 +11532,19 @@ es = "Superficie de la pista exportada a «{file}»"
 
 ["«{name}» is an accessibility, not an entity with a chain: it is not brought to another version; calculate it again in the active version"]
 es = "«{name}» es una accesibilidad, no una entidad con cadena: no se trae a otra versión, se vuelve a calcular en la versión activa"
+
+# --- El tipo corta (spec 018, T02; RF-018-01; plan 018 §5.2.2 y §5.2.3): el nombre del tipo de operación y las etiquetas de los parámetros registrados. Lo que añada una tarea siguiente va detrás de la marca del final. ---
+
+["Pit"]
+es = "Corta"
+
+["Mode of the pit"]
+es = "Modo de la corta"
+
+["Layer the pit comes from"]
+es = "Capa de la que sale la corta"
+
+["Reason of the pit"]
+es = "Motivo de la corta"
+
+# --- Fin del tipo corta (spec 018, T02)

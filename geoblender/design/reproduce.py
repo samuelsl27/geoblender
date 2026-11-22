@@ -162,6 +162,7 @@ __all__ = [
     "reproduce_envelope",
     "reproduce_excavation_area",
     "reproduce_fill_only",
+    "reproduce_pit",
     "reproduce_platform",
     "reproduce_quarry",
     "reproduce_road",
@@ -1293,6 +1294,14 @@ def _reproduce_road_propose(request: ReproduceRequest, budget_s: float) -> Itera
     outcome = yield from road_store.propose_compute_steps(job, surface=start_item.name, budget_s=budget_s)
     made = _route_layer_output(request, road_store.propose_layer_rows(outcome), frozen.crs)
     yield Progress(_PHASE, 1, 1, "Trazado reproducido", result=ReproducedResult((made,), tuple(outcome.figures)))
+
+
+# --- El tipo de la 018 (spec 018, T02): sin comportamiento todavía ---------------------------------------------
+
+
+def reproduce_pit(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """Reproduce ``des.pit`` (spec 018, T02; RF-018-01, RF-009-11): sin comportamiento todavía (la tarea que crea la operación)."""
+    return _not_yet(request, provenance.PIT, "la tarea que crea la operación", "018")
 
 
 REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({

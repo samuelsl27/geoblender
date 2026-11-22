@@ -1381,7 +1381,8 @@ _SURFACE_ROLES = (provenance.DESIGN_SURFACE_ROLE, provenance.ENTITY_SURFACE_ROLE
 diseño de la 013 y la 014 y la de una entidad de la 015."""
 
 
-_OWN_CODE_TYPES = (provenance.PLATFORM, provenance.STOCKPILE_REMOVAL, provenance.BUTTRESS, provenance.BODY, provenance.ROAD)
+_OWN_CODE_TYPES = (provenance.PLATFORM, provenance.STOCKPILE_REMOVAL, provenance.BUTTRESS, provenance.BODY, provenance.ROAD,
+                   provenance.PIT)
 """Los tipos de operación que son una **entidad** con su código en los ajustes y dejan una superficie (la plataforma y, de la 016, la
 retirada, el contrafuerte y el cuerpo; de la 017, la pista, T21): el gancho de las dependencias (:meth:`DesignWriter._supports`) no se apoya en la
 propia entidad ni en lo que parte de ella (spec 016, T20)."""
@@ -2101,7 +2102,8 @@ RECOMPUTED: tuple[str, ...] = (*provenance.REPRODUCIBLE, provenance.EXCAVATION_A
                                 provenance.QUARRY, provenance.EDGE_TRANSITION,
                                 provenance.FILL_ONLY, provenance.REFIT, provenance.PLATFORM,
                                 provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER,
-                                *provenance.SUPPORTED_TYPES, *provenance.ROAD_VERSION_TYPES)
+                                *provenance.SUPPORTED_TYPES, *provenance.ROAD_VERSION_TYPES,
+                                *provenance.PIT_VERSION_TYPES)
 """Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013, de la 014 el recinto
 y la cantera (T19), la transición (T28), «solo relleno» (T30) y el ajuste (T32) y, de la 015, la plataforma
 (T14 de la 015; ``design.entity_store.recompute_platform``) y la declaración de restricciones de las
@@ -4127,6 +4129,9 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import road_store  # al usarlo: road_store importa este módulo
 
         return road_store.recompute_propose(request, budget_s=budget_s)
+    if request.op_type in provenance.PIT_VERSION_TYPES:
+        # El tipo de la 018 (T02): sin cálculo todavía; las tareas que crean la operación lo ponen aquí. Nunca cae en un escalonado.
+        raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 018 que crea su operación")
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
                       supersedes=request.operation_uid, budget_s=budget_s, released=released)

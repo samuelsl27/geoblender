@@ -345,7 +345,7 @@ class QgisDeclaredReferenceTest(decl.DeclareCase):
         found = {tuple(attributes[1:4]): matched for attributes, matched in info["matches"]}
         self.assertEqual(found, expected)
         by_label = {label: symbol for label, _condition, symbol in info["rules"]}
-        self.assertEqual(len(by_label), 24)  # siete tipos y «otra entidad», cada uno en sus tres reglas
+        self.assertEqual(len(by_label), 27)  # ocho tipos y «otra entidad», cada uno en sus tres reglas
         red, green, blue = cstyles.ENTITY_KINDS["platform"][1]
         normal, faded, marked = (by_label[label] for label in (
             "Plataforma", "Plataforma descartada", "Plataforma con el apoyo retirado"))
@@ -379,7 +379,7 @@ class QgisDeclaredReferenceTest(decl.DeclareCase):
         capa lleva su nota."""
         info = self.layer(REAL_ENTITIES)
         self.assertEqual(info["renderer"], "RuleRenderer")
-        self.assertEqual(len(info["rules"]), 24)
+        self.assertEqual(len(info["rules"]), 27)
         self.assertEqual(info["rules"], self.layer(ENTITIES)["rules"], "el mismo estilo que el de la capa de prueba")
         found = {attributes[1]: matched for attributes, matched in info["matches"]}
         self.assertEqual(found, {"PLT-001": ["Plataforma descartada"],

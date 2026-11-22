@@ -381,6 +381,11 @@ __all__ = [
     "PLATFORM_COMMON_PARAMS",
     "PLATFORM_FIGURES",
     "PLATFORM_SETTINGS",
+    "PIT",
+    "PIT_COMMAND",
+    "PIT_OPERATION_TYPES",
+    "PIT_REPRODUCIBLE",
+    "PIT_VERSION_TYPES",
     "PROPOSE_COMMAND",
     "PROPOSE_FIGURES",
     "CounterslopeConfirmation",
@@ -574,6 +579,7 @@ __all__ = [
     "road_params",
     "road_request",
     "road_settings",
+    "pit_operation_defs",
     "propose_figures",
     "propose_params",
     "propose_request",
@@ -1430,6 +1436,9 @@ ROAD = "des.road"
 ROAD_ACCESS = "des.road_access"
 ROAD_PROPOSE = "des.road_propose"
 ROAD_LAYER = "des.road_layer"
+PIT = "des.pit"
+"""El tipo de operación de la corta por bancos (spec 018, T02; RF-018-01): una entidad **con cadena** de la versión; **sin comportamiento todavía**
+(la T03 le pone las cifras y las demás tareas, el cálculo)."""
 EDIT_ROAD_PROFILES = "des.edit_road_profiles"
 """Los tipos de la 017 (spec 017, T03 y T26; plan 017 §5.2.3): la pista (con cadena), la accesibilidad de las pistas (sin cadena), «Proponer el
 trazado», la capa de ejes de pistas para QGIS (T26-a: de versión, repetible y **no reproducible**, como ``des.entity_layer``) y la edición de los
@@ -1567,10 +1576,19 @@ superficie entera (``des_psf_``), su huella (``des_epr_``: es lo que sale en la 
 (``des_rdx_``) y su informe, y deja también ``des.supported_m3`` (lo que se le apoya: RF-015-15); la accesibilidad, lo alcanzable, sus
 bermas, plataformas y zonas «requiere acceso» y su informe; la propuesta, solo su capa de líneas con Z, editable (``des_rpl_``). La
 edición de los perfiles de pista no está aquí: es de proyecto y no se repite (:data:`ROAD_PROFILE_OPERATIONS`)."""
+PIT_COMMAND = "geoblender.des_new_pit"
+"""La orden que lanza la corta: **la provisional del catálogo** («Nueva corta…», D-20); la sustituye la tarea de la fase G que entrega la clase real."""
+PIT_OPERATION_TYPES: tuple[OperationType, ...] = (
+    OperationType(PIT, "Pit", (ENTITY_SURFACE_GRID, ENTITY_TABLE, ENTITY_REPORT_TABLE), (), (), (PIT_COMMAND,)),
+)
+"""Los tipos de operación de la 018 (spec 018, T02; plan 018 §5.2.3), aparte de los de las cuatro specs anteriores: de la versión, repetibles y
+reproducibles, **sin comportamiento todavía**. La corta deja la superficie entera, la tabla de su huella y su informe (como toda entidad);
+sus demás salidas, las cifras y los otros tipos (``des.pit_expand``, ``des.pit_layer``) son de la T03."""
+
 OPERATION_TYPES_BY_NAME: Mapping[str, OperationType] = MappingProxyType(
     {declared.op_type: declared
      for declared in (*OPERATION_TYPES, *QUARRY_OPERATION_TYPES, *ENTITY_OPERATION_TYPES,
-                      *SUPPORTED_OPERATION_TYPES, *ROAD_OPERATION_TYPES)})
+                      *SUPPORTED_OPERATION_TYPES, *ROAD_OPERATION_TYPES, *PIT_OPERATION_TYPES)})
 """Los tipos de las cinco specs por nombre (solo lectura)."""
 ROAD_PROFILE_OPERATIONS: tuple[OperationDef, ...] = (
     OperationDef(EDIT_ROAD_PROFILES, OP_VERSION, MODULE, "Edition of the road profiles", False,
@@ -1609,6 +1627,12 @@ ROAD_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in ROAD_OPERATION_TY
 ROAD_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in ROAD_OPERATION_TYPES if t.reproducible)
 """Los tipos de la 017 que se reproducen: la pista, la accesibilidad y la propuesta (bit a bit desde una revisión congelada, con :data:`FIGURE_TOLERANCE` en las cifras); **no** la capa de
 ejes (T26-a), que incluye el estado de cada pista."""
+
+
+PIT_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in PIT_OPERATION_TYPES)
+"""Los tipos de versión de la 018, que se repiten solos."""
+PIT_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in PIT_OPERATION_TYPES if t.reproducible)
+"""Los tipos de la 018 que se reproducen: todos."""
 
 
 def operation_def(op_type: str, recompute: RecomputeFunction | None = None,
@@ -1685,6 +1709,15 @@ def road_operation_defs(recompute: Mapping[str, RecomputeFunction],
     _check_functions("recálculo", recompute, ROAD_VERSION_TYPES)
     _check_functions("reproducción", reproduce, ROAD_REPRODUCIBLE)
     return tuple(declared.definition(recompute[declared.op_type], reproduce.get(declared.op_type)) for declared in ROAD_OPERATION_TYPES)
+
+
+def pit_operation_defs(recompute: Mapping[str, RecomputeFunction],
+                       reproduce: Mapping[str, ReproduceFunction]) -> tuple[OperationDef, ...]:
+    """Los ``OperationDef`` de los tipos de la 018 (spec 018, T02), en su orden: cada uno con su función de ``recompute`` y de ``reproduce``
+    (:data:`PIT_REPRODUCIBLE`). ``ValueError`` si sobra o falta alguna."""
+    _check_functions("recálculo", recompute, PIT_VERSION_TYPES)
+    _check_functions("reproducción", reproduce, PIT_REPRODUCIBLE)
+    return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type]) for declared in PIT_OPERATION_TYPES)
 
 
 # --- Las cifras: armarlas -----------------------------------------------------------------------
@@ -1878,7 +1911,7 @@ def has_declaring_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
     return conn.execute(_LIVE_DECLARING, (version_uid, *DECLARING_OP_NAMES)).fetchone() is not None
 
 
-ENTITY_OP_NAMES: tuple[str, ...] = (PLATFORM, STOCKPILE_DETECT, STOCKPILE_REMOVAL, BUTTRESS, BODY, ROAD, ROAD_ACCESS)
+ENTITY_OP_NAMES: tuple[str, ...] = (PLATFORM, STOCKPILE_DETECT, STOCKPILE_REMOVAL, BUTTRESS, BODY, ROAD, ROAD_ACCESS, PIT)
 """Los tipos de operación de las entidades de una versión (la plataforma y, de la 016, la detección, la retirada, el
 contrafuerte y el cuerpo apoyado y, de la 017, la pista y la accesibilidad; **no** «Proponer el trazado», que no es una entidad): lo que
 escribe una entidad que sale en la capa de entidades o que cuenta para lo que sigue a «Recalcular lo obsoleto» y a «Cambiar

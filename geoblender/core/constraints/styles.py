@@ -211,6 +211,7 @@ ENTITY_KINDS: Mapping[str, tuple[str, tuple[int, int, int]]] = MappingProxyType(
     "body": ("Cuerpo apoyado", (77, 140, 217)),
     "road": ("Pista", (118, 118, 118)),
     "access": ("Accesibilidad", (51, 166, 153)),
+    "pit": ("Corta", (166, 77, 128)),
 })
 """Los tipos de entidad con estilo propio: el valor de ``kind`` → (su nombre en español, su color ``r, g, b``). Los cuatro de
 la 016 (spec 016, T35; decisión del 19/11/2026) llevan **los colores de los objetos de la vista** (``bl.scene.entity_views.COLORS``, de 0 a 1,

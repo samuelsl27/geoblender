@@ -3681,6 +3681,19 @@ CATALOG: tuple[Message, ...] = (
         "se descartó la pista «{name}»",
         "note",
     ),
+    # La corta (spec 018, T02): como la pista, no declara restricción alguna (D-9); su motivo existe y no se usa.
+    Message(
+        "des.pit_declared_reason",
+        "declared by pit {name}",
+        "declarada por la corta {name}",
+        "note",
+    ),
+    Message(
+        "des.pit_support_removed",
+        "the pit «{name}» was discarded",
+        "se descartó la corta «{name}»",
+        "note",
+    ),
     Message(
         "des.access_support_removed",
         "the accessibility «{name}» was discarded",

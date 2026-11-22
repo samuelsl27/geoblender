@@ -132,7 +132,7 @@ class OperationTypesTest(unittest.TestCase):
         for older in (*provenance.OPERATION_TYPES, *provenance.QUARRY_OPERATION_TYPES,
                       *provenance.ENTITY_OPERATION_TYPES, *provenance.SUPPORTED_OPERATION_TYPES):
             self.assertIs(provenance.OPERATION_TYPES_BY_NAME[older.op_type], older)
-        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5 + 3 + 1)  # + la capa de ejes de pistas (T26)
+        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5 + 3 + 1 + 1)  # + la capa de ejes de pistas (T26) y la corta de la 018 (T02)
 
     def test_the_figures_of_each_type_and_what_fills_on_a_road(self) -> None:
         """RF-017-23, 24, 28, RF-015-15 (ADR-0031 §4): las cifras de cada tipo son las de su tabla; la pista deja también
@@ -445,9 +445,9 @@ class EntityTypesTest(unittest.TestCase):
         specs anteriores, con su familia de parámetros, el tipo de su operación y los mensajes de su motivo y de «apoyo
         retirado»."""
         self.assertEqual([item.kind for item in entities.registered_types()],
-                         ["platform", "stockpile", "removal", "buttress", "body", "road", "access"])
+                         ["platform", "stockpile", "removal", "buttress", "body", "road", "access", "pit"])
         self.assertEqual([item.value for item in entities.EntityKind],
-                         ["platform", "stockpile", "removal", "buttress", "body", "road", "access"])
+                         ["platform", "stockpile", "removal", "buttress", "body", "road", "access", "pit"])
         road, access = entities.entity_type("road"), entities.entity_type("access")
         self.assertIs(entities.EntityKind.ROAD, entities.EntityKind("road"))
         self.assertIs(entities.EntityKind.ACCESS, entities.EntityKind("access"))
@@ -682,8 +682,8 @@ class ClosedListsTest(unittest.TestCase):
         detrás de los de la 016 y, **desde la T26**, la capa de ejes de pistas al final, sin cambiar lo que ya llevaba ni repetir ninguno."""
         for op_type in TYPES.values():
             self.assertIn(op_type, store.RECOMPUTED)
-        self.assertEqual(store.RECOMPUTED[-4:], (*TYPES.values(), provenance.ROAD_LAYER))
-        self.assertEqual(store.RECOMPUTED[-4 - len(provenance.SUPPORTED_TYPES):-4], provenance.SUPPORTED_TYPES)
+        self.assertEqual(store.RECOMPUTED[-5:-1], (*TYPES.values(), provenance.ROAD_LAYER))  # y la corta de la 018 (T02), al final
+        self.assertEqual(store.RECOMPUTED[-5 - len(provenance.SUPPORTED_TYPES):-5], provenance.SUPPORTED_TYPES)
         self.assertEqual(len(set(store.RECOMPUTED)), len(store.RECOMPUTED))
 
     def test_recompute_run_has_a_branch_for_each_type_and_none_falls_to_another_design(self) -> None:
@@ -738,7 +738,7 @@ class ClosedListsTest(unittest.TestCase):
         """RF-017-01, RF-015-27 (hallazgos D-1 y D-2 de la 016): lo que sigue a «Recalcular lo obsoleto» y a «Cambiar
         parámetro…» cuenta **a las dos entidades**: ``ENTITY_OP_NAMES`` lleva la pista y la accesibilidad (no la
         propuesta, que no es una entidad); la pista **no** declara restricciones (``DECLARING_OP_NAMES`` no la lleva)."""
-        self.assertEqual(provenance.ENTITY_OP_NAMES[-2:], (ROAD, ACCESS))
+        self.assertEqual(provenance.ENTITY_OP_NAMES[-3:-1], (ROAD, ACCESS))
         self.assertNotIn(PROPOSE, provenance.ENTITY_OP_NAMES)
         self.assertNotIn(ROAD, provenance.DECLARING_OP_NAMES)
         self.assertEqual(provenance.ENTITY_OP_NAMES[:5], (provenance.PLATFORM, provenance.STOCKPILE_DETECT,

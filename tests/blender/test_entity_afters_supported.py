@@ -26,9 +26,9 @@ from unittest import mock
 
 from tests.support import blender_ext
 
-PREFIXES = ("des.platform.", "des.stockpile.", "des.removal.", "des.buttress.", "des.body.", "des.road.", "des.access.")
+PREFIXES = ("des.platform.", "des.stockpile.", "des.removal.", "des.buttress.", "des.body.", "des.road.", "des.access.", "des.pit.")
 ENTITY_TYPES = ("des.platform", "des.stockpile_detect", "des.stockpile_removal", "des.buttress", "des.body", "des.road",
-                "des.road_access")
+                "des.road_access", "des.pit")
 
 
 def _module(name: str) -> ModuleType:

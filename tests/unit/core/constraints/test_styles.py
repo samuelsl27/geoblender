@@ -273,16 +273,16 @@ class VersionLayerStyleTest(unittest.TestCase):
         (renderer,) = root.iter("renderer-v2")
         self.assertEqual(renderer.get("type"), "RuleRenderer")
         rules = list(renderer.iter("rule"))
-        self.assertEqual(len(rules), 24)  # siete tipos y «otra entidad», cada uno en sus tres reglas
-        self.assertEqual(len({rule.get("key") for rule in rules}), 24)
+        self.assertEqual(len(rules), 27)  # ocho tipos y «otra entidad», cada uno en sus tres reglas
+        self.assertEqual(len({rule.get("key") for rule in rules}), 27)
         by_label = _by_label(root)
         self.assertEqual({kind: (label, rgb) for kind, (label, rgb) in styles.ENTITY_KINDS.items()}, {
             "platform": ("Plataforma", (176, 96, 64)), "stockpile": ("Acopio", (217, 140, 26)), "removal": ("Retirada", (204, 77, 64)),
             "buttress": ("Contrafuerte", (128, 102, 204)), "body": ("Cuerpo apoyado", (77, 140, 217)),
-            "road": ("Pista", (118, 118, 118)), "access": ("Accesibilidad", (51, 166, 153))},
+            "road": ("Pista", (118, 118, 118)), "access": ("Accesibilidad", (51, 166, 153)), "pit": ("Corta", (166, 77, 128))},
             "los colores de la 016 son los de bl.scene.entity_views.COLORS (0 a 1) a 0 a 255")
         self.assertEqual(list(by_label), [
-            f"{label}{suffix}" for label in ("Plataforma", "Acopio", "Retirada", "Contrafuerte", "Cuerpo apoyado", "Pista", "Accesibilidad",
+            f"{label}{suffix}" for label in ("Plataforma", "Acopio", "Retirada", "Contrafuerte", "Cuerpo apoyado", "Pista", "Accesibilidad", "Corta",
                           styles.ENTITY_OTHER_LABEL)
             for suffix in ("", " descartada", " con el apoyo retirado")])
         for symbol in by_label.values():
@@ -308,8 +308,8 @@ class VersionLayerStyleTest(unittest.TestCase):
         self.assertNotEqual(marked["outline_color"], normal["outline_color"])
         self.assertGreater(float(marked["outline_width"]), float(normal["outline_width"]))
         # la regla de los demás tipos no repite lo de los que tienen estilo propio
-        self.assertTrue(str(filters[21]).startswith(
-            "coalesce(\"kind\", '') NOT IN ('platform', 'stockpile', 'removal', 'buttress', 'body', 'road', 'access')"))
+        self.assertTrue(str(filters[3 * len(styles.ENTITY_KINDS)]).startswith(
+            "coalesce(\"kind\", '') NOT IN ('platform', 'stockpile', 'removal', 'buttress', 'body', 'road', 'access', 'pit')"))
         for index, kind in enumerate(styles.ENTITY_KINDS):  # cada tipo, en sus tres reglas (normal, descartada y con el apoyo retirado)
             self.assertEqual([str(item)[:len(f"\"kind\" = '{kind}'")] for item in filters[3 * index:3 * index + 3]], [f"\"kind\" = '{kind}'"] * 3)
 

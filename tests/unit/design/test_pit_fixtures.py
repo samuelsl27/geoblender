@@ -341,10 +341,10 @@ class MainNamesTest(unittest.TestCase):
             for name in found:
                 self.assertTrue(hasattr(loaded, name), f"{module}.{name}")
 
-    def test_the_pit_type_is_not_registered_yet(self) -> None:
-        """Estado de partida de la T02: ``main`` no conoce el tipo ``pit`` ni ninguno de los módulos nuevos del plan."""
+    def test_the_pit_type_is_registered_but_not_the_new_modules(self) -> None:
+        """Estado tras la T02: el tipo ``pit`` está registrado (T02) y ningún módulo nuevo del plan existe aún."""
         entities = import_geoblender("design.entities")
-        self.assertNotIn("pit", {str(getattr(item, "value", item)) for item in entities._TYPES})
+        self.assertIn("pit", {str(getattr(item, "value", item)) for item in entities._TYPES})
         for module in ("pit_model", "pit_rose", "pit_ramp_def", "pit_offset", "pit_bench", "pit_ramp", "pit_surface",
                        "pit_sky", "pit_report", "pit_check013", "pit_store", "pit_layer"):
             self.assertFalse((EXTENSION_DIR / "design" / f"{module}.py").exists(), module)

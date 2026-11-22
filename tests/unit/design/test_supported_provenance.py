@@ -118,7 +118,7 @@ class OperationTypesTest(unittest.TestCase):
         for older in (*provenance.OPERATION_TYPES, *provenance.QUARRY_OPERATION_TYPES,
                       *provenance.ENTITY_OPERATION_TYPES):
             self.assertIs(provenance.OPERATION_TYPES_BY_NAME[older.op_type], older)
-        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5 + 4)  # + los cuatro de la 017 (T03 y T26)
+        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5 + 4 + 1)  # + los cuatro de la 017 (T03 y T26) y la corta de la 018 (T02)
 
     def test_the_support_figure_is_also_left_by_what_fills_on_a_stockpile(self) -> None:
         """RF-016-14, RF-015-15 (ADR-0031 §4): la retirada y el contrafuerte —lo que rellena sobre una huella—
@@ -504,7 +504,7 @@ class ClosedListsTest(unittest.TestCase):
         de la detección, T04) después de los de la 015, sin cambiar lo que ya llevaba."""
         for op_type in TYPES.values():
             self.assertIn(op_type, store.RECOMPUTED)
-        self.assertEqual(store.RECOMPUTED[:len(store.RECOMPUTED) - 5 - 4][-3:],  # detrás, los cinco de la 016 y los cuatro de la 017
+        self.assertEqual(store.RECOMPUTED[:len(store.RECOMPUTED) - 5 - 4 - 1][-3:],  # detrás, los cinco de la 016 los cuatro de la 017 y la de la 018
                          (provenance.PLATFORM, provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER))
         self.assertEqual(len(set(store.RECOMPUTED)), len(store.RECOMPUTED))
 
