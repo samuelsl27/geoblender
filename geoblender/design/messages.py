@@ -3782,6 +3782,20 @@ CATALOG: tuple[Message, ...] = (
         "Corta «{name}»: no sale a superficie en {limit} bancos (banco {bench}, cerca de {place}); no se registra nada.",
     ),
     Message(
+        "des.pit_empty",
+        "Pit «{name}»: the limit «{field}» leaves nothing before its first bench: the interior is {width} m wide at bench {bench}, "
+        "narrower than the minimum {limit} m (near {place}); nothing is registered.",
+        "Corta «{name}»: el límite «{field}» queda vacío antes de su primer banco: el interior mide {width} m de ancho en el banco "
+        "{bench}, menos que el mínimo de {limit} m (cerca de {place}); no se registra nada.",
+    ),
+    Message(
+        "des.pit_too_many_parts",
+        "Pit «{name}»: the interior of bench {bench} splits into {count} parts, over the limit of {limit} (near {place}); it is a "
+        "validity limit, not a mining figure; nothing is registered.",
+        "Corta «{name}»: el interior del banco {bench} se parte en {count} partes, más del límite de {limit} (cerca de {place}); es un "
+        "límite de validez, no una cifra minera; no se registra nada.",
+    ),
+    Message(
         "des.pit_floor_too_small",
         "Pit «{name}»: at bench {bench} the floor is {width} m wide, narrower than the minimum {minimum} m; the pit stops there.",
         "Corta «{name}»: en el banco {bench} el fondo mide {width} m de ancho, menos que el mínimo de {minimum} m; la corta para ahí.",

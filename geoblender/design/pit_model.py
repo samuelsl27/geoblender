@@ -168,7 +168,9 @@ class PitCode(StrEnum):
     """Los códigos de lo que el cálculo o la preparación de una corta no puede dar (RF-018-04, 06, 10, 13, 14, 15, 19, 20, 23, 24):
     ``PROFILES_DIFFER`` (perfiles de distinta altura o ancla), ``NOTHING_TO_EXCAVATE`` (el fondo no queda por debajo del terreno),
     ``TOO_MANY_BENCHES`` (más de :data:`MAX_BENCHES` bancos o :data:`MAX_VERTICES` vértices), ``NOT_REACHING_SURFACE`` (no sale a
-    superficie), ``FLOOR_TOO_SMALL`` (el fondo, menor que el mínimo), ``FIXED_LEVEL`` y ``FIXED_CROSS`` (bancos fijados),
+    superficie), ``FLOOR_TOO_SMALL`` (el fondo, menor que el mínimo: el aviso con que para una descendente), ``EMPTY`` (una descendente
+    queda vacía antes de su primer banco, RF-018-14), ``TOO_MANY_PARTS`` (el interior de un banco se parte en más de 50 partes),
+    ``FIXED_LEVEL`` y ``FIXED_CROSS`` (bancos fijados),
     ``RAMP_MEAN_OVER`` (la pendiente media de la rampa pasa de la máxima), ``RAMP_RADIUS_BELOW_MIN`` (el radio que cabe es menor
     que el mínimo), ``NO_RAMP_FIT`` (la rampa no cabe), ``NO_SEARCH`` (un sector sin la búsqueda de intocables vigente), ``HOLES``
     (el desfase tiene huecos) y ``OFFSET_UNRELIABLE`` (el desfase no se pudo verificar). Su valor es el código de
@@ -179,6 +181,8 @@ class PitCode(StrEnum):
     TOO_MANY_BENCHES = "des.pit_too_many_benches"
     NOT_REACHING_SURFACE = "des.pit_not_reaching_surface"
     FLOOR_TOO_SMALL = "des.pit_floor_too_small"
+    EMPTY = "des.pit_empty"
+    TOO_MANY_PARTS = "des.pit_too_many_parts"
     FIXED_LEVEL = "des.pit_fixed_level"
     FIXED_CROSS = "des.pit_fixed_cross"
     RAMP_MEAN_OVER = "des.pit_ramp_mean_over"

@@ -339,7 +339,7 @@ class PitMessagesTest(unittest.TestCase):
     CODES = (
         "des.pit_holes", "des.pit_offset_unreliable", "des.pit_no_ramp_fit", "des.pit_rose_gap", "des.pit_rose_overlap",
         "des.pit_profiles_differ", "des.pit_nothing_to_excavate", "des.pit_too_many_benches", "des.pit_not_reaching_surface",
-        "des.pit_floor_too_small", "des.pit_fixed_level", "des.pit_fixed_cross", "des.pit_ramp_mean_over",
+        "des.pit_floor_too_small", "des.pit_empty", "des.pit_too_many_parts", "des.pit_fixed_level", "des.pit_fixed_cross", "des.pit_ramp_mean_over",
         "des.pit_ramp_radius_below_min", "des.pit_no_search", "des.pit_rose_value_missing", "des.pit_rose_value_range",
         "des.pit_ramp_value_missing", "des.pit_ramp_value_range")
 

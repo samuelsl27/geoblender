@@ -70,7 +70,7 @@ class EnumsAndCodesTest(unittest.TestCase):
 
     def test_error_codes_are_catalog_messages(self) -> None:
         """RF-018-04, 06, 13, 14, 23, 24: cada código de error es un mensaje de ``design.messages`` con texto en español y en inglés."""
-        self.assertEqual(len(pit_model.PitCode), 13)
+        self.assertEqual(len(pit_model.PitCode), 15)
         for item in pit_model.PitCode:
             with self.subTest(code=item.value):
                 self.assertIn(item.value, messages.MESSAGES)
