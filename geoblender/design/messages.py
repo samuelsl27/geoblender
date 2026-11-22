@@ -3518,11 +3518,11 @@ CATALOG: tuple[Message, ...] = (
         "des.road_carriageway_height",
         "Haul road «{entity}»: {area} m² of the carriageway do not end up on the level profile of "
         "the haul road, the largest difference being {difference} m, around x = {x} m, y = {y} m, because the cut or "
-        "fill of the axis passes the maximum height of cut and fill ({height} m); it is not created without your "
+        "fill at some cell of the carriageway passes the maximum height of cut and fill ({height} m); it is not created without your "
         "express confirmation: a carriageway with steps or gaps is not a haul road.",
         "Pista «{entity}»: {area} m² de la calzada no quedan en su rasante (el perfil de cotas de la pista), con una "
-        "diferencia máxima de {difference} m, en torno a x = {x} m, y = {y} m, porque el desmonte o el terraplén del "
-        "eje pasa de la altura máxima de desmonte y terraplén ({height} m); no se crea sin su confirmación expresa: "
+        "diferencia máxima de {difference} m, en torno a x = {x} m, y = {y} m, porque el desmonte o el terraplén de "
+        "alguna celda de la calzada pasa de la altura máxima de desmonte y terraplén ({height} m); no se crea sin su confirmación expresa: "
         "una calzada con escalones o huecos no es una pista.",
         "warning",
     ),

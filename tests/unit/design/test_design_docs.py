@@ -2402,7 +2402,7 @@ class RoadsGuideDocTest(unittest.TestCase):
             "no es una de las 23 cifras", "«Desviación máxima del eje respecto a la ruta: …»", "**de cualquier peso, el 1 incluido**",
             "más de 10⁻⁹ m", "una pista que sigue el terreno no afecta a nada",
             "**en cada celda de la calzada**", "no solo en el eje", "en «Sobre un eje» y «Eje 3D», que no tienen ruta, no hay altura máxima",
-            "el desmonte o el terraplén del eje pasa de la altura máxima",
+            "el desmonte o el terraplén de alguna celda de la calzada pasa de la altura máxima",
             "caen en el mismo nodo de la malla de la ruta", "un paso de cota demasiado pequeño", "un ciclo",
             "el presupuesto de estados es más del doble"))
         for code in ("des.road_mean_unconfirmed", "des.road_mean_reason", "des.road_carriageway_unconfirmed", "des.road_mean_gradient",
@@ -2682,12 +2682,25 @@ class RoadsStateDocTest(unittest.TestCase):
         self.assertEqual(missing(paragraph, ("en `main`; **cerrada y publicada** el 22/11/2026", "E1 a E5 vistos en pantalla en el H3 del 22/11/2026, con eventos simulados y sin ratón real")), [])
         self.assertNotIn("en `main`, sin publicar", paragraph)
 
+    def test_the_ledger_tells_the_two_adjustments_after_the_closing(self) -> None:
+        """Definición de hecho §3.7 (T53, 22/11/2026): tras el cierre, el roadmap anota con una fila nueva que, a petición de Samuel («Sí, ajusta esos dos pendientes»), la prueba de
+        rendimiento ``EngraveTest.test_b`` mide contra la cifra de RNF-017-04 (avisa por encima de ≈ 18,1 s y falla por encima de ≈ 22,7 s) y el aviso
+        ``des.road_carriageway_height`` dice «alguna celda de la calzada»; sin cambiar requisitos, y R-40 sigue cerrada y publicada."""
+        rows = re.findall(r"^\| 2026-11-22 \| R-40: la T53 ajusta.*$", self.roadmap, re.MULTILINE)
+        self.assertEqual(len(rows), 1, rows)
+        entry = one_line(rows[0])
+        facts = ("«Sí, ajusta esos dos pendientes»", "`EngraveTest.test_b`", "≈ 18,1 s", "≈ 22,7 s", "25 % de margen", "`des.road_carriageway_height`", "alguna celda de la calzada",
+                 "no «del eje»", "Sin cambio de requisitos ni de cifras de la spec 0.4", "sigue **cerrada y publicada**")
+        self.assertEqual([fact for fact in facts if fact not in entry], [])
+        self.assertNotIn("sin publicar", entry)
+
     def test_the_ledger_tells_the_convergence(self) -> None:
         """Definición de hecho §3.7 (T46b y el cierre del 22/11/2026): el primer registro del roadmap del 22/11/2026 cuenta la convergencia de la verificación única (las
         pruebas de plazo, los 16 arreglos de código, las pruebas que faltaban y la documentación), que H2-2 se desmintió con la orden real, que quedaban la T47, el H3 y
-        las 19 decisiones de Samuel, y que no marcaba R-40 como cerrada: **se queda como estaba**, es lo que pasó esa mañana; el del 21/11/2026 también; y hay **dos**
-        registros del 22/11/2026 de R-40 (el segundo es el del cierre, que prueba :meth:`test_the_roadmap_says_where_the_017_is`)."""
-        self.assertEqual(len(re.findall(r"^\| 2026-11-22 \| R-40.*$", self.roadmap, re.MULTILINE)), 2)
+        las 19 decisiones de Samuel, y que no marcaba R-40 como cerrada: **se queda como estaba**, es lo que pasó esa mañana; el del 21/11/2026 también; y hay **tres**
+        registros del 22/11/2026 de R-40 (el segundo es el del cierre, que prueba :meth:`test_the_roadmap_says_where_the_017_is`; el tercero, el de la T53, que prueba
+        :meth:`test_the_ledger_tells_the_two_adjustments_after_the_closing`)."""
+        self.assertEqual(len(re.findall(r"^\| 2026-11-22 \| R-40.*$", self.roadmap, re.MULTILINE)), 3)
         self.assertEqual(len(self.ledger_convergence), 1, self.ledger_convergence)
         entry = one_line(self.ledger_convergence[0])
         facts = ("sigue **implementada en `main`, sin publicar** y sin cerrar", "66 hallazgos", "las pruebas de plazo (T39)", "los 16 arreglos de código (T40 a T44",
@@ -2957,7 +2970,7 @@ class RoadsCardsDocTest(unittest.TestCase):
         self.assertEqual(missing(one_line(block), ("**Lo que cerró la convergencia (T39 a T46b; 22/11/2026)**", "`6581f8b`", "`e3d4604`", "`7e293a5`", "`0aacd0d`", "`e1e7747`",
                                                    "`c32742d`", "`9755219`", "`180f233`", "**Samuel aceptó el 22/11/2026, en el chat, con «Sí, por defecto»**",
                                                    "**las 19 decisiones de esta sección con la propuesta por defecto de cada una**", "Después se hicieron la **T47**",
-                                                   "**Lo que queda para la siguiente entrada, sin bloquear el cierre:**", "`EngraveTest.test_b`",
+                                                   "**Lo que quedó para la siguiente entrada, sin bloquear el cierre, y se hizo en la T53 (22/11/2026):**", "`EngraveTest.test_b`",
                                                    "`des.road_carriageway_height`")), [])
         for stale in ("**ninguna está resuelta: Samuel no ha dicho nada**", "Quedan la **T47**", "**Resolución:** pendiente"):
             self.assertNotIn(stale, block)
@@ -2975,7 +2988,10 @@ class RoadsCardsDocTest(unittest.TestCase):
         self.assertIn("**Dado por visto**", thirteen)  # y lo que contestó
         self.assertEqual(missing(fifteen, ("la propuesta por defecto está aplicada", "Sigue pendiente solo lo del formato guardado", "**Avisar**")), [])
         one = one_line(items[0])
-        self.assertEqual(missing(one, ("«**≤ 15 s por cada 2 M celdas de la ventana**»", "un 25 % de margen", "**Queda por aplicar en el código:** `EngraveTest.test_b`")), [])
+        self.assertEqual(missing(one, ("«**≤ 15 s por cada 2 M celdas de la ventana**»", "un 25 % de margen", "**Aplicado en la T53 (22/11/2026, «Sí, ajusta esos dos pendientes»):** `EngraveTest.test_b`")), [])
+        twelve = one_line(items[11])
+        self.assertEqual(missing(twelve, ("**Aplicado en la T53 (22/11/2026):**", "alguna celda de la calzada", "no «del eje»")), [])
+        self.assertNotIn("Queda como cambio menor para la siguiente entrada", twelve)
         section_10 = one_line(self.verification[self.verification.index("## 10. Tras la convergencia"):])
         self.assertEqual(missing(section_10, ("(T39 a T46b; 22/11/2026)", "**La 017 no está cerrada ni publicada.**", "**(i) 16 arreglos de código**", "**19 decisiones**",
                                               "ninguna tiene resolución", "la **causa de la intermitencia de `test_road_bank.LatestTest`**", "la **T47**", "el **H3 en pantalla**",

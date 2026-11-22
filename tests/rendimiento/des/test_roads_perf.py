@@ -20,11 +20,11 @@ operación, el perfil de pista de referencia (**solo de las pruebas**, D-2) y lo
 - RNF-017-02 (:class:`RouteTest`): la ruta 3D de ≈ 1,5 km, ≤ 90 s (en ``Z:``, ≤ 180 s) y ≤ 1,3 GB **para cualquier pasillo** (la búsqueda se detiene
   a su presupuesto de 5 M estados expandidos) y ≤ 30 s con una franja de 60 m de ancho.
 - RNF-017-03 (:class:`AxisTest`): el eje con curvas y la rasante de 5 km con estaciones cada 1 m, ≤ 2 s (previsto 1,6 ms).
-- RNF-017-04 (:class:`EngraveTest`): grabar 2 km con su borde, la métrica exacta y una caja de ≤ 2 M celdas, ≤ 15 s (en ``Z:``, ≤ 30 s), y ≤ 2 s con el
-  *chamfer*. **Dos ejes**: el **compacto** (ventana de 1,73 M celdas: la caja de la spec) y el de la fixture ``road_data.scale_axis_2km``, **en
-  diagonal** (2,42 M celdas: más que la caja de la spec): **avisa y no falla** hasta que Samuel decida la cifra para esa ventana (DS-1 de la 017; T39, E-1): pasar de 15 s sale como una
-  línea ``RNF-017-04: AVISO …`` (la recoge ``tools/check.py``) con la cifra y que la spec no se cumple con esa ventana, y solo falla por encima del doble de su plazo por celda
-  (36,3 s: una regresión grosera). La caja de ≤ 2 M celdas sigue estrictamente contra los 15 s. :class:`EngraveVerdictTest` lo prueba con un grabado simulado.
+- RNF-017-04 (:class:`EngraveTest`): grabar 2 km con su borde y la métrica exacta, **≤ 15 s por cada 2 M celdas de la ventana** (en ``Z:``, ≤ 30 s), y ≤ 2 s con el
+  *chamfer*. **Dos ejes**: el **compacto** (ventana de 1,73 M celdas: la caja de la spec, ≤ 15 s estrictos) y el de la fixture ``road_data.scale_axis_2km``, **en
+  diagonal** (2,42 M celdas: 18,1 s según la spec, DS-1 de la 017, aceptada por Samuel el 22/11/2026; T53): la prueba admite un **25 % de margen por la carga ajena** (22,7 s): entre el
+  plazo de la spec y ese margen sale una línea ``RNF-017-04: AVISO …`` (la recoge ``tools/check.py``) con la cifra, y por encima del margen **falla**.
+  :class:`EngraveVerdictTest` lo prueba con un grabado simulado.
 - RNF-017-05 (:class:`AccessTest`): la accesibilidad de 2,81 M celdas con 250 tramos de berma, 5 plataformas y 20 zonas, ≤ 5 s (en ``Z:``, ≤ 10 s; previsto 0,17 s).
 - RNF-017-06 (cada prueba de arriba): cada llamada del hilo de Blender de «Calcular» (cada ``next`` de los pasos del dominio con el presupuesto de la interfaz,
   0,05 s), en CPU del proceso, ≤ 0,2 s. Las órdenes reales, dentro de Blender (``perf_roads.py``).
@@ -79,7 +79,7 @@ AXIS_BUDGET_S = 2.0  # RNF-017-03
 ENGRAVE_BUDGET_S = 15.0  # RNF-017-04, métrica exacta, caja de ≤ 2 M celdas, en disco local
 ENGRAVE_NETWORK_BUDGET_S = 30.0  # RNF-017-04 en Z:
 ENGRAVE_BOX_CELLS = 2_000_000  # la caja a que se refiere RNF-017-04
-ENGRAVE_GROSS_FACTOR = 2.0  # el eje en diagonal (más de 2 M celdas) solo falla por encima de 2 × el plazo por celda de la spec: una regresión grosera, como SHARED_CPU_FACTOR de ScaleTest (T39, E-1)
+ENGRAVE_LOAD_MARGIN = 1.25  # el margen del 25 % de la prueba sobre el plazo por celda de la spec, por la carga ajena (DS-1 de la 017, aceptada por Samuel el 22/11/2026; T53)
 CREATE_BUDGET_S = 2.0  # «Crear» una pista con la ventana de más de 2 M celdas: escribe la rejilla entera (el plan midió ≈ 0,7 s de lectura y escritura); en Z:, el doble como los demás
 CHAMFER_BUDGET_S = 2.0  # RNF-017-04, con el chamfer
 ACCESS_BUDGET_S = 5.0  # RNF-017-05, en disco local
@@ -126,21 +126,19 @@ def engrave_cell_budget_s(cells: int) -> float:
     return ENGRAVE_BUDGET_S * max(cells, ENGRAVE_BOX_CELLS) / ENGRAVE_BOX_CELLS
 
 
-def engrave_gross_limit_s(cells: int) -> float:
-    """Lo que puede tardar la prueba del eje en diagonal **sin fallar**: el doble del plazo por celda (36,3 s con 2,42 M celdas). Mientras Samuel no decida la cifra de RNF-017-04 para una
-    ventana de más de 2 M celdas (DS-1), pasar de 15 s **avisa** y solo una regresión grosera falla."""
-    return ENGRAVE_GROSS_FACTOR * engrave_cell_budget_s(cells)
+def engrave_limit_s(cells: int) -> float:
+    """Lo que puede tardar la prueba **sin fallar**: el plazo por celda de la spec más el 25 % de margen por la carga ajena (22,7 s con las 2,42 M celdas del eje en diagonal)."""
+    return ENGRAVE_LOAD_MARGIN * engrave_cell_budget_s(cells)
 
 
 def engrave_notice(median_s: float, cells: int) -> str | None:
-    """El aviso de RNF-017-04 con una ventana de más de 2 M celdas (``None`` si no hace falta: la mediana no pasa de 15 s). Empieza por «RNF-017-04:» para que ``tools/check.py`` lo recoja entre las
-    medidas, y dice la cifra y que **RNF-017-04 no se cumple con esa ventana**: lo que hace falta lo decide Samuel (DS-1 de la 017; la cifra o la ventana por tramos del plan §7.3), no esta prueba."""
-    if median_s <= ENGRAVE_BUDGET_S:
+    """El aviso de RNF-017-04 con una ventana de más de 2 M celdas (``None`` si no hace falta: la mediana no pasa del plazo por celda de la spec). Empieza por «RNF-017-04:» para que
+    ``tools/check.py`` lo recoja entre las medidas, y dice la cifra, el plazo de la spec y el margen del 25 % por la carga ajena en que cabe (por encima de él, la prueba falla)."""
+    if median_s <= engrave_cell_budget_s(cells):
         return None
-    over = " y del plazo por celda" if median_s > engrave_cell_budget_s(cells) else ", dentro del plazo por celda"
-    return (f"RNF-017-04: AVISO, no se cumple con esta ventana: con {count(cells)} celdas (más de las {count(ENGRAVE_BOX_CELLS)} de la caja de la spec) la mediana, {number(median_s, 2)} s, pasa de los "
-            f"{number(ENGRAVE_BUDGET_S, 0)} s de la spec{over} de {number(engrave_cell_budget_s(cells), 1)} s ({number(ENGRAVE_BUDGET_S, 0)} s por cada {count(ENGRAVE_BOX_CELLS)} celdas); la cifra o la ventana "
-            f"por tramos es una decisión de Samuel (DS-1 de la 017); la prueba solo falla por encima de {number(engrave_gross_limit_s(cells), 1)} s")
+    return (f"RNF-017-04: AVISO, pasa del plazo de la spec con esta ventana: con {count(cells)} celdas la mediana, {number(median_s, 2)} s, pasa de los "
+            f"{number(engrave_cell_budget_s(cells), 1)} s de la spec ({number(ENGRAVE_BUDGET_S, 0)} s por cada {count(ENGRAVE_BOX_CELLS)} celdas) pero cabe en su margen del 25 % por carga ajena "
+            f"({number(engrave_limit_s(cells), 1)} s); por encima de ese margen la prueba falla")
 
 
 class RoadsCase(unittest.TestCase):
@@ -384,7 +382,7 @@ class EngraveTest(RoadsCase):
             f"RNF-017-04: grabar {what} (eje de {count(round(case.axis.length_m))} m con {case.axis.curve_count} curvas, ventana de {count(case.cells)} celdas de "
             f"{count(dperf.CELLS)}; sección de {count(case.section.cell_count)} celdas; corte {count(round(engraved.cut_m3))} m³ y relleno "
             f"{count(round(engraved.fill_m3))} m³; {MACHINE}): {seconds_of(times)}; {calls_line([item[2] for item in found])}; presupuesto "
-            f"{number(budget_s, 1)} s" + ("" if rnf_box else f" (2 × el plazo por celda de la spec, {number(engrave_cell_budget_s(case.cells), 1)} s: pasar de {number(ENGRAVE_BUDGET_S, 0)} s avisa, DS-1)"))
+            f"{number(budget_s, 1)} s" + ("" if rnf_box else f" (el plazo por celda de la spec, {number(engrave_cell_budget_s(case.cells), 1)} s, más un 25 % de margen por la carga ajena: pasar del plazo avisa)"))
         gis_perf.report(f"RNF-017-06: grabar {what}, {calls_line([item[2] for item in found])}")
         self.assertGreater(case.section.cell_count, 20_000, "la sección es casi nada: no mide el borde")
         self.assertGreater(engraved.edge_cut_m3, 0.0)
@@ -401,13 +399,12 @@ class EngraveTest(RoadsCase):
 
     def test_b_diagonal_axis_with_the_exact_metric(self) -> None:
         """RNF-017-04, RNF-017-06: el eje en diagonal de la fixture (``road_data.scale_axis_2km``, ventana de **2,42 M celdas**: más que la caja de la spec) con la métrica
-        exacta, que **avisa y no falla** hasta que Samuel decida la cifra de RNF-017-04 para esa ventana (DS-1 de la 017; T39, E-1): la mediana de 3 por encima de 15 s —18,4 s en
-        reposo, 21–27 s con el PC cargado— sale como una línea ``RNF-017-04: AVISO …`` con la cifra y que RNF-017-04 **no se cumple con esa ventana** (el plazo por celda de la spec
-        es de 15 s por cada 2 M celdas: 18,1 s), y **solo falla por encima del doble de ese plazo** (36,3 s: una regresión grosera, como ``ScaleTest``). La caja de ≤ 2 M celdas
-        (``test_a``) sigue **estrictamente** contra los 15 s de la spec."""
+        exacta contra el plazo por celda de RNF-017-04 (**15 s por cada 2 M celdas de la ventana**: 18,1 s; DS-1 de la 017, aceptada por Samuel el 22/11/2026): la mediana de 3 por
+        encima de ese plazo —18,4 s en reposo, 21 s con el PC cargado— sale como una línea ``RNF-017-04: AVISO …`` con la cifra y el margen, y **falla por encima del margen del 25 %
+        por la carga ajena** (22,7 s). La caja de ≤ 2 M celdas (``test_a``) sigue **estrictamente** contra los 15 s de la spec."""
         cells = self.diagonal.cells
         self.assertGreater(cells, ENGRAVE_BOX_CELLS)
-        times, _ = self.check(self.diagonal, "2 km en diagonal con la métrica exacta (2,42 M celdas)", HEAVY_RUNS, engrave_gross_limit_s(cells), rnf_box=False)
+        times, _ = self.check(self.diagonal, "2 km en diagonal con la métrica exacta (2,42 M celdas)", HEAVY_RUNS, engrave_limit_s(cells), rnf_box=False)
         notice = engrave_notice(statistics.median(times), cells)
         if notice is not None:
             gis_perf.report(notice)
@@ -439,9 +436,9 @@ class EngraveTest(RoadsCase):
 
 
 class EngraveVerdictTest(unittest.TestCase):
-    """RNF-017-04 (T39, E-1): lo que deciden ``EngraveTest.test_a`` y ``test_b`` con **un grabado simulado** (sin los 20 s de cada corrida ni sus fixtures). La caja de ≤ 2 M celdas sigue
-    **estrictamente** contra los 15 s de la spec; el eje en diagonal (más de 2 M celdas) **avisa** de que RNF-017-04 no se cumple con esa ventana y solo falla por encima del doble de su
-    plazo por celda (36,3 s), mientras Samuel no decida la cifra (DS-1 de la 017)."""
+    """RNF-017-04 (T39, E-1; T53, DS-1 de Samuel): lo que deciden ``EngraveTest.test_a`` y ``test_b`` con **un grabado simulado** (sin los 20 s de cada corrida ni sus fixtures). La caja de
+    ≤ 2 M celdas sigue **estrictamente** contra los 15 s de la spec; el eje en diagonal (más de 2 M celdas) se mide contra **15 s por cada 2 M celdas de la ventana** (18,1 s con 2,42 M),
+    **avisa** entre ese plazo y el margen del 25 % por la carga ajena (22,7 s) y **falla** por encima del margen."""
 
     DIAGONAL = rp.EngraveCase(job=None, section=SimpleNamespace(window=(slice(0, 1555), slice(0, 1555)), cell_count=23_334), levels=None, axis=SimpleNamespace(length_m=2031.0, curve_count=61))
     """La ventana del eje en diagonal de la fixture: 1.555 × 1.555 = 2.418.025 celdas (más de 2 M)."""
@@ -458,25 +455,32 @@ class EngraveVerdictTest(unittest.TestCase):
             getattr(test, name)()
         return lines
 
-    def test_a_the_diagonal_axis_warns_over_15_s_and_fails_only_over_twice_the_per_cell_limit(self) -> None:
-        """RNF-017-04: con la ventana de 2,42 M celdas la mediana de 14 s no avisa; de 18,43 s (en reposo: dentro del plazo por celda), de 21,1 s (con carga ajena) y de 27,1 s (24 hilos ocupados)
-        **avisan sin fallar**, con la cifra y que RNF-017-04 **no se cumple con esa ventana**; de 36,2 s todavía; de más de 36,3 s falla."""
+    def test_a_the_diagonal_axis_warns_over_its_per_cell_limit_and_fails_over_the_25_percent_margin(self) -> None:
+        """RNF-017-04 (DS-1, aceptada por Samuel el 22/11/2026): con la ventana de 2,42 M celdas el plazo de la spec es de 15 s por cada 2 M celdas (18,1 s) y la prueba admite un 25 %
+        más por la carga ajena (22,7 s). Una mediana de 14 s o de 18,0 s **no avisa**; de 18,43 s (en reposo), de 21,1 s (con carga ajena) y de 22,6 s **avisa sin fallar**, con la cifra y que
+        cabe en el margen; de 22,8 s, de 27,1 s (24 hilos ocupados) y de 36,2 s **falla**."""
         name = "test_b_diagonal_axis_with_the_exact_metric"
         self.assertEqual(self.DIAGONAL.cells, 2_418_025)
         self.assertAlmostEqual(engrave_cell_budget_s(self.DIAGONAL.cells), 18.135, places=3)
-        self.assertAlmostEqual(engrave_gross_limit_s(self.DIAGONAL.cells), 36.27, places=2)
-        self.assertFalse([line for line in self.run_test(name, self.DIAGONAL, 14.0) if "AVISO" in line], "dentro de los 15 s no hay aviso")
-        for seconds, inside in ((15.5, True), (18.0, True), (18.43, False), (21.1, False), (27.1, False), (36.2, False)):
-            with self.subTest(mediana_s=seconds):
+        self.assertAlmostEqual(engrave_limit_s(self.DIAGONAL.cells), 22.669, places=3)
+        self.assertEqual(engrave_limit_s(self.COMPACT.cells), 1.25 * ENGRAVE_BUDGET_S)
+        for seconds in (14.0, 15.5, 18.0):
+            with self.subTest(sin_aviso_s=seconds):
+                self.assertFalse([line for line in self.run_test(name, self.DIAGONAL, seconds) if "AVISO" in line], "dentro del plazo por celda de la spec no hay aviso")
+        for seconds in (18.43, 21.1, 22.6):
+            with self.subTest(aviso_s=seconds):
                 notices = [line for line in self.run_test(name, self.DIAGONAL, seconds) if "AVISO" in line]
                 self.assertEqual(len(notices), 1, "un aviso, visible y sin fallar")
                 self.assertTrue(notices[0].startswith("RNF-017-04: AVISO"), "empieza por la medida: check.py lo recoge")
-                for text in (f"{seconds:.2f}".replace(".", ","), "no se cumple con esta ventana", "2.418.025 celdas", "DS-1", "36,3 s", "18,1 s"):
+                for text in (f"{seconds:.2f}".replace(".", ","), "pasa del plazo de la spec", "2.418.025 celdas", "18,1 s", "22,7 s", "margen del 25 %", "carga ajena"):
                     self.assertIn(text, notices[0])
-                self.assertEqual("dentro del plazo por celda" in notices[0], inside)
-        with self.assertRaises(AssertionError) as caught:
-            self.run_test(name, self.DIAGONAL, 36.4)
-        self.assertIn("2 km en diagonal", str(caught.exception))
+                for stale in ("DS-1", "decisión de Samuel", "no se cumple con esta ventana"):
+                    self.assertNotIn(stale, notices[0], "la cifra ya está decidida")
+        for seconds in (22.8, 27.1, 36.2):
+            with self.subTest(falla_s=seconds):
+                with self.assertRaises(AssertionError) as caught:
+                    self.run_test(name, self.DIAGONAL, seconds)
+                self.assertIn("2 km en diagonal", str(caught.exception))
 
     def test_b_the_box_of_the_spec_stays_strictly_within_15_s(self) -> None:
         """RNF-017-04: con la caja de ≤ 2 M celdas (la de la spec) 14,9 s pasan y 15,1 s **fallan**: sin aviso, sin margen."""
@@ -644,25 +648,25 @@ class RoadProjectTest(ScaleCase):
     def test_c_axis_of_2_km(self) -> None:
         """RNF-017-04, RNF-017-06: grabar un eje de 2 km con 61 curvas «sobre un eje» (los dos: el compacto, de ≤ 2 M celdas de ventana, y el diagonal, de 2,42 M) sobre el terreno
         de escala: la sección y el grabado más «Crear» (la superficie entera de 2,81 M celdas y las tablas) ≤ 15 s para el compacto (≤ 30 s en ``Z:``; el diagonal, ≤ 15 s por cada 2 M
-        celdas de ventana: 18,1 s, ≤ 36,3 s en ``Z:``)."""
+        celdas de ventana: 18,1 s, y un 25 % de margen por la carga ajena en la prueba: 22,7 s; en ``Z:`` el doble)."""
         for feature, scaled in (("Eje compacto", 1.0), ("Eje de 2 km", 2.42 / 2.0)):
             found = self.repeat(lambda feature=feature: self.axis(feature))
             engraved = [self.phase(item, "road_section", "road_engrave") + item.create_s for item in found]
-            limit = self.BUDGET_ENGRAVE_S * scaled
+            limit = self.BUDGET_ENGRAVE_S * scaled * (1.0 if scaled == 1.0 else ENGRAVE_LOAD_MARGIN)
             gis_perf.report(
                 f"RNF-017-04: grabar el «{feature}» de 2 km sobre {count(dperf.CELLS)} celdas de 1 m, la sección y el grabado de «Calcular» más «Crear» (la superficie entera y las "
                 f"tablas; {self.WHERE}; {MACHINE}): {seconds_of(engraved)}; de «Calcular» a «Crear», {seconds_of([item.total_s for item in found])}; «Crear» "
                 f"{number(statistics.median(item.create_s for item in found), 2)} s de mediana; presupuesto {number(limit, 1)} s"
-                f"{'' if scaled == 1.0 else ' (el de la spec por cada 2 M celdas de la ventana, con la escritura de «Crear» fija)'}")
+                f"{'' if scaled == 1.0 else ' (el de la spec por cada 2 M celdas de la ventana más un 25 % de margen por la carga ajena, con la escritura de «Crear» fija)'}")
             if scaled == 1.0:
                 self.assertLessEqual(statistics.median(engraved), limit, feature)
             else:  # la ventana pasa de 2 M celdas: lo que depende de ella (la sección y el grabado) va a su presupuesto por celda y «Crear», que escribe la rejilla entera, aparte
                 window = [self.phase(item, "road_section", "road_engrave") for item in found]
                 self.assertLessEqual(statistics.median(window), limit, feature)
                 self.assertLessEqual(statistics.median(item.create_s for item in found), self.BUDGET_CREATE_S, feature)
-                if statistics.median(engraved) > self.BUDGET_ENGRAVE_S:
+                if statistics.median(engraved) > self.BUDGET_ENGRAVE_S * scaled:
                     gis_perf.report(f"Aviso RNF-017-04: con una ventana de más de 2 M celdas la mediana, {number(statistics.median(engraved), 2)} s con «Crear», pasa de "
-                                    f"{number(self.BUDGET_ENGRAVE_S, 0)} s: la spec lo pide hasta 2 M celdas (la cifra o la ventana por tramos del plan §7.3: decisión de Samuel)")
+                                    f"{number(self.BUDGET_ENGRAVE_S * scaled, 1)} s, el plazo de la spec para esa ventana (por cada 2 M celdas), aunque cabe en su margen del 25 % por la carga ajena")
             self.check_calls(found, f"grabar el «{feature}»")
 
     def test_d_access(self) -> None:

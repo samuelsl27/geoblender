@@ -1819,6 +1819,9 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
   del movimiento de tierras y el del área mínima de un tramo de berma, ahora más cortos y con la misma descripción), las filas de las listas de la accesibilidad
   (el texto en su fila y el botón **Ir a** debajo) y la frase de «Descartar…» que dice qué pasa con lo que se apoyaba (partida en dos líneas, con el mismo texto).
   Ninguna cifra ni ningún cálculo cambian (spec 017; lo vio el H3, hallazgos H3-2, H3-5 y H3-7).
+- El aviso de que la calzada de una pista **pasa de la altura máxima de desmonte y terraplén** dice ahora «el desmonte o el terraplén de alguna celda de la calzada» y no
+  «del eje»: es lo que mide el grabado (la altura de cada celda de la calzada, que en una ladera llega a ser mayor que la del eje, y solo en «Trazar»). El cálculo no cambia
+  (spec 017).
 - El diálogo de «Calcular» de «Pista…», de «Proponer el trazado…» y de «Accesibilidad de las pistas…» **cabe en la ventana y «Crear» (o «Confirmar y
   crear») se ve sin bajar el diálogo**, también con muchos avisos: de cada tipo de aviso enseña **hasta 3** y una línea en ámbar «… y 22 avisos como éste
   (en el informe)» con los que faltan (una rampa de 13 curvas daba un aviso de radio por vértice, y con los de la calzada y los de las restricciones el

@@ -330,6 +330,22 @@ class RoadMessagesTest(unittest.TestCase):
                 self.assertIn("perfil de cotas", message.es)
                 self.assertIn("rasante", message.es)
 
+    def test_the_height_notice_says_some_cell_of_the_carriageway_and_not_the_axis(self) -> None:
+        """RF-017-22 (C-3, DS-12; decidida por Samuel el 22/11/2026, T53): el grabado aplica la altura máxima de desmonte y terraplén a **cada celda de la calzada**, no solo al
+        eje; el aviso lo dice así, en español y en inglés (antes decía «del eje» / «of the axis»), con la altura y sin cambiar sus marcadores."""
+        message = messages.MESSAGES["des.road_carriageway_height"]
+        self.assertIn("alguna celda de la calzada", message.es)
+        self.assertNotIn("del eje", message.es)
+        self.assertIn("some cell of the carriageway", message.msgid)
+        self.assertNotIn("of the axis", message.msgid)
+        values = dict(entity="Pista 1", area=640.0, difference=2.25, height=2.0, x=1.0, y=2.0)
+        spanish = messages.render("des.road_carriageway_height", **values)
+        english = messages.render("des.road_carriageway_height", language="en", **values)
+        for expected in ("«Pista 1»", "640", "2,25", "2 m", "alguna celda de la calzada", "altura máxima de desmonte y terraplén", "confirmación expresa"):
+            self.assertIn(expected, spanish)
+        for expected in ("«Pista 1»", "some cell of the carriageway", "maximum height of cut and fill", "express confirmation"):
+            self.assertIn(expected, english)
+
     def test_the_axis_3d_line_without_z_says_where_the_z_comes_from(self) -> None:
         """RF-017-18, T23-a (decisión de la sesión principal, 20/11/2026): una línea sin Z en el modo «eje 3D» se
         rechaza diciendo que una capa de entidades (``gis_fea_``) solo guarda X e Y y que la Z viene de una capa de líneas
