@@ -243,6 +243,61 @@ class HandEditedLevelTest(unittest.TestCase):
         without = {"reason": "Se cambia el decisor", "decided_by": "Otra persona"}
         self.assertEqual(road_store.person_level_changes(self.END, self.ALGORITHM, dict(without)), without)
 
+    def test_d_the_dependencies_the_person_writes_are_declared_by_the_person(self) -> None:
+        """RF-017-03, RF-015-15 (T40; hallazgo A-3): ``des.road.{e}.supports`` lo escribe el algoritmo al crear la pista (con lo que dan su origen y su destino, ``algorithm``) y, **al recalcular, se vuelve a
+        derivar**; lo que la persona escribe con «Cambiar parámetro…» es lo que **declara ella** (``person``, con su origen): sin pasar a ``person``, recalcular lo trataría como lo que derivó el código y
+        no lo conservaría. Lo demás se rige como las cotas: lo que anotó otra clase de origen se conserva y un cambio sin valor nuevo no es dar un valor."""
+        key = "des.road.rdw_001.supports"
+        changes = road_store.person_level_changes(key, self.ALGORITHM, {"reason": "Se declara", "value": "PLT-002"}, entity="Pista a P1")
+        self.assertEqual((changes["source_kind"], changes["source"], changes["value"]), ("person", "orden «Cambiar parámetro…», pista «Pista a P1»", "PLT-002"))
+        for kind in ("person", "document"):
+            with self.subTest(kind=kind):
+                self.assertEqual(road_store.person_level_changes(key, SimpleNamespace(source_kind=kind), dict(self.ASKED), entity="Pista a P1"), self.ASKED)
+        self.assertEqual(road_store.person_level_changes(key, self.ALGORITHM, dict({"reason": "Se cambia el decisor"})), {"reason": "Se cambia el decisor"})
+
+
+class SupportsFollowTest(unittest.TestCase):
+    """RF-017-03, RF-015-15, RF-015-18, CE-017-08 (T40; hallazgo A-3; **sin proyecto**): **lo que la pista pisa se vuelve a derivar al recalcular** (:func:`~design.road_store.resolve_supports`): la fila
+    ``supports`` que escribió el algoritmo al crearla (su origen en el eje de otra pista, su destino en una entidad) **no es lo que declaró la persona**: se vuelve a tomar del origen y del destino de
+    ahora y, si cambió, se reescribe; lo que dio la persona (``person``, un documento…) se conserva como declarado. Con el proyecto, crear, recalcular, descartar y la persona declarando son de
+    ``milestone_road_chain.SupportsOfARoadTest``."""
+
+    def test_a_what_the_algorithm_wrote_is_not_declared_and_is_taken_again_from_the_origin_and_the_destination(self) -> None:
+        """RF-017-03, RF-015-17 (A-3): una fila del algoritmo no declara nada (la causa de A-3: ``recompute_road`` la leía como declarada y la pista seguía apoyada en la pista de la que ya no salía); si lo
+        que dan hoy el origen y el destino es otra cosa, ``follow`` dice la de antes y la de ahora; si es lo mismo, aunque en otro orden, no hay nada que seguir (no se reescribe una fila igual)."""
+        declared, follow = road_store.resolve_supports("algorithm", "RDW-001", (), exists=True)
+        self.assertEqual((declared, follow), ((), road_store.SupportsFollow(("RDW-001",), (), True)))
+        self.assertEqual(road_store.resolve_supports("algorithm", "RDW-001, PLT-001", ("PLT-001", "RDW-002"), exists=True), ((), road_store.SupportsFollow(("RDW-001", "PLT-001"), ("PLT-001", "RDW-002"), True)))
+        for text, derived in (("RDW-001", ("RDW-001",)), ("PLT-001, RDW-001", ("RDW-001", "PLT-001")), (None, ()), ("", ()), ("  ", ())):
+            with self.subTest(text=text, derived=derived):
+                self.assertEqual(road_store.resolve_supports("algorithm", text, derived, exists=True), ((), None))
+
+    def test_b_what_the_person_declared_is_kept_and_a_row_that_is_missing_is_written_when_the_origin_gives_one(self) -> None:
+        """RF-015-15, RF-015-18 (A-3): lo que declaró la persona o anotó otra clase de origen (un documento, una norma, una cifra adoptada) **se conserva como declarado** y no se reescribe; una pista sin la fila
+        (se creó con puntos de la capa y su origen pasó al eje de otra) la **crea** al seguir lo que da el origen y no hace nada si no da nada."""
+        for kind in ("person", "document", "standard", "operation"):
+            with self.subTest(kind=kind):
+                self.assertEqual(road_store.resolve_supports(kind, "PLT-002, RDW-004", ("RDW-001",), exists=True), (("PLT-002", "RDW-004"), None))
+        self.assertEqual(road_store.resolve_supports("person", None, ("RDW-001",), exists=True), ((), None))
+        self.assertEqual(road_store.resolve_supports(None, None, ("RDW-001",), exists=False), ((), road_store.SupportsFollow((), ("RDW-001",), False)))
+        self.assertEqual(road_store.resolve_supports(None, None, (), exists=False), ((), None))
+
+    def test_c_the_row_says_what_changed_and_why(self) -> None:
+        """RF-017-03, RF-008-02: el motivo con que se reescribe la fila nombra la pista, lo que decía y lo que dice hoy (o «ninguna»), en español."""
+        reason = road_store.SupportsFollow(("RDW-001",), (), True).reason("Pista de servicio")
+        for part in ("Pista de servicio", "RDW-001", "ninguna"):
+            self.assertIn(part, reason)
+        self.assertIn("PLT-001, RDW-002", road_store.SupportsFollow((), ("PLT-001", "RDW-002"), False).reason("Pista de servicio"))
+
+    def test_d_an_operation_that_does_not_carry_what_its_predecessor_rested_on_is_left_as_it_is(self) -> None:
+        """RF-017-03, RF-015-15 (A-3; la otra mitad de la causa): ``OperationStart.carried`` arrastra a la operación nueva las entradas ``supported_on`` y ``support_footprint`` de la que sustituye (la 015,
+        T14: para una plataforma, lo que apoyaba se vuelve a medir y la dependencia sigue aunque pase a 0 m³); la pista **no las arrastra** (``carry=False``: lo que pisa lo da hoy su origen y su destino
+        y lo que declara la persona, y el gancho vuelve a medir lo que rellena): ``carried`` da la misma sin consultar el proyecto. Por defecto, arrastra (las demás operaciones no cambian)."""
+        base = store.OperationStart("des.road", "Pista", "uid-v01", "V01", {}, (), (), None, {}, "uid-vieja")
+        self.assertTrue(base.carry)
+        free = store.OperationStart("des.road", "Pista", "uid-v01", "V01", {}, (), (), None, {}, "uid-vieja", carry=False)
+        self.assertIs(free.carried(None), free)  # type: ignore[arg-type]
+
 
 class CheckRecordedTest(unittest.TestCase):
     """RF-013-17, RF-015-02, D-14: lo que anotó la operación al empezar es lo que leyó el cálculo al prepararse."""

@@ -232,6 +232,7 @@ __all__ = [
     "start_conflict",
     "strongest",
     "successor_of",
+    "support_path",
     "surface_ref",
     "unregister_entity_type",
     "unsupportable",
@@ -838,6 +839,53 @@ def unsupportable(records: Iterable[EntityRecord], own_code: str, *,
     if insert_before is not None and (successor := _find(items, insert_before)) is not None:
         found |= {item.code for item in chain_of(items, successor.code)}
     return frozenset(found)
+
+
+def support_path(records: Iterable[EntityRecord], reads: Mapping[str, Iterable[str]], own_code: str,
+                 target: str) -> tuple[str, ...] | None:
+    """El recorrido por el que la entidad ``target`` **depende de** la de código ``own_code``, o ``None`` si no
+    depende de ella (spec 017, T40; hallazgo A-2; RF-015-15, RF-017-03, RF-017-04): lo que haría que ``own_code``
+    apoyándose en ``target`` cerrase un ciclo. Dependen de una entidad lo que parte de su superficie, **aguas abajo
+    de su cadena** (:func:`unsupportable`), y **las pistas que la pisan** (``reads``: código de una pista → los
+    códigos de las entidades que lee por su origen en el eje de otra pista y por su destino en una entidad), y lo que
+    depende de ellas, hasta que no se añade nadie. Da ``(target, …, own_code)``: cada una depende de la
+    siguiente (un solo elemento, ``(own_code,)``, si ``target`` es ella misma). No escribe nada.
+    :class:`TypeError` si no son entidades; ``DesignError`` si la cadena ya está rota (:func:`chain_of`)."""
+    items = _records(records)
+    because: dict[str, str] = {}
+    reached = {own_code}
+
+    def follow(code: str) -> None:
+        """Lo que parte de la superficie de ``code``, una tras otra: cada una depende de la anterior."""
+        if _find(items, code) is None:
+            return
+        previous = code
+        for item in chain_of(items, code)[1:]:
+            if item.code not in reached:
+                because[item.code] = previous
+                reached.add(item.code)
+            previous = item.code
+
+    follow(own_code)
+    found = True
+    while found and target not in reached:
+        found = False
+        for road in sorted(reads, key=code_order):
+            if road in reached:
+                continue
+            reading = next((code for code in sorted(reads[road], key=code_order) if code in reached), None)
+            if reading is None:
+                continue
+            because[road] = reading
+            reached.add(road)
+            follow(road)
+            found = True
+    if target not in reached:
+        return None
+    path = [target]
+    while path[-1] != own_code:
+        path.append(because[path[-1]])
+    return tuple(path)
 
 
 # --- Insertar antes o después de otra entidad (RF-015-05) -----------------------------------------

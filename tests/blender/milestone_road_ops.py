@@ -737,6 +737,36 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
         self.assertEqual((value, kind), (100.7, "document"), "lo anotado por un documento se conserva")
         self.finish_refresh()
 
+    # --- g·c: «Cambiar parámetro…» de un valor del perfil y del origen de una pista (T40) ---------------
+
+    def test_g_c_changing_a_value_of_the_profile_or_the_origin_of_a_road_is_refused_when_creating_it_would_be(self) -> None:
+        """RF-017-04, RF-017-07, RF-015-15, RF-017-03, RF-015-08 (T40; hallazgos A-1 y A-2): «Cambiar parámetro…» (``core_set_parameter``, la orden real) de un valor del **perfil de pista**
+        (``des.roadprofile.{p}.*``) rechaza lo que rechaza «Perfil de pista…» —el radio mínimo menor que la semianchura de la sección (3 m con 5,75 m), mayor que el radio de las curvas (R = 5 m con
+        Rmín = 12 m) y el ángulo de desmonte de 90°, que la definición admite y RF-017-04 excluye— y el **origen de una pista en el eje de otra que ya se apoya en ella** (el ciclo: el ramal sale de la
+        pista principal y esta no puede salir del ramal), cada uno con su texto, el perfil o la pista, el campo y el valor, y **sin escribir nada** (antes se escribían y «Recalcular lo obsoleto»
+        daba ``FAILED`` hasta corregirlos)."""
+        self.refresh()
+        self.assertEqual(bpy.ops.geoblender.core_set_active_version(version_uid=self.v01.uid), {"FINISHED"})
+        branch = self.code_of(BRANCH)
+        first = str(self.parameter_row(branch, "origin")[0]).partition("@")[0]  # la pista principal: de la que sale el ramal (el nombre de la primera lo cambió la prueba anterior)
+        profile = "des.roadprofile.pista_principal"
+
+        def change(key: str, value: str) -> set[str]:
+            return bpy.ops.geoblender.core_set_parameter("EXEC_DEFAULT", key=key, value=value, scope="VERSION", decided_by=PERSON, reason=REASON, source="Criterio de la prueba")
+
+        before = self.state()
+        origin = f"des.road.{first.lower().replace('-', '_')}.origin"
+        for key, value, text, field in ((f"{profile}.min_radius_m", "3", "es menor que la semianchura de su sección", f"{profile}.min_radius_m"),
+                                        (f"{profile}.curve_radius_m", "5", "es mayor que el radio de sus curvas", f"{profile}.min_radius_m"),  # el rechazo nombra el radio mínimo, como «Perfil de pista…»
+                                        (f"{profile}.cut_angle_deg", "90", "está fuera de su rango", f"{profile}.cut_angle_deg"),
+                                        (origin, f"{branch}@5", f"declara que se apoya en {branch}", origin)):
+            with self.subTest(key=key), self.assertRaises(RuntimeError) as caught:
+                change(key, value)
+            self.assertIn(text, str(caught.exception))
+            self.assertIn(field, str(caught.exception))
+            self.assertNotIn("Traceback", str(caught.exception))
+            self.assertEqual(self.state(), before, "el rechazo no escribe nada")
+
     # --- h: desactivada con su motivo ---------------------------------------------------------------
 
     def test_h_the_command_is_disabled_with_its_reason(self) -> None:

@@ -688,6 +688,11 @@ class OperationStart:
     parts: tuple[str, ...] = ()
     """Las partes de sus salidas, si escribe una de cada familia por parte (un ajuste, T32: la
     de cada superficie, ``provenance.refit_part``); ninguna, una salida por familia."""
+    carry: bool = True
+    """Si arrastra a la operación nueva lo que apoyaba la que sustituye (:meth:`carried`; spec 015, T14). **Por defecto, sí** (la plataforma y lo demás de la 015 y la 016: lo que apoyaba se vuelve a
+    medir y la dependencia sigue aunque pase a 0 m³). **La pista no** (spec 017, T40; hallazgo A-3): lo que pisa lo dan hoy su origen y su destino y lo que declara la persona, que la preparación ya
+    lista entre las entradas, y el gancho de las dependencias vuelve a medir sobre el resultado lo que rellena; arrastrar la entrada de la operación anterior dejaba a la pista apoyada en
+    la pista de la que ya no salía."""
 
     @property
     def is_project(self) -> bool:
@@ -740,8 +745,8 @@ class OperationStart:
         hecha es inmutable y la de un recálculo empieza antes de calcular: lo que apoyaba se arrastra y se
         vuelve a medir sobre el resultado nuevo (:meth:`DesignWriter.commit`). Sin ``supersedes``, o sin nada
         que arrastrar, ``self``: una consulta. **No** arrastra lo de una entidad que la operación da por buena sin
-        su apoyo (T25; :meth:`released_of`)."""
-        if self.supersedes is None or self.is_project:
+        su apoyo (T25; :meth:`released_of`). Con ``carry`` falso (la pista, spec 017, T40), tampoco: da ``self``."""
+        if self.supersedes is None or self.is_project or not self.carry:
             return self
         with project.read() as conn:
             version = versions_store.require_editable(conn, self.version_uid)

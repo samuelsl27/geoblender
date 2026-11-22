@@ -19,6 +19,9 @@ de la 015 con la pista, sin una regla nueva del grafo** (P-5): lo que hacen esta
   no (``des.road_release_geometry``).
 - **Lo que va antes de la pista en la cadena** (:class:`UpstreamFillTest`): un relleno que parte antes que la pista no se apoya en ella y no pierde nada si se descarta; cambiado, la pista solo queda obsoleta.
 - **Traerlo a otra versión** (:class:`BringAfterDiscardTest`, RF-015-18, CE-017-08): lo descartado no se trae y lo que dependía de ello llega sin calcular y con el aviso.
+- **Lo que la pista pisa lo dan hoy su origen y su destino** (:class:`SupportsOfARoadTest`, T40; RF-017-03, RF-015-15, RF-015-17, RF-017-04; hallazgos A-3 y A-2): cambiar el origen de una pista a un punto de
+  la capa y recalcular **quita** la dependencia (como en una pista que nunca estuvo en el eje), lo que declara la persona se conserva y se quita vaciándolo, y el origen en el eje de una pista que ya
+  se apoya en ella se rechaza al cambiarlo y al calcular.
 """
 
 from __future__ import annotations
@@ -28,7 +31,9 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from tests.support import res_fixtures
 from tests.support import road_data as rd
+from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
 from tests.support.versions_fixtures import change_counter, files
 from tests.unit.design.milestone_road_create import FAMILIES, FILL, FIRST, PLATFORM, SECOND
@@ -43,6 +48,7 @@ entities = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
 events = import_geoblender("core.project.events")
 freeze = import_geoblender("core.versions.freeze")
+gis = import_geoblender("gis")
 messages = import_geoblender("design.messages")
 model = import_geoblender("design.model")
 provenance = import_geoblender("design.provenance")
@@ -934,6 +940,194 @@ class BringAfterDiscardTest(ChainCase):
             self.assertIn(lost, codes)
         self.assertEqual(self.states_now(), before)
         self.assertEqual(self.query("SELECT uid, status, superseded_by FROM gb_operation ORDER BY uid"), operations, "V01 no cambia")
+
+
+FREE_LAYER = "gis_fea_pistas_libres"
+FREE, CONTROL_GROUND = rd.dataset_of("rampa_b"), rd.dataset_of("rampa_c")
+FREE_POINTS = (("Origen libre", (150.0, 150.0)), ("Otro origen libre", (160.0, 150.0)), ("Destino libre", (200.0, 120.0)))
+CONTROL = "Pista de control"
+
+
+class SupportsOfARoadTest(ChainCase):
+    """RF-017-03, RF-015-15, RF-015-17, RF-015-18, RF-017-04, CE-017-08, E5 (T40; hallazgos A-3 y A-2): **lo que la pista pisa lo dan hoy su origen y su destino**. La «Pista de servicio» sale del eje de la
+    pista principal (``RDW-001@100``) de una superficie libre y la «Pista de control», con los mismos puntos y sin haber estado nunca en ese eje, de otra. Cambiar con «Cambiar parámetro…» el origen de la
+    primera a un punto de la capa y recalcular **quita** la dependencia (hasta la T40 seguía apoyada: la fila ``supports`` que escribió el algoritmo se leía como declarada y ``OperationStart.carried``
+    arrastraba las entradas de la operación anterior) y la pista queda como la de control; lo que la persona **declara** se conserva y se quita vaciándolo; el origen en el eje de otra pista que ya se apoya
+    en ella **se rechaza** al cambiarlo y al calcular. **En orden** (``test_a`` a ``test_h``): cada una parte de lo que dejó la anterior."""
+
+    x: ClassVar[str]
+    control: ClassVar[str]
+    FIRST_ORIGIN = design_params.entity_key("RDW-001", "origin")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        res_fixtures.write_grids(cls.project, [(name, gis.Raster(GRID, rd.ramp_terrain(GRID), rd.CRS, rd.VERTICAL)) for name in ("rampa_b", "rampa_c")], message="Los terrenos de las pistas libres (T40)")
+        sdata.write_layer(cls.project, cls.clock, sdata.FieldsLayer(FREE_LAYER, "point", tuple(((rd.absolute([point], GRID),),) for _name, point in FREE_POINTS), tuple(name for name, _ in FREE_POINTS), {}))
+        cls.clock.advance(minutes=1)
+        cls.made(request(SERVICE, layer=FREE_LAYER, origin="RDW-001@100", destination="Destino libre", surface=FREE))
+        cls.made(request(CONTROL, layer=FREE_LAYER, origin="Origen libre", destination="Destino libre", surface=CONTROL_GROUND))
+        found = {entry.record.name: entry.record.code for entry in entities.registry(cls.project, cls.v1.uid)}
+        cls.x, cls.control = found[SERVICE], found[CONTROL]
+
+    def rests_on(self, code: str = "RDW-001") -> list[str]:
+        """Los nombres de lo que se apoya en ``code``: la lista de la barra N (una sola, RF-015-17)."""
+        return [row.name for row in entities.dependents(self.project, self.v1.uid, code)]
+
+    def row(self, code: str, param: str = "supports") -> Any:
+        """La fila de la versión del parámetro ``param`` de ``code``: valor, clase de origen y revisión."""
+        return core_params.ParameterStore(self.project).get(design_params.entity_key(code, param), version=self.v1.uid)
+
+    def supports_of(self, code: str) -> tuple[Any, str] | None:
+        found = self.row(code)
+        return None if found is None else (found.value, str(found.source_kind))
+
+    def settle(self) -> Any:
+        """«Recalcular lo obsoleto» (la orden: las pasadas que haga falta): ninguna unidad falla y no llega al tope."""
+        last = None
+        for step in recompute_mod.recompute_settled_steps(self.project):
+            last = step.result if step.result is not None else last
+        self.assertFalse(last.limit_reached)
+        self.assertLessEqual({result.status for result in last.results}, {Status.DONE})
+        return last
+
+    def repeat(self, code: str) -> str:
+        """Repite la operación vigente de ``code`` como lo hace «Recalcular» (aunque no esté obsoleta)."""
+        self.clock.advance(minutes=1)
+        handle, work = store.recompute_run(self.request_for(self.current(code)))
+        finish_steps(work)
+        return str(handle.uid)
+
+    def pisa(self, code: str) -> list[tuple[str, str]]:
+        """Lo que la operación vigente de ``code`` consume de la pista principal (su superficie, la tabla de su huella y su eje) como entrada."""
+        return sorted((name, role) for name, role in self.inputs(self.current(code))
+                      if name in (surface_of(FIRST), footprint_of(FIRST), provenance.dataset_name(provenance.ROAD_AXIS_TABLE, FIRST)))
+
+    def test_a_a_road_that_leaves_the_axis_of_another_rests_on_it_and_the_row_the_algorithm_wrote_says_so(self) -> None:
+        """RF-017-03, RF-015-15: la pista que sale del eje de la principal se apoya en ella (su superficie y la tabla de su huella son entradas, con el papel ``supported_on``) y la lista de lo que se
+        apoya en la principal la tiene; la fila ``supports`` que escribió el algoritmo lo dice (``algorithm``); la pista de control no se apoya en ella ni tiene la fila."""
+        self.assertEqual(self.rests_on(), [SECOND, FILL, SERVICE])
+        self.assertEqual(self.supports_of(self.x), ("RDW-001", "algorithm"))
+        self.assertEqual([item for item in self.pisa(self.x) if item[1] != provenance.ROAD_AXIS_ROLE],
+                         [(footprint_of(FIRST), provenance.SUPPORT_FOOTPRINT_ROLE), (surface_of(FIRST), SUPPORTED_ON)])
+        self.assertEqual((self.pisa(self.control), self.supports_of(self.control)), ([], None))
+
+    def test_b_changing_its_origin_to_a_point_of_the_layer_takes_the_dependency_away_and_leaves_it_like_the_control(self) -> None:
+        """RF-017-03, RF-015-15, RF-015-17, CE-017-08 (A-3, la sonda del verificador A): con «Cambiar parámetro…» el origen pasa a un punto de la capa y «Recalcular lo obsoleto» la repite: **ya no se
+        apoya** en la pista principal (ni sale en su lista, ni su operación tiene su superficie ni su huella ni su eje como entradas), la fila del algoritmo se vuelve a derivar (sin valor), la pista está al
+        día y sin nada pendiente, y **tiene lo mismo que la de control**: una pista que nunca estuvo en ese eje. Antes, seguía apoyada con todas las entradas de la operación anterior."""
+        self.by_hand(design_params.entity_key(self.x, "origin"), "Origen libre")
+        self.assertEqual(self.state_of(self.x), State.STALE)
+        self.settle()
+        self.assertEqual(self.state_of(self.x), State.CURRENT)
+        self.assertEqual(self.rests_on(), [SECOND, FILL])
+        self.assertEqual(self.pisa(self.x), [])
+        self.assertEqual(self.supports_of(self.x), (None, "algorithm"))
+        self.assertEqual(self.recompute_plan(), [])
+        roles = {uid: sorted(role for _name, role in self.inputs(self.current(code)) if role in (SUPPORTED_ON, provenance.SUPPORT_FOOTPRINT_ROLE, provenance.ROAD_AXIS_ROLE))
+                 for uid, code in (("x", self.x), ("control", self.control))}
+        self.assertEqual(roles["x"], roles["control"], "lo mismo que una pista que nunca estuvo en el eje")
+
+    def test_c_going_back_to_the_axis_takes_it_again_and_writes_the_row(self) -> None:
+        """RF-017-03, D-13: el origen vuelve a un punto del eje (``RDW-001@50``): la pista se apoya otra vez (en la lista, con sus entradas), y la fila del algoritmo se **reescribe** con lo que da el origen
+        (un motivo, una revisión nueva); recalcular otra vez sin cambiar nada no la reescribe."""
+        before = self.row(self.x)
+        self.by_hand(design_params.entity_key(self.x, "origin"), "RDW-001@50")
+        self.settle()
+        self.assertEqual(self.rests_on(), [SECOND, FILL, SERVICE])
+        self.assertEqual(self.supports_of(self.x), ("RDW-001", "algorithm"))
+        self.assertGreater(self.row(self.x).rev, before.rev)
+        self.assertIn(provenance.ROAD_AXIS_ROLE, [role for _name, role in self.pisa(self.x)])
+        rev = self.row(self.x).rev
+        self.repeat(self.x)
+        self.assertEqual(self.row(self.x).rev, rev, "lo mismo no se reescribe")
+
+    def test_d_a_road_without_the_row_creates_it_when_its_origin_goes_to_the_axis_and_drops_it_when_it_leaves(self) -> None:
+        """RF-017-03, RF-015-17, RF-015-18: la pista de control **no tiene la fila** ``supports`` (se creó sin apoyos); cuando su origen pasa al eje de la principal, recalcular **la crea** (``algorithm``) y
+        se apoya; cuando vuelve a un punto de la capa, deja de apoyarse y la fila queda sin valor."""
+        self.assertIsNone(self.row(self.control))
+        self.by_hand(design_params.entity_key(self.control, "origin"), "RDW-001@100")
+        self.settle()
+        self.assertIn(CONTROL, self.rests_on())
+        self.assertEqual(self.supports_of(self.control), ("RDW-001", "algorithm"))
+        self.by_hand(design_params.entity_key(self.control, "origin"), "Origen libre")
+        self.settle()
+        self.assertNotIn(CONTROL, self.rests_on())
+        self.assertEqual(self.supports_of(self.control), (None, "algorithm"))
+
+    def test_e_what_the_person_declares_is_kept_while_the_origin_changes_and_it_goes_when_it_is_emptied(self) -> None:
+        """RF-015-15, RF-015-17, RF-015-18, D-13: la pista de servicio sale de un punto de la capa y la persona declara con «Cambiar parámetro…» que se apoya en la pista principal (la fila pasa a
+        ``person``); recalcularla la deja apoyada (declarado, sin tomar nada del origen), **cambiar su origen no lo quita** (lo declaró ella) y **vaciarlo a mano sí** (obsoleta por haberlo leído; recalcular
+        la deja sin apoyo): la salida manual funciona."""
+        self.by_hand(design_params.entity_key(self.x, "origin"), "Origen libre")
+        self.settle()
+        self.assertNotIn(SERVICE, self.rests_on())
+        self.by_hand(design_params.entity_key(self.x, "supports"), "RDW-001")
+        self.assertEqual(self.supports_of(self.x), ("RDW-001", "person"))
+        self.repeat(self.x)
+        self.assertIn(SERVICE, self.rests_on())
+        kept = self.row(self.x).rev
+        self.by_hand(design_params.entity_key(self.x, "origin"), "Otro origen libre")
+        self.settle()
+        self.assertIn(SERVICE, self.rests_on(), "lo declaró la persona: cambiar el origen no lo quita")
+        self.assertEqual((self.supports_of(self.x), self.row(self.x).rev), (("RDW-001", "person"), kept), "la fila de la persona no se reescribe")
+        self.by_hand(design_params.entity_key(self.x, "supports"), "")
+        self.assertEqual(self.state_of(self.x), State.STALE, "la pista leía la dependencia declarada")
+        self.settle()
+        self.assertNotIn(SERVICE, self.rests_on())
+        self.assertEqual(self.supports_of(self.x), (None, "person"))
+
+    def test_f_an_origin_on_a_road_that_already_rests_on_it_is_refused_when_it_changes_and_when_it_is_calculated(self) -> None:
+        """RF-015-15, RF-017-03, RF-017-04, CE-017-08 (A-2, la sonda del verificador A): con la pista de servicio saliendo del eje de la principal, cambiar el origen de **la principal** a un punto del eje de la
+        de servicio (``RDW-003@40``) se rechaza con ``des.entity_supports_unknown`` (el recorrido del ciclo en el motivo) **sin escribir nada**; y escrito el valor sin pasar por la orden, **calcular**
+        la principal se rechaza igual, sin empezar nada (antes: «Recalcular lo obsoleto» hacía 6 pasadas, dejaba una unidad fallida y la principal se re-anclaba al eje de la otra)."""
+        self.by_hand(design_params.entity_key(self.x, "origin"), "RDW-001@100")
+        self.settle()
+        self.assertIn(SERVICE, self.rests_on())
+        cycle = f"{self.x}@40"
+        before = self.snapshot()
+        with self.assertRaises(DesignError) as asked:
+            entity_store.check_parameter_change(self.project, self.FIRST_ORIGIN, cycle, version=self.v1.uid)
+        self.assertEqual((asked.exception.code, asked.exception.values["field"], asked.exception.values["value"], asked.exception.values["target"]), ("des.entity_supports_unknown", self.FIRST_ORIGIN, cycle, self.x))
+        for part in (SERVICE, self.x, FIRST, "RDW-001"):
+            self.assertIn(part, str(asked.exception.values["reason"]))
+        self.assertEqual(self.snapshot(), before, "el rechazo no escribe nada")
+        self.change(self.FIRST_ORIGIN, cycle)  # escrito sin pasar por la orden: lo que lee el cálculo
+        before = self.snapshot()
+        with self.assertRaises(DesignError) as calculated:
+            road_store.recompute_road(self.request_for(self.current("RDW-001")))
+        self.assertEqual((calculated.exception.code, calculated.exception.values["target"]), ("des.entity_supports_unknown", self.x))
+        self.assertIn(SERVICE, str(calculated.exception.values["reason"]))
+        self.assertEqual(self.snapshot(), before, "calcular no empieza nada")
+        self.change(self.FIRST_ORIGIN, "Entrada")
+        self.settle()
+        self.assertEqual(self.recompute_plan(), [])
+
+    def test_g_a_discarded_road_is_a_record_and_does_not_count_for_the_cycle(self) -> None:
+        """RF-015-17, RF-017-03 (T40, A-2): una pista **descartada** es un registro: la de control, con su origen en el eje de la principal y descartada, no impide apuntar el origen de la principal a un
+        punto de su eje (``control@40``), que se rechaza con la de servicio, que sigue viva y apoyada en ella."""
+        self.by_hand(design_params.entity_key(self.control, "origin"), "RDW-001@100")
+        self.settle()
+        self.assertIn(CONTROL, self.rests_on())
+        with self.assertRaises(DesignError):
+            entity_store.check_parameter_change(self.project, self.FIRST_ORIGIN, f"{self.control}@40", version=self.v1.uid)
+        self.clock.advance(minutes=1)
+        entity_store.discard_entity(self.project, self.v1.uid, self.control, reason=WHY, decided_by=BY)
+        self.assertEqual(self.state_of(self.control), State.DISCARDED)
+        entity_store.check_parameter_change(self.project, self.FIRST_ORIGIN, f"{self.control}@40", version=self.v1.uid)
+        with self.assertRaises(DesignError):
+            entity_store.check_parameter_change(self.project, self.FIRST_ORIGIN, f"{self.x}@40", version=self.v1.uid)
+
+    def test_h_discarding_the_main_road_does_not_leave_the_road_that_no_longer_rests_on_it_in_support_removed(self) -> None:
+        """RF-015-17, E5, CE-017-08: con el origen de la pista de servicio ya en un punto de la capa y nada declarado, descartar la pista principal **no la marca** «apoyo retirado» ni la deja obsoleta
+        (hasta la T40 la dependencia seguía y quedaba en la lista de lo retirado, sin salida)."""
+        self.by_hand(design_params.entity_key(self.x, "origin"), "Origen libre")
+        self.settle()
+        self.assertNotIn(SERVICE, self.rests_on())
+        self.clock.advance(minutes=1)
+        entity_store.discard_entity(self.project, self.v1.uid, "RDW-001", reason=WHY, decided_by=BY)
+        self.assertEqual(self.state_of(self.x), State.CURRENT)
+        self.assertNotIn(SERVICE, [row.name for row in entities.retired_supports(self.project, self.v1.uid)])
 
 
 if __name__ == "__main__":  # pragma: no cover

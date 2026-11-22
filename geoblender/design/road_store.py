@@ -266,7 +266,9 @@ class PreparedRoad:
     escribe otra vez sus parámetros salvo ``followed``. ``fid``: el de la geometría de la capa de la que sale la pista (la línea de «sobre un eje» y «eje 3D»; en «trazar», el primer punto de la capa que usa, el origen
     o, si este es el eje de otra pista, el destino; 0 si ninguno es de la capa): lo que lleva ``des_epr_`` (``source_fid``). ``followed`` (T24b; RF-017-03, D-13): las cotas de inicio y de fin que la pista
     **vuelve a tomar de su origen** al recalcularla porque la fila las anotó como «algoritmo» y la cota de ahora es otra (:class:`LevelFollow`); ya van en ``values``, y quien crea o recalcula las
-    escribe (:func:`write_followed`) antes de abrir la operación, para que anote la revisión nueva."""
+    escribe (:func:`write_followed`) antes de abrir la operación, para que anote la revisión nueva. ``supports_followed`` (T40; RF-017-03, RF-015-15, A-3): **lo que la pista pisa**
+    (``supports``: el origen en el eje de otra pista y el destino en una entidad) vuelve a tomarse de su origen y su destino al recalcular, y la fila ``supports`` que escribió el algoritmo se
+    reescribe con ello si es otra (:class:`SupportsFollow`; ``None`` si no hay nada que seguir: lo que declaró la persona no se toca)."""
 
     job: RoadJob
     start: OperationStart
@@ -286,6 +288,7 @@ class PreparedRoad:
     existing: bool = False
     fid: int = 0
     followed: tuple[LevelFollow, ...] = ()
+    supports_followed: SupportsFollow | None = None
 
     @property
     def op_type(self) -> str:
@@ -367,6 +370,45 @@ def resolve_level(param: RoadParam, asked_m: float | None, kind: str | None, der
     return ResolvedLevel(derived.value, origin, LevelFollow(param, asked_m, derived.value, derived.text, derived.target))
 
 
+@dataclass(frozen=True, slots=True)
+class SupportsFollow:
+    """Lo que la pista pisa **vuelve a tomarse de su origen y su destino** al recalcularla (T40; RF-017-03, RF-015-15; hallazgo A-3): ``old``, las entidades que decía la fila ``supports`` que escribió el
+    algoritmo (en el orden de la fila), ``new``, las que dan hoy el origen (un punto del eje de otra pista) y el destino (una entidad), y ``exists``, si la pista tiene esa fila (si no, se crea)."""
+
+    old: tuple[str, ...]
+    new: tuple[str, ...]
+    exists: bool
+
+    def reason(self, entity: str) -> str:
+        """El motivo con que se escribe la fila (RF-008-02): la pista, lo que decía y lo que dice hoy, en español."""
+        before, after = (", ".join(codes) if codes else "ninguna" for codes in (self.old, self.new))
+        return f"Las dependencias de la pista «{entity}» pasan de {before} a {after}: se vuelven a tomar de su origen y su destino, que cambiaron"
+
+
+def resolve_supports(kind: str | None, text: str | None, derived: Sequence[str], *, exists: bool) -> tuple[tuple[str, ...], SupportsFollow | None]:
+    """Las entidades que **declaró la persona** y lo que la pista ha de **volver a tomar** de su origen y su destino (T40; RF-017-03, RF-015-15, RF-015-18, D-13; hallazgo A-3; **pura**): ``kind`` y ``text``
+    son la clase de origen y el valor de la fila ``supports`` de la pista (``exists`` falso si no la tiene) y ``derived``, lo que dan hoy el origen y el destino (:class:`_Resolved`).
+
+    La fila que escribió el algoritmo al crear la pista (``algorithm``) **no es lo que declaró la persona**: leerla como declarada (lo que hacía ``recompute_road``) dejaba a la pista apoyada
+    en la que ya no pisaba. Se vuelve a derivar —como las cotas de inicio y de fin, :func:`resolve_level`— y, si lo que dice es otra cosa que ``derived`` (sin contar el orden), ``follow`` dice la de
+    antes y la de ahora para reescribirla; sin la fila, se crea si el origen o el destino dan alguna. Lo que la persona, un documento, una norma o una cifra adoptada pusieron en la fila se conserva
+    como **declarado**."""
+    listed = entity_store._declared(text)
+    if exists and kind != SourceKind.ALGORITHM.value:
+        return listed, None
+    if set(listed) == set(derived):
+        return (), None
+    return (), SupportsFollow(listed, tuple(derived), exists)
+
+
+def _supports_row(project: StoreProject, version: Version, code: str) -> tuple[str | None, str | None, bool]:
+    """La clase de origen y el valor de la fila ``supports`` de la pista ``code`` en su versión, y si la tiene (T40). Solo lee."""
+    record = ParameterStore(project).get(entity_key(code, RoadParam.SUPPORTS), version=version.uid)
+    if record is None:
+        return None, None, False
+    return str(record.source_kind), None if record.value is None else str(record.value), True
+
+
 def _level_kinds(project: StoreProject, version: Version, code: str) -> dict[str, str]:
     """El origen anotado (``source_kind``) de las filas de las cotas de inicio y de fin de la pista ``code`` en su versión (T24b; D-13): lo único que decide cuáles se vuelven a derivar al recalcular. Una
     cota sin fila o sin valor no sale. Solo lee."""
@@ -385,15 +427,25 @@ def write_followed(project: StoreProject, prepared: PreparedRoad, *, decided_by:
     ``algorithm`` y el texto del origen de ahora), el decisor ``decided_by`` (por defecto, quien tiene abierto el proyecto) y su motivo (:meth:`LevelFollow.reason`), con su historial. Lo llama quien
     recalcula **antes de abrir la operación** (:func:`run_road`) o en la transacción que la abre (:func:`create_road_steps`, ``before_begin``): la operación anota la revisión nueva y lo congelado se
     reproduce con ella. Con ``conn``, en la transacción de quien llama; si no, en una propia. Sin nada que seguir, no escribe nada. Devuelve las filas escritas."""
-    if not prepared.followed:
+    if not prepared.followed and prepared.supports_followed is None:
         return ()
     store = ParameterStore(project)
     who = entity_store._decider(decided_by, project)
     name = prepared.job.request.name
 
     def write(target: sqlite3.Connection) -> tuple[ParameterRecord, ...]:
-        return tuple(store.change(target, entity_key(prepared.code, item.param), value=item.new_m, source=item.source, source_kind=SourceKind.ALGORITHM.value, decided_by=who,
-                                  reason=item.reason(name), version=prepared.version_uid) for item in prepared.followed)
+        written = [store.change(target, entity_key(prepared.code, item.param), value=item.new_m, source=item.source, source_kind=SourceKind.ALGORITHM.value, decided_by=who,
+                                reason=item.reason(name), version=prepared.version_uid) for item in prepared.followed]
+        follow = prepared.supports_followed
+        if follow is not None:  # lo que pisa, vuelto a tomar de su origen y su destino (T40): la fila del algoritmo, con su motivo (o creada, si no la tenía)
+            source, text = f"origen y destino de la pista «{name}»", ", ".join(follow.new) or None
+            if follow.exists:
+                written.append(store.change(target, entity_key(prepared.code, RoadParam.SUPPORTS), value=text, source=source, source_kind=SourceKind.ALGORITHM.value, decided_by=who,
+                                            reason=follow.reason(name), version=prepared.version_uid))
+            else:
+                written.extend(entity_store.set_entity_params(project, (EntityParamRow(entity_key(prepared.code, RoadParam.SUPPORTS), RoadParam.SUPPORTS.value, text or "", source,
+                                                                                       SourceKind.ALGORITHM.value, follow.reason(name)),), version=prepared.version_uid, decided_by=decided_by, conn=target))
+        return tuple(written)
 
     if conn is not None:
         return write(conn)
@@ -404,8 +456,9 @@ def write_followed(project: StoreProject, prepared: PreparedRoad, *, decided_by:
 # --- «Cambiar parámetro…» de una pista: su nombre y las cotas de la persona (spec 017, T29c; RF-015-08, RF-017-03, D-13) -------------------------------------------------------------------------
 
 
-_HAND_LEVELS = frozenset({RoadParam.START_LEVEL.value, RoadParam.END_LEVEL.value})
-"""Los dos valores de una pista que puede derivar el algoritmo y que la persona puede dar a mano: las cotas de inicio y de fin (D-13)."""
+_HAND_LEVELS = frozenset({RoadParam.START_LEVEL.value, RoadParam.END_LEVEL.value, RoadParam.SUPPORTS.value})
+"""Los valores de una pista que puede derivar el algoritmo y que la persona puede dar a mano: las cotas de inicio y de fin (D-13) y las dependencias (``supports``, T40: lo que escribe el
+algoritmo se vuelve a derivar al recalcular y lo que escribe la persona, no)."""
 _HAND_SOURCE = "orden «Cambiar parámetro…»"
 """El origen de la cota que la persona cambia a mano con «Cambiar parámetro…» (la pista al final, si se sabe)."""
 
@@ -423,8 +476,8 @@ def ensure_name_row(project: StoreProject, code: str, *, conn: sqlite3.Connectio
 
 
 def person_level_changes(key: str, record: Any, changes: Mapping[str, Any], *, entity: str | None = None) -> dict[str, Any]:
-    """Los cambios de «Cambiar parámetro…» de ``key`` con lo que añade la pista (spec 017, T29c; RF-017-03, D-13, RF-015-01; **pura**): quien **cambia a mano el valor** de la cota de inicio o de fin
-    de una pista (``changes["value"]``) que había anotado el algoritmo (``record.source_kind`` es ``algorithm``: la derivó de la superficie de partida, del eje de otra pista o de la entidad de destino)
+    """Los cambios de «Cambiar parámetro…» de ``key`` con lo que añade la pista (spec 017, T29c y T40; RF-017-03, D-13, RF-015-01; **pura**): quien **cambia a mano el valor** de la cota de inicio o de fin
+    de una pista o de sus dependencias, ``supports`` (``changes["value"]``), que había anotado el algoritmo (``record.source_kind`` es ``algorithm``: la derivó de la superficie de partida, del eje de otra pista o de la entidad de destino)
     **deja su** ``source_kind`` **en** ``person`` y su origen en la orden (y la pista, si se da su nombre ``entity``): sin eso, ``ParameterStore.change`` conserva la clase del origen, la cota seguiría
     siendo «derivada» y recalcular (:func:`resolve_level`) la volvería a tomar de su origen y pisaría lo que escribió. Lo que la persona dice ella (otra clase o texto de origen) manda; lo que
     anotó un documento, una norma, una cifra adoptada o la propia persona se conserva; adoptar una cifra calculada (``from_figure``), un cambio sin valor nuevo (el decisor, el origen) y **cualquier
@@ -915,15 +968,19 @@ def _rows(request: RoadRequest, code: str, values: Mapping[str, Any], levels: Ma
 
 def _supportable(project: StoreProject, version: Version, registry: EntityRegistry, name: str, code: str, target: str, field: str, kind: EntityKind | None = None
                  ) -> tuple[entities.EntityEntry, entity_store.EntitySurface]:
-    """La entidad ``target`` en la que se apoya la pista: viva y calculada, de tipo ``kind`` si se pide, y que no sea ella ni parta de su superficie (un ciclo: RF-015-15). Con su
-    entrada del registro y su superficie y su huella (``entity_store.EntitySurface``). ``des.entity_supports_unknown`` si no."""
+    """La entidad ``target`` en la que se apoya la pista: viva y calculada, de tipo ``kind`` si se pide, y que no sea ella ni parta de su superficie ni **dependa ya de ella** por lo que
+    otras pistas pisan —su origen en el eje de otra pista o su destino en una entidad—, directa o por otras (un ciclo: RF-015-15; spec 017, T40, hallazgo A-2; el motivo dice el recorrido).
+    Con su entrada del registro y su superficie y su huella (``entity_store.EntitySurface``). ``des.entity_supports_unknown`` si no."""
     entry = registry.get(target)
     skip = entity_store._unsupportable(registry, code, ())
     reason = _MISSING_SUPPORT
     found: entity_store.EntitySurface | None = None
     if entry is not None and entry.record.state in _LIVE_STATES and (kind is None or entry.record.kind == kind):
+        cycle = None if target in skip else entity_store.support_cycle(project, version, registry, code, target)
         if target in skip:
             reason = entity_store._SUPPORT_CYCLE if target != code else entity_store._SUPPORT_ITSELF
+        elif cycle is not None:
+            reason = cycle
         else:
             with project.read() as conn:
                 found = entity_store.entity_surfaces(conn, registry).get(target)
@@ -1400,7 +1457,12 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     others = other_designs(project, version, start_name, own=supersedes)
     yield
     given = entity_store._released_codes(project, supersedes, released)  # lo que da por bueno sin su apoyo: la nueva y la que sustituye (T24)
-    declared = tuple(target for target in entity_store._declared(entity_store._declared_row(project, version, chosen)) if target not in given)
+    declared_by_person: tuple[str, ...] = ()
+    supports_follow: SupportsFollow | None = None
+    if code is not None:  # al recalcular, lo que pisa se vuelve a tomar del origen y el destino; la fila del algoritmo no es lo que declaró la persona (T40; A-3)
+        row_kind, row_text, row_exists = _supports_row(project, version, chosen)
+        declared_by_person, supports_follow = resolve_supports(row_kind, row_text, supports, exists=row_exists)
+    declared = tuple(target for target in declared_by_person if target not in given)
     supported = tuple(dict.fromkeys((*supports, *declared)))
     surfaces: list[str] = [] if support_name is None else [support_name]
     tables: list[Use] = []
@@ -1416,13 +1478,14 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     begun = _start(project, provenance.ROAD, name, version, masks, provenance.road_settings(asked, chosen), (*inputs, *extra),
                    provenance.road_params(chosen, mode=mode.value, profile=request.profile, valued=valued, supports=bool(supported), level_destination=destination is not None),
                    supersedes)
+    begun = replace(begun, carry=False)  # lo que pisa lo dan su origen, su destino y lo que declara la persona (arriba) y el gancho vuelve a medir lo que rellena: no se arrastra lo de la operación anterior (T40; A-3)
     if others:  # el hash de cada otro diseño al preparar: si difiere en la huella, es una entrada (T21) y ``des.input_changed`` vigila que no cambie hasta crearla
         with project.read() as conn:
             seen = _seen(conn, tuple(Use(other, provenance.ROAD_OTHER_DESIGN_ROLE) for other in others), version)
         begun = replace(begun, seen=MappingProxyType({**begun.seen, **seen}))
     yield
     return PreparedRoad(job, begun, chosen, version, start_name, start_ref, support_name, request.layer, profile, _rows(asked, chosen, values, levels, supported),
-                        MappingProxyType(values), MappingProxyType(common), supported, others, tuple(notices), code is not None, fid, tuple(followed))
+                        MappingProxyType(values), MappingProxyType(common), supported, others, tuple(notices), code is not None, fid, tuple(followed), supports_follow)
 
 
 def prepare_road(project: StoreProject, request: RoadRequest, *, version: str | None, masks: access.MaskSet | None = None, code: str | None = None,

@@ -10,7 +10,9 @@ escribir nada** (el contador de cambios de la base no se mueve).
 
 Sobre la cantera de la 014 (rejilla gruesa) con las cinco entidades de la cadena de la T21 escritas como **parámetros de versión** (sin operación: el registro las lista «sin calcular», que es todo lo que lee
 la comprobación): la plataforma ``PLT-001`` («P1», que protege con 4 m), la «Pista a P1» (``RDW-001``: parte de la superficie de P1), el «Ramal» (``RDW-002``: parte de la de la pista y se apoya en ella), una pista
-«sobre un eje» (``RDW-003``: parte del terreno) y la «Relleno sobre la calzada» (``PLT-002``: parte de la del ramal). Con la pista calculada de verdad, lo que sigue al cambio está en ``milestone_road_bring.py``.
+«sobre un eje» (``RDW-003``: parte del terreno) y la «Relleno sobre la calzada» (``PLT-002``: parte de la del ramal), más —de la T40— dos pistas libres que se apoyan por su origen (``RDW-005`` → ``RDW-004`` → ``RDW-001``) y **el perfil de pista** con sus quince
+valores. **El origen y el destino de una pista** (lo que pisa: un punto del eje de otra o una entidad) y **un valor del perfil** (``des.roadprofile.{p}.*``: las reglas de «Perfil de pista…») pasan también por
+sus reglas al cambiarlos (T40; hallazgos A-2 y A-1). Con la pista calculada de verdad, lo que sigue al cambio está en ``milestone_road_bring.py`` y ``milestone_road_chain.py``.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from typing import Any
 
 from tests.support import entity_fixtures as efx
 from tests.support import quarry_fixtures as qfx
+from tests.support import road_data as rd
 from tests.support.package import import_geoblender
 from tests.support.versions_fixtures import change_counter
 
@@ -28,6 +31,7 @@ design_params = import_geoblender("design.params")
 entities = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
 messages = import_geoblender("design.messages")
+road_profiles = import_geoblender("design.road_profiles")
 road_store = import_geoblender("design.road_store")
 
 GROUND = "gis_dtm_ladera"
@@ -43,6 +47,14 @@ WORLD: dict[str, tuple[str, dict[str, Any]]] = {
     "RDW-003": ("Pista sobre un eje", {"mode": "on_axis", "layer": "gis_fea_pistas_ejes", "feature": "Eje 1", "profile": "pista_principal", "start": GROUND}),
     "PLT-002": ("Relleno sobre la calzada", {"layer": "gis_fea_plataformas_ejes", "feature": "Eje 2", "start": "entity:RDW-002", "mode": "cut_fill"}),
 }
+FREE_ROADS: dict[str, tuple[str, dict[str, Any]]] = {
+    # Dos pistas libres (cada una parte de un terreno que ninguna otra ocupa) que se apoyan por su origen: RDW-005 → RDW-004 → RDW-001 (spec 017, T40; A-2). Solo las escribe ``RoadParameterTest``.
+    "RDW-004": ("Pista libre", {"mode": "trace", "layer": "gis_fea_pistas_puntos", "profile": "pista_principal", "start": "gis_dtm_libre_a", "origin": "RDW-001@40", "destination": "Destino libre"}),
+    "RDW-005": ("Pista libre 2", {"mode": "trace", "layer": "gis_fea_pistas_puntos", "profile": "pista_principal", "start": "gis_dtm_libre_b", "origin": "RDW-004@5", "destination": "Destino libre"}),
+}
+PROFILE = "pista_principal"
+"""El perfil de pista de las pruebas (con los valores de referencia de IMGA, ``rd.PROFILE``: A 3,5 m, f 3, arcén 0, caballón 1 m —semianchura 5,75 m—, R 20 m y Rmín 12 m), escrito como parámetros de V01
+por ``RoadParameterTest``."""
 
 
 def key(code: str, param: str) -> str:
@@ -51,6 +63,21 @@ def key(code: str, param: str) -> str:
 
 class RoadParameterCase(efx.EntityProjectCase):
     """V01 con las cinco entidades de ``WORLD`` y las ayudas de las pruebas."""
+
+    @classmethod
+    def write_extra(cls) -> None:
+        """Lo que solo necesita una clase (spec 017, T40): el perfil de pista de ``PROFILE`` con sus quince valores (A-1) y las dos pistas libres de ``FREE_ROADS`` (A-2), como parámetros de V01."""
+        core_params.register_families(design_params.ROAD_PROFILE_FAMILIES)
+        store = core_params.ParameterStore(cls.project)
+        with cls.project.write_transaction() as conn:
+            for code, (name, values) in FREE_ROADS.items():
+                for param, value in {"name": name, **values}.items():
+                    store.create(conn, key(code, param), value, kind="ADOPTADO", source="Prueba de la T40 de la 017", source_kind="person", decided_by=PERSON, reason="Prueba de la T40", version=cls.v1.code)
+            for item in design_params.RoadProfileParam:
+                value = getattr(rd.PROFILE, "class_name" if item is design_params.RoadProfileParam.CLASS else item.value)
+                store.create(conn, design_params.road_profile_key(PROFILE, item), value, kind="ADOPTADO", source="Prueba de la T40 de la 017", source_kind="person", decided_by=PERSON,
+                             reason="Prueba de la T40", version=cls.v1.code)
+        cls.clock.advance(minutes=1)
 
     STEP_M = qfx.COARSE_STEP_M
 
@@ -102,6 +129,11 @@ class RoadParameterCase(efx.EntityProjectCase):
 
 class RoadParameterTest(RoadParameterCase):
     """RF-015-01, RF-015-04, RF-015-08, RF-015-15, RF-017-01, RF-017-03: «Cambiar parámetro…» de una pista (todas las pruebas solo leen: una sola copia del proyecto)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.write_extra()
 
     # --- El nombre y la capa (RF-015-01, RF-015-08) ---
 
@@ -196,6 +228,66 @@ class RoadParameterTest(RoadParameterCase):
         entity_store.check_parameter_change(self.project, key("RDW-001", "name"), "", version=None)
         entity_store.check_parameter_change(self.project, key("RDW-001", "name"), "", version="V99")
 
+    # --- El origen y el destino: la dependencia por el eje de otra pista o por una entidad no cierra un ciclo (spec 017, T40; A-2) ---
+
+    def test_i_the_origin_and_the_destination_of_a_road_cannot_close_a_cycle(self) -> None:
+        """RF-015-15, RF-017-03, RF-017-04 (T40; hallazgo A-2): el origen de una pista (un punto del eje de otra, ``RDW-004@10``) y su destino (una entidad, ``entity:RDW-004``) son **lo que la pista pisa**, y
+        no pueden ser ella misma, ni lo que parte de su superficie, ni una pista que **ya se apoya en ella**, directa o por otras (aquí RDW-005 → RDW-004 → RDW-001): se rechaza con
+        ``des.entity_supports_unknown`` con la pista, el campo, el valor, a quién se apoyaría y **el recorrido del ciclo** en el motivo, y sin una transacción. Hasta la T40 solo se vigilaba la superficie
+        de apoyo y la sonda del verificador A cambiaba el origen de ``RDW-001`` a un punto de una pista que ya se apoyaba en ella y se aceptaba."""
+        cases = (("RDW-001", "origin", "RDW-004@10", "RDW-004", ("RDW-004", "RDW-001")), ("RDW-001", "destination", "entity:RDW-004", "RDW-004", ("RDW-004", "RDW-001")),
+                 ("RDW-001", "origin", "RDW-005@3", "RDW-005", ("RDW-005", "RDW-004", "RDW-001")), ("RDW-001", "origin", "RDW-001@10", "RDW-001", ()),
+                 ("RDW-001", "origin", "RDW-002@5", "RDW-002", ()), ("RDW-001", "destination", "entity:PLT-002", "PLT-002", ()))
+        for code, param, value, target, around in cases:
+            with self.subTest(code=code, param=param, value=value):
+                error = self.refused(key(code, param), value, "des.entity_supports_unknown", entity=WORLD[code][0], value=value, target=target)
+                for member in around:
+                    self.assertIn(member, str(error.values["reason"]))
+        self.accepted(key("RDW-004", "origin"), "RDW-003@10")
+        self.accepted(key("RDW-005", "destination"), "entity:RDW-001")
+        self.accepted(key("RDW-001", "destination"), "entity:PLT-001")
+        self.accepted(key("RDW-002", "origin"), "RDW-001@100")
+        for point in ("Entrada", None):
+            self.accepted(key("RDW-001", "origin"), point)
+        self.accepted(key("RDW-001", "destination"), None)
+
+    # --- «Cambiar parámetro…» de un valor del perfil de pista: las reglas de «Perfil de pista…» (spec 017, T40; A-1) ---
+
+    def refused_profile(self, param: str, value: object, expected: str, field: str, shown: object) -> Any:
+        """Cambiar el valor ``param`` del perfil de la prueba a ``value`` se rechaza con ``expected``, nombrando el perfil, el campo ``field`` (otro valor que el cambiado, en una regla cruzada) y lo
+        que se ve de él (``shown``), **con el mismo texto que «Perfil de pista…»** y sin una transacción."""
+        before = self.snapshot()
+        with self.assertRaises(messages.DesignError) as caught:
+            road_profiles.check_profile_change(self.project, design_params.road_profile_key(PROFILE, param), value, version=self.v1.uid)
+        error = caught.exception
+        self.assertEqual((error.code, error.values["field"], error.values["value"], error.values["profile"]), (expected, design_params.road_profile_key(PROFILE, field), shown, PROFILE))
+        edited = {item.value: getattr(rd.PROFILE, "class_name" if item is design_params.RoadProfileParam.CLASS else item.value) for item in design_params.RoadProfileParam}
+        with self.assertRaises(messages.DesignError) as dialog:  # lo que dice «Perfil de pista…» (``edit_road_profiles``) de ese mismo perfil
+            design_params.check_road_profile(PROFILE, PROFILE, {**edited, param: value})
+        self.assertEqual((error.code, error.text, error.text_in("en")), (dialog.exception.code, dialog.exception.text, dialog.exception.text_in("en")))
+        self.assertEqual(self.snapshot(), before, "el rechazo ha escrito algo")
+        return error
+
+    def accepted_profile(self, param: str, value: object, profile: str = PROFILE) -> None:
+        before = self.snapshot()
+        road_profiles.check_profile_change(self.project, design_params.road_profile_key(profile, param), value, version=self.v1.uid)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_j_a_value_of_the_road_profile_follows_the_rules_of_the_profile(self) -> None:
+        """RF-017-04, RF-017-07, RF-015-08 (T40; hallazgo A-1): «Cambiar parámetro…» de un valor de ``des.roadprofile.{p}.*`` rechaza lo que rechaza «Perfil de pista…» y **sin escribir nada**: el radio
+        mínimo menor que la semianchura de la sección (3 m con 5,75 m; también el caballón de 20 m, que la sube a 15,25 m), el radio mínimo mayor que el radio (R = 5 m con Rmín = 12 m) y un ángulo
+        de 90° (la definición lo admite y RF-017-04 lo excluye), con el perfil, el campo y el valor; los valores buenos (89,9°, Rmín = 6 m, R = Rmín…), la clase y un perfil incompleto, se admiten."""
+        for param, value, expected, field, shown in (("min_radius_m", 3.0, "des.road_profile_radius_narrow", "min_radius_m", 3.0), ("curve_radius_m", 5.0, "des.road_profile_radius_order", "min_radius_m", 12.0),
+                                                     ("berm_m", 20.0, "des.road_profile_radius_narrow", "min_radius_m", 12.0), ("cut_angle_deg", 90.0, "des.road_profile_value_range", "cut_angle_deg", 90.0),
+                                                     ("metric", "bogus", "des.road_profile_value_range", "metric", "bogus")):
+            with self.subTest(param=param, value=value):
+                self.refused_profile(param, value, expected, field, shown)
+        for param, value in (("cut_angle_deg", 89.9), ("min_radius_m", 6.0), ("curve_radius_m", 12.0), ("berm_m", 2.0), ("class", "Otra clase")):
+            with self.subTest(param=param, value=value):
+                self.accepted_profile(param, value)
+        self.accepted_profile("min_radius_m", 3.0, profile="sin_otros_valores")  # el perfil sin sus valores no tiene con qué cruzarse: solo su rango
+        self.accepted_profile("min_radius_m", None)  # sin valor: lo dice la definición
+
 
 class RoadNameRowTest(RoadParameterCase):
     """RF-015-01, RF-015-08, RF-017-01 (T29c): **renombrar una pista** con «Cambiar parámetro…» (``geoblender.core_set_parameter``). La orden pide la fila **del proyecto** del parámetro (``store.get(clave)``
@@ -254,6 +346,37 @@ class RoadNameRowTest(RoadParameterCase):
         self.assertEqual((changed.value, changed.rev, str(changed.scope)), ("Ramal norte", own.rev + 1, core_params.VERSION_SCOPE))
         self.assertEqual(entities.registry(self.project, self.v1.uid).get("RDW-002").record.name, "Ramal norte")
         self.assertEqual(store.get(key("RDW-002", "name")).uid, record.uid, "la fila del proyecto sigue siendo la misma")
+
+
+class SupportPathTest(unittest.TestCase):
+    """RF-015-15, RF-017-03 (T40; A-2; **pura**, sin proyecto): el recorrido de lo que **depende de una entidad** —lo que parte de su superficie (la cadena) y las pistas que la pisan por su origen
+    o su destino, y lo que depende de ellas— que ``entities.support_path`` da para decir si apoyarse en otra cerraría un ciclo."""
+
+    RECORDS = tuple(entities.EntityRecord(code, name, kind, start) for code, name, kind, start in (
+        ("PLT-001", "P1", "platform", "terreno"), ("RDW-001", "Pista a P1", "road", "entity:PLT-001"), ("RDW-002", "Ramal", "road", "entity:RDW-001"), ("PLT-002", "Relleno", "platform", "entity:RDW-002"),
+        ("RDW-004", "Pista libre", "road", "libre_a"), ("RDW-005", "Pista libre 2", "road", "libre_b"), ("PLT-003", "Relleno de la libre", "platform", "entity:RDW-004")))
+    READS = {"RDW-002": ("RDW-001",), "RDW-004": ("RDW-001",), "RDW-005": ("RDW-004",)}
+
+    def path(self, target: str, *, code: str = "RDW-001", reads: dict[str, tuple[str, ...]] | None = None) -> tuple[str, ...] | None:
+        return entities.support_path(self.RECORDS, self.READS if reads is None else reads, code, target)
+
+    def test_a_the_path_goes_from_what_would_rest_to_the_entity_through_the_chain_and_the_roads(self) -> None:
+        """RF-015-15, RF-017-03: la ruta de lo que dependería de ``RDW-001`` hasta ella: ella misma; lo que parte de su superficie (aguas abajo de la cadena); una pista que la pisa por su origen, y otra que
+        pisa a esa; lo que parte de la superficie de la que la pisa; y una pista que pisa una entidad de la cadena de ``RDW-001`` (depende de ella por la cadena)."""
+        self.assertEqual(self.path("RDW-001"), ("RDW-001",))
+        self.assertEqual(self.path("PLT-002"), ("PLT-002", "RDW-002", "RDW-001"))
+        self.assertEqual(self.path("RDW-004"), ("RDW-004", "RDW-001"))
+        self.assertEqual(self.path("RDW-005"), ("RDW-005", "RDW-004", "RDW-001"))
+        self.assertEqual(self.path("RDW-004", reads={"RDW-004": ("PLT-002",)}), ("RDW-004", "PLT-002", "RDW-002", "RDW-001"))
+        self.assertEqual(self.path("PLT-003"), ("PLT-003", "RDW-004", "RDW-001"), "lo que parte de la superficie de la pista que la pisa depende también de ella")
+
+    def test_b_what_does_not_depend_on_the_entity_is_not_a_cycle(self) -> None:
+        """RF-015-15, RF-017-03: lo que la entidad pisa o de lo que parte (aguas arriba), y otra cadena que no la toca, no cierran ningún ciclo: ``None``; y desde ``RDW-004``, ``RDW-001`` no depende de ella."""
+        for target in ("PLT-001", "RDW-009"):
+            self.assertIsNone(self.path(target), target)
+        self.assertIsNone(self.path("RDW-001", code="RDW-004"))
+        self.assertIsNone(self.path("PLT-001", code="RDW-004", reads={}))
+        self.assertEqual(self.path("RDW-005", code="RDW-004"), ("RDW-005", "RDW-004"))
 
 
 if __name__ == "__main__":

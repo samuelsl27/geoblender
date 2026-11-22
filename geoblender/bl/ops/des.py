@@ -1014,15 +1014,28 @@ def _check_entity_parameter(project: Any, key: str, value: Any, version_uid: str
     entity_store.check_parameter_change(project, key, value, version=version_uid)
 
 
+ROAD_PROFILE_PARAMETER_PREFIX = "des.roadprofile."
+"""El principio de las claves de los valores de un perfil de pista (``des.roadprofile.{p}.*``, spec 017, T40): lo que vigila :func:`_check_road_profile_parameter` (no es de una entidad: el perfil es del proyecto)."""
+
+
+def _check_road_profile_parameter(project: Any, key: str, value: Any, version_uid: str) -> None:
+    """Lo que ``des`` registra en «Cambiar parámetro…» de un valor de un perfil de pista (:func:`~.core_provenance.register_parameter_check`; spec 017, T40; hallazgo A-1; RF-017-04, RF-017-07): lo
+    mismo que comprueba «Perfil de pista…» (``design.road_profiles.check_profile_change``: el rango, con el ángulo de 90° excluido, y los radios con el resto del perfil) antes de que la orden
+    escriba. Importa el módulo al usarlo, no al habilitar."""
+    from ...design import road_profiles  # al usarlo: habilitar no carga los perfiles de pista
+
+    road_profiles.check_profile_change(project, key, value, version=version_uid)
+
+
 ROAD_PARAMETER_PREFIX = f"{design_params.ROAD_ENTITY.key_prefix}."
 """El principio de las claves de los parámetros de una pista (``des.road.``): el único del que :func:`_adjust_entity_parameter` completa el cambio."""
-_HAND_LEVEL_SUFFIXES = (f".{design_params.RoadParam.START_LEVEL}", f".{design_params.RoadParam.END_LEVEL}")
+_HAND_LEVEL_SUFFIXES = (f".{design_params.RoadParam.START_LEVEL}", f".{design_params.RoadParam.END_LEVEL}", f".{design_params.RoadParam.SUPPORTS}")
 
 
 def _adjust_entity_parameter(project: Any, key: str, record: Any, changes: dict[str, Any], version_uid: str) -> dict[str, Any]:
-    """Lo que ``des`` registra para completar «Cambiar parámetro…» (:func:`~.core_provenance.register_parameter_adjust`; spec 017, T29c; RF-017-03, D-13): quien cambia a mano **el valor de la
-    cota de inicio o de fin de una pista** que había derivado el algoritmo la deja **suya** (``source_kind = person``, con su origen: ``design.road_store.parameter_changes``), de modo que recalcular
-    no la vuelve a derivar. Con cualquier otro parámetro, los mismos cambios y sin importar el almacén (habilitar no carga las pistas)."""
+    """Lo que ``des`` registra para completar «Cambiar parámetro…» (:func:`~.core_provenance.register_parameter_adjust`; spec 017, T29c y T40; RF-017-03, D-13): quien cambia a mano **el valor de la
+    cota de inicio o de fin de una pista** o **sus dependencias declaradas** (``supports``) que había derivado el algoritmo las deja **suyas** (``source_kind = person``, con su origen:
+    ``design.road_store.parameter_changes``), de modo que recalcular no las vuelve a derivar. Con cualquier otro parámetro, los mismos cambios y sin importar el almacén (habilitar no carga las pistas)."""
     if "value" not in changes or not key.endswith(_HAND_LEVEL_SUFFIXES):
         return changes
     from ...design import road_store  # al usarlo: habilitar no carga las pistas
@@ -1106,7 +1119,9 @@ def register() -> None:
         _UNDO.append(functools.partial(unregister_parameter_check, prefix, _check_entity_parameter))
         register_parameter_after(prefix, _after_entity_parameter)
         _UNDO.append(functools.partial(unregister_parameter_after, prefix, _after_entity_parameter))
-    register_parameter_adjust(ROAD_PARAMETER_PREFIX, _adjust_entity_parameter)  # la cota que da la persona a mano (T29c)
+    register_parameter_check(ROAD_PROFILE_PARAMETER_PREFIX, _check_road_profile_parameter)  # los valores de un perfil de pista, con las reglas de «Perfil de pista…» (T40)
+    _UNDO.append(functools.partial(unregister_parameter_check, ROAD_PROFILE_PARAMETER_PREFIX, _check_road_profile_parameter))
+    register_parameter_adjust(ROAD_PARAMETER_PREFIX, _adjust_entity_parameter)  # la cota y las dependencias que da la persona a mano (T29c y T40)
     _UNDO.append(functools.partial(unregister_parameter_adjust, ROAD_PARAMETER_PREFIX, _adjust_entity_parameter))
     register_recompute_after(_layers_after_recompute)
     _UNDO.append(functools.partial(unregister_recompute_after, _layers_after_recompute))

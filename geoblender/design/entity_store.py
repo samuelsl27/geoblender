@@ -412,6 +412,7 @@ __all__ = [
     "run_platform",
     "runs_mask",
     "set_entity_params",
+    "support_cycle",
     "survey_supports",
 ]
 
@@ -1034,6 +1035,78 @@ def _check_support_cycle(registry: EntityRegistry, name: str, code: str, support
                           reason=_SUPPORT_ITSELF if target == code else _SUPPORT_CYCLE, version=version_code)
 
 
+def _point_reads(project: StoreProject, conn: sqlite3.Connection, registry: EntityRegistry, version: str) -> dict[str, tuple[str, ...]]:
+    """Lo que **pisa** cada pista viva de ``registry`` (spec 017, T40; A-2; RF-017-03): código de la pista → los códigos de las entidades a las que apunta su
+    origen (un punto del eje de otra pista, ``RDW-001@100``) y su destino (una entidad, ``entity:PLT-001``) tal como los tiene en ``version`` (uid; los de la
+    versión y, si no, los del proyecto), leídos con ``conn``. Un punto de la capa, un valor vacío y una pista descartada no pisan nada. Solo lee."""
+    keys: dict[str, str] = {}
+    for entry in registry:
+        if str(entry.record.kind) in _POINT_REFERENCES and entry.record.state is not EntityState.DISCARDED:
+            for param, _message in _POINT_REFERENCES[str(entry.record.kind)]:
+                keys[entity_key(entry.record.code, param)] = entry.record.code
+    if not keys:
+        return {}
+    resolved = ParameterStore(project).resolve_many(conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=version)
+    found: dict[str, list[str]] = {}
+    for name, code in keys.items():
+        record = resolved.get(name)
+        target = _reference_code(name.rpartition(".")[2], None if record is None else record.value)
+        if target is not None and target not in found.setdefault(code, []):
+            found[code].append(target)
+    return {code: tuple(targets) for code, targets in found.items() if targets}
+
+
+def _reference_code(param: str, text: object) -> str | None:
+    """El código de la entidad a la que apunta el valor ``text`` del origen o del destino de una pista (``param``: ``origin`` o ``destination``), o ``None`` si
+    no apunta a ninguna (un punto de la capa, un valor vacío o que no es un texto). El origen solo puede ser **un punto del eje de otra pista** (``RDW-001@100``)
+    y el destino, **una entidad** (``entity:PLT-001``), como lo leen ``road_store._resolve_points`` y ``road_store.frozen_geometry``."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    if param == RoadParam.ORIGIN:
+        found = entities.AXIS_REFERENCE.fullmatch(text.strip())
+        return None if found is None else str(found["code"])
+    return entities.ref_code(text)
+
+
+def _cycle_reason(registry: EntityRegistry, path: Sequence[str]) -> str:
+    """El motivo de un ciclo por el origen o el destino (spec 017, T40): el recorrido ``path`` que da :func:`~.entities.support_path` (cada entidad depende de
+    la siguiente), con sus nombres, en español: ``«Ramal» (RDW-002) se apoya en «Pista a P1» (RDW-001)`` o, con otra de por medio, ``«A» (RDW-005) se apoya en
+    «B» (RDW-004), que se apoya en «C» (RDW-001)``; una sola entidad es ella misma."""
+    if len(path) == 1:
+        return _SUPPORT_ITSELF
+
+    def named(code: str) -> str:
+        entry = registry.get(code)
+        return f"«{entry.record.name}» ({code})" if entry is not None else code
+
+    return "sería un ciclo: " + named(path[0]) + " se apoya en " + ", que se apoya en ".join(named(code) for code in path[1:])
+
+
+def support_cycle(project: StoreProject, version: Version, registry: EntityRegistry, code: str, target: str) -> str | None:
+    """Por qué ``code`` no puede apoyarse en ``target`` aunque el parámetro sea suyo (spec 017, T40; A-2; RF-015-15, RF-017-03): el motivo si cerraría un ciclo
+    **por lo que las pistas pisan** —su origen en el eje de otra pista y su destino en una entidad, que se leen de ``project``—, es decir, si ``target`` es la propia
+    entidad o depende de ella por la cadena o por esas dependencias (:func:`~.entities.support_path`); ``None`` si no. Solo lee."""
+    with project.read() as conn:
+        reads = _point_reads(project, conn, registry, version.uid)
+    path = entities.support_path(registry.records, reads, code, target)
+    return None if path is None else _cycle_reason(registry, path)
+
+
+def _check_reference_cycle(registry: EntityRegistry, reads: Mapping[str, Sequence[str]], name: str, code: str, param: str, text: str | None, field: str,
+                           version_code: str) -> None:
+    """RF-015-15, RF-017-03, RF-017-04 (spec 017, T40; hallazgo A-2): el origen o el destino ``text`` de la pista ``code`` (``name``) no es ella misma ni una
+    entidad que ya depende de ella, directa o por otras —lo que parte de su superficie o una pista que la pisa (``reads``: :func:`_point_reads`)—: cambiarlo
+    cerraría un ciclo (``des.entity_supports_unknown`` con el recorrido en el motivo). Un punto de la capa o ningún valor no se comprueban. ``field`` es la
+    clave de lo que se rechaza (``des.road.{e}.origin``)."""
+    target = _reference_code(param, text)
+    if target is None:
+        return
+    path = entities.support_path(registry.records, reads, code, target)
+    if path is not None:
+        raise DesignError("des.entity_supports_unknown", obj=_entity_object(code, name), field=field, value=text, entity=name, target=target,
+                          reason=_cycle_reason(registry, path), version=version_code)
+
+
 def _support_inputs(project: StoreProject, version: Version, request: PlatformRequest, code: str,
                     registry: EntityRegistry, support_name: str | None, released: Collection[str] = (),
                     insert_before: str | None = None) -> tuple[tuple[str, ...], tuple[Use, ...], bool]:
@@ -1414,9 +1487,15 @@ referencia de la cadena."""
 
 
 def _ruled(kind: str, param: str) -> bool:
-    """Si el cambio del valor ``param`` de una entidad de tipo ``kind`` pasa por las reglas entre entidades (:data:`_COMMON_RULED` y
-    la superficie conocida de los tipos que la tienen, :data:`_KNOWN_SURFACES`)."""
-    return param in _COMMON_RULED or (kind in _KNOWN_SURFACES and param == _KNOWN_SURFACES[kind].value)
+    """Si el cambio del valor ``param`` de una entidad de tipo ``kind`` pasa por las reglas entre entidades (:data:`_COMMON_RULED`, la
+    superficie conocida de los tipos que la tienen, :data:`_KNOWN_SURFACES`, y el origen y el destino de la pista, :data:`_POINT_REFERENCES`)."""
+    return param in _COMMON_RULED or (kind in _KNOWN_SURFACES and param == _KNOWN_SURFACES[kind].value) or _is_point_reference(kind, param)
+
+
+def _is_point_reference(kind: str, param: str) -> bool:
+    """Si ``param`` es el origen o el destino de una entidad de tipo ``kind`` (los valores que pueden ser **un texto con el código de otra entidad**,
+    :data:`_POINT_REFERENCES`: lo que la pista pisa)."""
+    return any(param == item.value for item, _message in _POINT_REFERENCES.get(kind, ()))
 
 
 def _has_type(kind: str, param: str, value: object) -> bool:
@@ -1450,6 +1529,10 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
     - ``support`` (y la superficie conocida del cuerpo): ni la superficie de la propia entidad ni la de una que parte de la suya
       (``des.entity_supports_unknown``: un ciclo; :func:`_check_support_cycle`); y, en el contrafuerte y en el cuerpo, tampoco la de
       un cuerpo «bajo un techo» (``des.chainless_start``), como al crearlos.
+    - ``origin`` y ``destination`` de **la pista** (spec 017, T40; hallazgo A-2): si son **lo que la pista pisa** —un punto del eje de otra pista
+      (``RDW-001@100``) o una entidad (``entity:PLT-001``)—, no pueden ser ella misma, lo que parte de su superficie ni una pista que **ya se
+      apoya en ella**, directa o por otras (:func:`_check_reference_cycle`, :func:`~.entities.support_path`: ``des.entity_supports_unknown`` con
+      el recorrido del ciclo); un punto de la capa o ningún valor no tiene regla.
     - ``mode``, ``protect`` y ``guard_m``: con lo que quedaría la entidad, no protege en «en corte y relleno»
       (``des.platform_protect_cut_fill``; solo la plataforma tiene modo) ni sin resguardo (``des.entity_param_missing``;
       :func:`_check_protection`: lo mismo que comprueba al declarar). Y **``protect`` verdadero solo en un tipo que declara** algo
@@ -1482,6 +1565,7 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
                 if item.value in spec.names}
         resolved = ParameterStore(project).resolve_many(
             conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=chosen.uid)
+        reads = _point_reads(project, conn, registry, chosen.uid) if _is_point_reference(str(kind), param) else {}
     now = {item: (resolved[name].value if resolved.get(name) is not None else spec.template(item.value).default)
            for name, item in keys.items()}
     record = entry.record
@@ -1507,6 +1591,8 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
         surface = str(check_entity_param(record.name, code, param, value, layer=layer))
         _check_surface_left(registry, record.name, code, surface, key, obj=obj)
         _check_support_cycle(registry, record.name, code, surface, key, chosen.code)
+    elif _is_point_reference(str(kind), param):  # el origen y el destino de una pista: lo que pisa (spec 017, T40; A-2)
+        _check_reference_cycle(registry, reads, record.name, code, param, None if value is None else str(value), key, chosen.code)
     else:
         if param == PlatformParam.PROTECT and value is True and kind not in _DECLARES:  # lo que no declara nada no protege (T48)
             words = _NO_DECLARATION.get(kind, (kind, kind))

@@ -79,10 +79,12 @@ __all__ = [
     "RoadProfile",
     "StoredProfile",
     "check_names",
+    "check_profile_change",
     "create_table",
     "dataset_spec",
     "derived",
     "edit_road_profiles",
+    "parse_profile_key",
     "profile_code",
     "profile_names",
     "read_profiles",
@@ -418,6 +420,41 @@ def _effective(conn: sqlite3.Connection, store: ParameterStore, code: str, versi
     found = store.resolve_many(conn, keys.values(), chain, version=version)
     return {last: json.loads(found[key].value_json) for last, key in keys.items()
             if key in found and found[key].value_json is not None}
+
+
+def parse_profile_key(key: str) -> tuple[str, RoadProfileParam] | None:
+    """El código del perfil y el valor de la clave ``des.roadprofile.{p}.<valor>`` (spec 017, T40), o ``None`` si ``key`` no es de un valor de un perfil de pista (otro
+    parámetro, el código no es ``[a-z][a-z0-9_]*`` o el último segmento no es uno de los quince de :class:`~design.params.RoadProfileParam`)."""
+    prefix = "des.roadprofile."
+    if not key.startswith(prefix):
+        return None
+    code, _dot, last = key[len(prefix):].rpartition(".")
+    if not is_code(code) or last not in {param.value for param in RoadProfileParam}:
+        return None
+    return code, RoadProfileParam(last)
+
+
+def check_profile_change(project: OperationProject, key: str, value: object, *, version: str | None) -> None:
+    """**«Cambiar parámetro…» de un valor de un perfil de pista** (spec 017, T40; hallazgo A-1; RF-017-04, RF-017-07, RF-015-08): lo mismo que comprueba «Perfil de pista…»
+    (:func:`edit_road_profiles`) al completar un perfil, **antes de que la orden escriba**: el valor nuevo ``value`` (ya leído, en la unidad del parámetro) de ``key``
+    (``des.roadprofile.{p}.<valor>``) en la versión ``version`` (uid) está en su rango (:func:`~design.params.check_road_profile_value`: el ángulo de desmonte o de terraplén
+    de 90° queda fuera, que la definición del parámetro admite) y, si el perfil tiene ya los valores de los radios (A, f, arcén, caballón, R y Rmín: los efectivos de la versión
+    y, si no, los del proyecto) con él, el radio mínimo ni pasa del radio de las curvas ni es menor que la semianchura de la sección
+    (:func:`~design.params.check_road_profile_radii`). ``DesignError`` ``des.road_profile_value_range``, ``_radius_order`` o ``_radius_narrow`` nombrando el perfil (su
+    nombre, o su código si no lo tiene), la clave del campo y el valor, **sin escribir nada** (el contador de cambios de la base no se mueve); un perfil sin todos sus valores no
+    tiene con qué cruzarse y solo se mira su rango. No hace nada si ``key`` no es de un valor de un perfil de pista, ``version`` es ``None`` (el cambio es del proyecto: sus
+    valores no se leen con otro ámbito) o el valor no tiene valor (lo dice la definición del parámetro). Solo lee."""
+    found = parse_profile_key(key)
+    if found is None or version is None or value is None:
+        return
+    code, param = found
+    with project.read() as conn:
+        name = profile_names(conn).get(code, code)
+        effective = _effective(conn, ParameterStore(project), code, version)  # type: ignore[arg-type]
+    checked = check_road_profile_value(name, code, param, value)
+    merged = {**effective, param.value: checked}
+    if all(last in merged for last in _RADII):
+        check_road_profile_radii(name, code, merged)
 
 
 def _plan(stored: Sequence[StoredProfile], edits: Sequence[ProfileEdit], declaration: ProfileDeclaration | None,
