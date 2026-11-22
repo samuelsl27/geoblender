@@ -190,7 +190,7 @@ class ExtraTest(unittest.TestCase):
         found = pit_offset.edge_distances(ring, step="face", side=UP, profile=bench_profile(), extra_m=extra, sectors=(sector,))
         np.testing.assert_allclose(found.distance, 10.0 / tan(60.0) + extra[found.source_edge], atol=EXACT)
         with self.assertRaises(ValueError):
-            pit_offset.edge_distances(ring, step="face", side=UP, profile=bench_profile(), extra_m=-extra - 1.0)
+            pit_offset.edge_distances(ring, step="face", side=UP, profile=bench_profile(), extra_m=-extra - 10.0)
 
 
 class SmoothTest(unittest.TestCase):

@@ -294,8 +294,8 @@ def edge_distances(ring: object, *, step: Step | str, side: int = 1, profile: Be
     extra_in = np.zeros(count)
     if extra_m is not None:
         extra_in = np.asarray(extra_m, dtype=np.float64)
-        if extra_in.shape != (count,) or not np.isfinite(extra_in).all() or np.any(extra_in < 0.0):
-            raise ValueError(f"El término de la rampa es un array finito y no negativo ({count},), no {extra_in.shape}")
+        if extra_in.shape != (count,) or not np.isfinite(extra_in).all():
+            raise ValueError(f"El término de la rampa es un array finito ({count},), no {extra_in.shape}")
     frame = np.asarray(origin, dtype=np.float64)
     if frame.shape != (2,):
         raise ValueError(f"El origen son dos coordenadas, no {frame.shape}")
@@ -340,6 +340,8 @@ def edge_distances(ring: object, *, step: Step | str, side: int = 1, profile: Be
     else:
         distance = levels * height / np.tan(np.radians(face))
     distance = distance + extra_in[owner]
+    if np.any(distance < 0.0):
+        raise ValueError("El término de la rampa deja una distancia negativa (más que la base de la arista)")
     return EdgeDistances(work, owner, found, tuple(item.code for item in sectors), azimuth, raw, face, berm, levels, distance)
 
 

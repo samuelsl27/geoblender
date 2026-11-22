@@ -7,9 +7,10 @@ cifras donde entra ``tan α`` (``1/√3`` con α = 60°). Dice, sin código de p
 cada estación, cuánto se retranquea la cresta (``W + (z_{k+1} − z(s))/tan α``: DIFF-018-2) y cuánto mide la pared sobre la rampa
 (entre ``h`` y ``0``).
 
-Lo que la spec 0.3 **no cierra** (la unión de los ejes de dos tramos, la transición, el desfase de las abscisas entre bancos de
-perímetros distintos) está aislado en :func:`link_length` y en :func:`literal_end_start_angles`; la propuesta de la T14 es el
-DIFF-018b de ``tasks.md``, sin aplicar.
+Lectura de la spec 0.4 (DIFF-018b): ``s`` se mide **por banco** (sobre el eje, en el sentido pedido); el tramo ``k + 1`` empieza en el
+punto del pie ``k + 1`` más cercano al fin del tramo ``k``; los dos ejes se unen con un **enlace horizontal recto** de ``W + B`` m a
+``z_{k+1}`` (:func:`link_length`) que cuenta en el eje y no en la rampa (125 m de rampa por banco; eje de 5 bancos 695 m). La vieja
+lectura literal ``s_{k+1} = s_k + L_k`` ya no está: con pies de radios distintos dejaba el fin y el inicio en azimuts distintos (G-4).
 """
 
 from __future__ import annotations
@@ -95,11 +96,10 @@ def tramo_stations(bench: int, *, count: int = STATIONS, gradient: Fraction = SP
                    s_start_m: Fraction | None = None) -> tuple[Station, ...]:
     """Las ``count`` estaciones (a pasos iguales, extremos incluidos) del tramo del banco ``bench`` con transición nula.
 
-    ``s_start_m`` es la abscisa de inicio del tramo (por defecto ``bench · h/g``: la suma de las longitudes de los anteriores, con
-    el propio hueco de la spec sobre las abscisas de bancos distintos: ver el DIFF-018b)."""
+    ``s_start_m`` es la abscisa de inicio del tramo **sobre su banco** (por defecto 0: ``s`` se mide por banco, DIFF-018b)."""
     run = run_length(height_m, gradient)
     z_k = Fraction(z0_m) + bench * Fraction(height_m)
-    s_k = bench * run if s_start_m is None else Fraction(s_start_m)
+    s_k = Fraction(0) if s_start_m is None else Fraction(s_start_m)
     found = []
     for i in range(count):
         s_rel = run * Fraction(i, count - 1)
@@ -150,21 +150,15 @@ def foot_radii(count: int = BENCHES, *, base_m: Fraction = FLOOR_RADIUS_M, face_
         return tuple(dec(Fraction(base_m)) + k * step for k in range(count))
 
 
-def literal_end_start_angles(count: int = BENCHES, gradient: Fraction = SPIRAL_GRADIENT, height_m: Fraction = HEIGHT_M
-                             ) -> tuple[tuple[float, float], ...]:
-    """Lectura **literal** de ``s_{k+1} = s_k + L_k`` con ``s`` medida sobre el pie de cada banco: para cada par ``(k, k + 1)``, el
-    ángulo (°) del fin del tramo ``k`` (``s_{k+1}/f_k`` rad) y el del inicio del ``k + 1`` (``s_{k+1}/f_{k+1}`` rad). **No
-    coinciden** (perímetros distintos): el hueco G-4 que el DIFF-018b cierra con la proyección del punto final sobre el pie
-    siguiente. Solo informativo (``float``)."""
-    import math
-
-    radii = foot_radii(count)
-    run = float(run_length(height_m, gradient))
-    out = []
-    for k in range(count - 1):
-        s_next = (k + 1) * run
-        out.append((math.degrees(s_next / float(radii[k])), math.degrees(s_next / float(radii[k + 1]))))
-    return tuple(out)
+def first_tramo_sweep_deg(*, base_m: Fraction = FLOOR_RADIUS_M, width_m: Fraction = SECTION_M, height_m: Fraction = HEIGHT_M,
+                          gradient: Fraction = SPIRAL_GRADIENT) -> Decimal:
+    """El ángulo (°) que recorre el tramo del banco 0 de la corta circular: su eje es el círculo de radio ``f_0 + W/2`` (55,75 m) y mide
+    ``h/g`` (125 m) de arco. Solo el banco 0 es circular: los pies siguientes llevan el bulto de la rampa anterior."""
+    with localcontext() as ctx:
+        ctx.prec = PRECISION
+        radius = dec(Fraction(base_m) + Fraction(width_m) / 2)
+        pi = Decimal("3.14159265358979323846264338327950288419716939937510582097494459230781640628620899")
+        return dec(run_length(height_m, gradient)) / radius * 180 / pi
 
 
 # --- El zig-zag (CE-018-06) -------------------------------------------------------------------------------------

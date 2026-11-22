@@ -70,13 +70,15 @@ class SpiralTest(unittest.TestCase):
         self.assertEqual((total.links, total.links_m, total.axis_m), (4, 70, 695))
         self.assertEqual(total.mean_gradient, Fraction(50, 695))
 
-    def test_literal_reading_of_the_abscissas_breaks_the_plan_continuity(self) -> None:
-        """El hallazgo G-4: con ``s_{k+1} = s_k + L_k`` sobre pies de radios distintos, el fin del tramo ``k`` y el inicio del
-        ``k + 1`` caen en azimuts distintos (143,2° frente a 115,9° en el primer par)."""
-        pairs = hand.literal_end_start_angles()
-        self.assertAlmostEqual(pairs[0][0], 143.2394487827058, places=9)
-        for end, start in pairs:
-            self.assertGreater(end - start, 10.0)
+    def test_first_tramo_sweep_on_the_circle(self) -> None:
+        """DIFF-018b: ``s`` por banco; el tramo 0 de la corta circular barre ``125 / 55,75`` rad = 128,466° (axis a ``f_0 + W/2``)."""
+        sweep = hand.first_tramo_sweep_deg()
+        self.assertLess(abs(sweep - Decimal(125) / Decimal("55.75") * 180 / Decimal("3.14159265358979323846264338327950288")), TOL)
+        self.assertAlmostEqual(float(sweep), 128.46587, places=4)
+
+    def test_stations_are_measured_per_bench(self) -> None:
+        """DIFF-018b: la abscisa de inicio de un tramo es suya, no ``k·h/g``."""
+        self.assertEqual(hand.tramo_stations(3)[0].s_abs_m, 0)
 
 
 class ZigzagTest(unittest.TestCase):
