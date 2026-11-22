@@ -30,6 +30,15 @@ más la berma) y el paso lateral de ``d`` m, de ``P = max(min_platform, π·Rgir
 regla de la 017 (``axis_of``, T17). El tramo ``k + 1`` vuelve en sentido contrario. «Cabe» si ``h/g + P`` ≤ lado recto
 (:class:`ZigzagDoesNotFit`, RF-018-20). El término de la cresta es el de la espiral (:func:`zigzag_edge_extra_m`); sin transición.
 
+**Las reglas de la 017 y los diagnósticos** (T17; :func:`check_ramp`, RF-018-18 a 21; P-11: **se llaman, no se repiten**): el eje de la rampa pasa por
+``road_axis.axis_of`` (``R``, ``Rmín`` y ``w`` del perfil de pista; si las tangentes no caben el radio baja y es un aviso; por debajo de ``Rmín``,
+rechazo con el banco y el lugar) y por ``road_gradient.check_axis_3d`` (un aviso por incumplimiento con su banco, su abscisa y su lugar; el eje no
+se corrige). La Z de cada estación es la del eje de la construcción en su abscisa (``Axis.line_abscissa``, como el modo «eje 3D» de la 017). La
+media por encima de pm pide la confirmación con su motivo (:func:`confirm_mean`, ``provenance.RampConfirmation``). Si no cabe (RF-018-20) no se
+registra nada y se dice por qué (:func:`no_fit_error`; zona sin rampa o intocable sobre el eje, a ≤ medio paso de rejilla). La banda
+(:class:`Band`, RF-018-21) es el eje y sus bordes a ``W/2`` a la cota del eje. **Encima no se aplica una pista «eje 3D» de la 017** (D-3): este
+módulo no importa el grabado ni la sección de la pista; :attr:`RampChecked.line` es una línea comprobable con ella (P2).
+
 Las funciones por banco (:func:`build_tramo`, :func:`edge_extra_m`, :func:`chain_start`) trabajan en **el marco de coordenadas que se les
 dé** (locales o absolutas, el mismo para el anillo, el punto y el tramo) con anillos antihorarios y abiertos, como el desfase de la corta;
 :func:`spiral_steps` encadena los bancos de unos :class:`~design.pit_bench.Benches` ya calculados. Python puro con numpy (nivel 8); no lo
@@ -42,18 +51,31 @@ import dataclasses
 import math
 from collections.abc import Generator, Iterator, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
 from ..core.project.model import Progress
 from ..gis.masks.compile import STEP_BUDGET_S
+from .messages import DesignError
+from .params import PitRampParam, RoadProfileParam, pitramp_key, road_profile_key
 from .pit_model import PitJob, Polyline, PolylineKind, RampDef, RampPath
+from .preview import Notice
+from .provenance import RampConfirmation
+from .road_axis import Axis, RadiusBelowMinimum, axis_of, stations_for
+from .road_gradient import check_axis_3d, mean_gradient
 from .road_profiles import derived as road_derived
 from .seeds import pace_progress
+from .zones import polygons_cells
 
 __all__ = [
+    "Band",
+    "RampChecked",
     "RampDoesNotFit",
     "Spiral",
+    "check_ramp",
+    "confirm_mean",
+    "no_fit_error",
     "Tramo",
     "Zigzag",
     "ZigzagDoesNotFit",
@@ -82,13 +104,18 @@ _LEVEL_TOL_M = 1e-6
 
 
 class RampDoesNotFit(ValueError):
-    """El tramo del banco ``bench`` mide ``needed_m`` y el perímetro del eje solo ``available_m`` (G-3, RF-018-20): lo diagnostica T17."""
+    """El tramo del banco ``bench`` mide ``needed_m`` y el perímetro del eje solo ``available_m`` (G-3, RF-018-20): :func:`no_fit_error` lo
+    convierte en el rechazo de la persona. ``place`` es el lugar ``(x, y)`` (en el marco del anillo con que se calculó; las
+    ``*_steps`` lo dan absoluto) y ``reason`` lo que impide."""
 
-    def __init__(self, bench: int, needed_m: float, available_m: float) -> None:
+    reason = "el perímetro del eje del banco"
+
+    def __init__(self, bench: int, needed_m: float, available_m: float, place: Sequence[float] | None = None) -> None:
         super().__init__(f"la rampa del banco {bench} necesita {needed_m:.3f} m y el perímetro del eje solo mide {available_m:.3f} m")
         self.bench = bench
         self.needed_m = needed_m
         self.available_m = available_m
+        self.place: tuple[float, float] | None = None if place is None else (float(place[0]), float(place[1]))
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -261,7 +288,7 @@ def build_tramo(ring: object, point: Sequence[float], *, bench: int, z_foot_m: f
     total = ramp + transition_m
     found = _geometry(points, point, sense, 0.5 * width_m)
     if total > found.perimeter_m:
-        raise RampDoesNotFit(bench, total, found.perimeter_m)
+        raise RampDoesNotFit(bench, total, found.perimeter_m, found.start)
     cumulative = found.cumulative
     inside = cumulative < total - 1e-12
     s = np.concatenate([cumulative[inside], [total]])
@@ -329,6 +356,13 @@ def chain_start(next_ring: object, tramo: Tramo, *, width_m: float | None = None
 # --- Los bancos encadenados ----------------------------------------------------------------------------------------------------
 
 
+def _absolute(error: RampDoesNotFit, origin: np.ndarray) -> RampDoesNotFit:
+    """``error`` con su lugar en absolutas (``origin`` es el del marco con que se calculó)."""
+    if error.place is not None:
+        error.place = (error.place[0] + float(origin[0]), error.place[1] + float(origin[1]))
+    return error
+
+
 def _ccw(vertices: np.ndarray) -> np.ndarray:
     ring = np.asarray(vertices, dtype=np.float64)[:, :2]
     return ring if _area2(ring) > 0.0 else ring[::-1]
@@ -359,8 +393,11 @@ def _spiral_units(job: PitJob, polylines: Sequence[Polyline], ramp: RampDef, sta
         assert best is not None
         chosen = here[best[1]]
         top = crests.get(chosen.bench, chosen.z_m + job.height_m)
-        tramo = build_tramo(_ccw(chosen.vertices) - origin, point, bench=chosen.bench, z_foot_m=chosen.z_m, rise_m=top - chosen.z_m,
-                            gradient_pct=ramp.gradient_pct, width_m=width, transition_m=ramp.transition_m, sense=ramp.sense)
+        try:
+            tramo = build_tramo(_ccw(chosen.vertices) - origin, point, bench=chosen.bench, z_foot_m=chosen.z_m, rise_m=top - chosen.z_m,
+                                gradient_pct=ramp.gradient_pct, width_m=width, transition_m=ramp.transition_m, sense=ramp.sense)
+        except RampDoesNotFit as error:
+            raise _absolute(error, origin) from None
         tramos.append(tramo)
         point = tramo.end_xy
         level = top
@@ -392,13 +429,16 @@ def spiral_steps(job: PitJob, polylines: Sequence[Polyline], ramp: RampDef, star
 
 
 class ZigzagDoesNotFit(RampDoesNotFit):
-    """El zig-zag del banco ``bench`` necesita ``needed_m`` de lado recto y solo hay ``available_m`` (RF-018-20: lo diagnostica T17)."""
+    """El zig-zag del banco ``bench`` necesita ``needed_m`` de lado recto y solo hay ``available_m`` (RF-018-20: :func:`no_fit_error`)."""
 
-    def __init__(self, bench: int, needed_m: float, available_m: float) -> None:
+    reason = "el lado recto del pie"
+
+    def __init__(self, bench: int, needed_m: float, available_m: float, place: Sequence[float] | None = None) -> None:
         ValueError.__init__(self, f"el zig-zag del banco {bench} necesita {needed_m:.3f} m de lado recto y solo hay {available_m:.3f} m")
         self.bench = bench
         self.needed_m = needed_m
         self.available_m = available_m
+        self.place = None if place is None else (float(place[0]), float(place[1]))
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -491,10 +531,10 @@ def _zigzag_tramo(side: _Side, t: float, sigma: float, *, bench: int, z_foot_m: 
     ramp = rise_m / gradient
     room = side.length - t if sigma > 0.0 else t
     if ramp > room + 1e-9:
-        raise ZigzagDoesNotFit(bench, ramp, room)
+        raise ZigzagDoesNotFit(bench, ramp, room, side.p0 + t * side.u)
     needed = ramp + (0.0 if last else platform_m)
     if needed > side.length + 1e-9:
-        raise ZigzagDoesNotFit(bench, needed, side.length)
+        raise ZigzagDoesNotFit(bench, needed, side.length, side.p0 + t * side.u)
     start = side.p0 + t * side.u
     end = start + sigma * ramp * side.u
     axis = np.array([[start[0], start[1], z_foot_m], [end[0], end[1], z_foot_m + rise_m]])
@@ -552,7 +592,7 @@ def build_zigzag(rings: Sequence[object], point: Sequence[float], *, z_first_m: 
         side, sigma = following, -sigma
         t = float((landing - following.p0) @ following.u)
         if not -1e-9 <= t <= following.length + 1e-9:
-            raise ZigzagDoesNotFit(first_bench + index + 1, t, following.length)
+            raise ZigzagDoesNotFit(first_bench + index + 1, t, following.length, landing)
         t = min(max(t, 0.0), following.length)
     return _assemble(tramos, platforms, half, code, platform_m)
 
@@ -609,9 +649,12 @@ def _zigzag_units(job: PitJob, polylines: Sequence[Polyline], ramp: RampDef, sta
         yield
     first = chosen_feet[0]
     rise = crests.get(first.bench, first.z_m + job.height_m) - first.z_m
-    found = build_zigzag([_ccw(item.vertices) - origin for item in chosen_feet], point, z_first_m=first.z_m, rise_m=rise,
-                         gradient_pct=ramp.gradient_pct, width_m=width, platform_m=platform, sense=ramp.sense, code=ramp.code,
-                         first_bench=first.bench)
+    try:
+        found = build_zigzag([_ccw(item.vertices) - origin for item in chosen_feet], point, z_first_m=first.z_m, rise_m=rise,
+                             gradient_pct=ramp.gradient_pct, width_m=width, platform_m=platform, sense=ramp.sense, code=ramp.code,
+                             first_bench=first.bench)
+    except RampDoesNotFit as error:
+        raise _absolute(error, origin) from None
     shift = np.array([origin[0], origin[1], 0.0])
     path = RampPath(ramp.code, found.path.bench, found.path.axis + shift, found.path.half_width_m)
     yield
@@ -626,3 +669,188 @@ def zigzag_steps(job: PitJob, polylines: Sequence[Polyline], ramp: RampDef, star
     :class:`Zigzag`; :class:`ZigzagDoesNotFit` al avanzar si no cabe; no se escribe nada."""
     return pace_progress(_zigzag_units(job, polylines, ramp, start), budget_s, phase=_PHASE, running="Calculando la rampa…",
                          finished="Rampa calculada", total=max(2, len({item.bench for item in polylines})))
+
+
+# --- Las reglas de la 017, los diagnósticos y la banda (T17) -------------------------------------------------------------------
+
+
+_MEAN_TOL_PCT = 1e-6
+"""Lo que una media nueva puede pasar de la confirmada (puntos de porcentaje) y seguir siendo la misma: el ruido de la última cifra."""
+_BLOCK_REASONS = {"noramp": "zona sin rampa", "untouchable": "intocable"}
+"""Lo que impide una rampa (RF-018-20) en el rechazo de la persona."""
+
+
+def _place(x: float, y: float) -> str:
+    return f"{x:.1f}, {y:.1f}"
+
+
+def no_fit_error(error: RampDoesNotFit, ramp: RampDef) -> DesignError:
+    """El rechazo de la persona (``des.pit_no_ramp_fit``, RF-018-20) de la excepción ``error`` de un constructor (:func:`build_tramo`, :func:`build_zigzag`,
+    :func:`spiral_steps`, :func:`zigzag_steps`) para ``ramp``: el banco, la longitud necesaria y la disponible (m), lo que lo impide y el lugar; qué probar
+    (otro tipo, otro sentido u otro punto de inicio) lo dice el catálogo. No relaja ``g``, ``Rmín`` ni la plataforma ni cambia nada."""
+    place = "?" if error.place is None else _place(*error.place)
+    return DesignError("des.pit_no_ramp_fit", obj=f"Rampa «{ramp.name}»", field=pitramp_key(ramp.code, PitRampParam.TYPE), value=ramp.type,
+                       profile=ramp.name, bench=error.bench, needed=round(error.needed_m, 3), available=round(error.available_m, 3),
+                       reason=error.reason, place=place)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Band:
+    """La banda de una rampa (RF-018-21): el ``axis`` ``(n, 3)`` en las estaciones y sus bordes ``left`` y ``right`` (``(n, 3)``): a ``half_width_m`` del eje
+    a cada lado, perpendiculares a su dirección y a la cota del eje (horizontal en su anchura). :attr:`breaklines` son las aristas obligatorias de la superficie."""
+
+    half_width_m: float
+    axis: np.ndarray
+    left: np.ndarray
+    right: np.ndarray
+
+    @property
+    def breaklines(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Borde izquierdo, eje y borde derecho (``(n, 3)`` cada uno), con su Z por estaciones."""
+        return self.left, self.axis, self.right
+
+
+def _band(axis: Axis, levels: np.ndarray, half_m: float) -> Band:
+    heading = np.column_stack([np.sin(axis.azimuth), np.cos(axis.azimuth)])
+    left_normal = np.column_stack([-heading[:, 1], heading[:, 0]])
+    arrays = [np.column_stack([axis.points, levels]), np.column_stack([axis.points + half_m * left_normal, levels]),
+              np.column_stack([axis.points - half_m * left_normal, levels])]
+    for array in arrays:
+        array.flags.writeable = False
+    return Band(half_m, arrays[0], arrays[1], arrays[2])
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RampChecked:
+    """Una rampa con las reglas de la 017 aplicadas (:func:`check_ramp`): ``code`` y ``name`` de su definición, el ``profile`` de pista, el ``axis`` de la 017
+    (``road_axis.Axis``), la cota (``z``) y el banco (``benches``) de cada estación, el ``path`` (el eje redondeado con su Z y el semiancho), la ``band``, los
+    ``notices`` de RF-018-19 (radios reducidos, pendientes sobre pd y la media sobre pm, cada uno con su banco, su abscisa y su lugar), la pendiente media y la
+    mayor (%) y si la media pasa de pm (``mean_exceeded``: no se crea sin :func:`confirm_mean`)."""
+
+    code: str
+    name: str
+    profile: Any
+    axis: Axis
+    z: np.ndarray
+    benches: np.ndarray
+    path: RampPath
+    band: Band
+    notices: tuple[Notice, ...]
+    mean_gradient_pct: float
+    max_gradient_pct: float
+    mean_exceeded: bool
+
+    @property
+    def length_m(self) -> float:
+        """La longitud del eje en planta (m), con sus curvas."""
+        return self.axis.length_m
+
+    @property
+    def line(self) -> np.ndarray:
+        """El eje con su Z por estaciones, ``(n, 3)`` absolutas: la línea comprobable con la 017 (P2)."""
+        return self.path.axis
+
+
+def _levels(axis: Axis, raw: np.ndarray, stations: np.ndarray) -> np.ndarray:
+    """La cota del eje de la construcción ``raw`` en las abscisas ``stations`` del eje redondeado: la de la línea en su abscisa (``Axis.line_abscissa``)."""
+    along = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(axis.vertices, axis=0).T))))
+    return np.interp(axis.line_abscissa(stations), along, raw[axis.kept, 2])
+
+
+def _bench_of(levels: np.ndarray, found: Spiral | Zigzag) -> np.ndarray:
+    """El banco de cada cota: el del tramo cuyo pie queda por debajo (un enlace o plataforma, a ``z_{k+1}``, es del banco que alcanza)."""
+    feet = np.array([item.z_foot_m for item in found.tramos])
+    ids = np.array([item.bench for item in found.tramos])
+    return ids[np.clip(np.searchsorted(feet, np.asarray(levels) + 1e-6, side="right") - 1, 0, len(feet) - 1)]
+
+
+def _hits(mask: np.ndarray, grid: Any, xy: np.ndarray) -> np.ndarray:
+    col = np.floor((xy[:, 0] - grid.west) / grid.dx).astype(np.int64)
+    row = np.floor((grid.north - xy[:, 1]) / grid.dy).astype(np.int64)
+    inside = (row >= 0) & (row < grid.nrows) & (col >= 0) & (col < grid.ncols)
+    hit = np.zeros(len(xy), dtype=bool)
+    hit[inside] = mask[row[inside], col[inside]]
+    return hit
+
+
+def _blocked(axis: Axis, raw: np.ndarray, job: PitJob, found: Spiral | Zigzag, ramp: RampDef) -> None:
+    """RF-018-20: ``DesignError`` ``des.pit_no_ramp_fit`` si el eje cruza una zona sin rampa o un intocable: el banco, lo que mide el eje de ese banco (necesaria) y lo que
+    queda libre hasta el obstáculo (disponible), lo que lo impide y el lugar. Se mira cada ``w`` m o cada medio paso de rejilla si es menor."""
+    masks: dict[str, np.ndarray] = {}
+    if job.noramp:
+        masks["noramp"] = polygons_cells(job.noramp, job.grid)
+    if bool(job.untouchable.any()):
+        masks["untouchable"] = job.untouchable
+    if not masks:
+        return
+    s = stations_for(axis.length_m, min(axis.step_m, 0.5 * min(job.grid.dx, job.grid.dy)))
+    xy, _azimuth = axis.sample(s)
+    blocked = np.zeros(len(s), dtype=bool)
+    why = np.full(len(s), "", dtype=object)
+    for reason, mask in masks.items():
+        hit = _hits(mask, job.grid, xy) & ~blocked
+        blocked |= hit
+        why[hit] = reason
+    if not blocked.any():
+        return
+    first = int(np.argmax(blocked))
+    benches = _bench_of(_levels(axis, raw, s), found)
+    mine = benches == benches[first]
+    start = float(s[mine][0])
+    raise DesignError("des.pit_no_ramp_fit", obj=f"Rampa «{ramp.name}»", field=pitramp_key(ramp.code, PitRampParam.TYPE), value=ramp.type, profile=ramp.name,
+                      bench=int(benches[first]), needed=round(float(s[mine][-1]) - start, 3), available=round(float(s[first]) - start, 3),
+                      reason=_BLOCK_REASONS[str(why[first])], place=_place(float(xy[first, 0]), float(xy[first, 1])))
+
+
+def check_ramp(found: Spiral | Zigzag, job: PitJob, ramp: RampDef, *, simplify_m: float = 0.0) -> RampChecked:
+    """**RF-018-18 a 21**: el eje de ``found`` (la :class:`Spiral` o el :class:`Zigzag` de ``ramp``, con el perfil de pista de ``job``) con las reglas de la 017, sin
+    cambiar ni escribir nada. (1) Las curvas: ``road_axis.axis_of`` con ``R``, ``Rmín`` y ``w`` del perfil (``simplify_m``: Douglas–Peucker, 0 por defecto); el
+    radio que baja al que cabe es el aviso ``des.pit_ramp_radius_reduced`` y por debajo de ``Rmín``, ``DesignError`` ``des.pit_ramp_radius_below_min`` con el banco y
+    el lugar. (2) La Z de cada estación es la del eje en su abscisa y ``road_gradient.check_axis_3d`` avisa cada tramo sobre pd y la media sobre pm. (3) Una zona
+    sin rampa o un intocable en el eje: ``des.pit_no_ramp_fit`` (el perímetro y el lado recto los dan los constructores: :func:`no_fit_error`). (4) La banda
+    (:class:`Band`). ``ValueError`` si el perfil de pista de ``ramp`` no está en ``job`` (un error del programa)."""
+    profile = next((item for item in job.road_profiles if item.code == ramp.road_profile), None)
+    if profile is None:
+        raise ValueError(f"La rampa {ramp.code!r} cita el perfil de pista {ramp.road_profile!r}, que la corta no tiene")
+    raw = np.asarray(found.path.axis, dtype=np.float64)
+    try:
+        axis = axis_of(raw[:, :2], profile.curve_radius_m, profile.min_radius_m, profile.station_step_m, simplify_m=simplify_m)
+    except RadiusBelowMinimum as error:
+        curve = error.curve
+        bench = int(_bench_of(raw[[curve.vertex - 1], 2], found)[0])
+        raise DesignError("des.pit_ramp_radius_below_min", obj=f"Rampa «{ramp.name}»", field=road_profile_key(profile.code, RoadProfileParam.MIN_RADIUS),
+                          value=round(curve.radius_m, 3), profile=ramp.name, limit=error.minimum_m, bench=bench,
+                          place=_place(curve.x, curve.y)) from None
+    _blocked(axis, raw, job, found, ramp)
+    z = _levels(axis, raw, axis.stations)
+    benches = _bench_of(z, found)
+    notices: list[Notice] = []
+    for item in axis.notices(ramp.name):
+        at = int(_bench_of(raw[[int(item.values["vertex"]) - 1], 2], found)[0])
+        notices.append(Notice("des.pit_ramp_radius_reduced", {**item.values, "entity": ramp.name, "bench": at}))
+    mean_exceeded = False
+    for item in check_axis_3d(axis, z, profile, ramp.name):
+        if item.code == "des.road_axis3d_gradient":
+            at = int(benches[int(np.searchsorted(axis.stations, item.values["station"]))])
+            notices.append(Notice("des.pit_ramp_gradient", {**item.values, "entity": ramp.name, "bench": at}))
+        elif item.code == "des.road_mean_gradient":
+            mean_exceeded = True
+            notices.append(Notice("des.pit_ramp_mean_gradient", {**item.values, "entity": ramp.name}))
+    gradients = np.abs(np.diff(z)) / np.diff(axis.stations)
+    half = float(found.path.half_width_m[0])
+    line = np.column_stack([axis.points, z])
+    line.flags.writeable = False
+    path = RampPath(found.path.code, found.path.bench, line, np.full(len(line), half))
+    return RampChecked(ramp.code, ramp.name, profile, axis, z, benches, path, _band(axis, z, half), tuple(notices),
+                       mean_gradient(axis.stations, z) * 100.0, float(gradients.max(initial=0.0)) * 100.0, mean_exceeded)
+
+
+def confirm_mean(checked: RampChecked, confirmation: RampConfirmation | None = None, *, tolerance_pct: float = _MEAN_TOL_PCT) -> RampConfirmation | None:
+    """La confirmación de la pendiente media (RF-018-19, RF-017-17): ``None`` si la media no pasa de pm; si pasa, la ``confirmation`` que la cubre (la de esta rampa,
+    con su motivo, de una media no menor que la actual a ``tolerance_pct``) o ``DesignError`` ``des.pit_ramp_mean_over``: la corta no se crea sin ella ni se corrige el eje."""
+    if not checked.mean_exceeded:
+        return None
+    if confirmation is not None and confirmation.ramp == checked.code and confirmation.covers(checked.mean_gradient_pct, tolerance_pct):
+        return confirmation
+    raise DesignError("des.pit_ramp_mean_over", obj=f"Rampa «{checked.name}»", field=road_profile_key(checked.profile.code, RoadProfileParam.MAX_MEAN_GRADIENT),
+                      value=round(checked.mean_gradient_pct, 2), profile=checked.name, limit=checked.profile.max_mean_gradient_pct)

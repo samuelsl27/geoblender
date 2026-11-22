@@ -3818,8 +3818,10 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.pit_ramp_radius_below_min",
-        "Ramp «{profile}»: the radius that fits, {value} m, is below the minimum {limit} m; nothing is relaxed.",
-        "Rampa «{profile}»: el radio que cabe, {value} m, es menor que el mínimo de {limit} m; no se relaja nada.",
+        "Ramp «{profile}», bench {bench}: the radius that fits, {value} m, is below the minimum {limit} m near {place}; nothing is "
+        "relaxed (try another type, sense or start point).",
+        "Rampa «{profile}», banco {bench}: el radio que cabe, {value} m, es menor que el mínimo de {limit} m cerca de {place}; no se "
+        "relaja nada (pruebe otro tipo, otro sentido u otro punto de inicio).",
     ),
     Message(
         "des.pit_no_ramp_fit",
@@ -3827,6 +3829,31 @@ CATALOG: tuple[Message, ...] = (
         "try another type, sense or start point (nothing was changed).",
         "La rampa «{profile}» no cabe en el banco {bench}: necesita {needed} m y hay {available} m ({reason}) cerca de {place}; pruebe "
         "otro tipo, otro sentido u otro punto de inicio (no se ha cambiado nada).",
+    ),
+    # RF-018-19: la rampa se comprueba con las reglas del eje 3D de la 017; cada incumplimiento es un aviso con su banco, su abscisa y su lugar.
+    Message(
+        "des.pit_ramp_gradient",
+        "Ramp «{entity}», bench {bench}: the gradient of the stretch at s = {station} m is {gradient} %, more than the maximum design "
+        "gradient ({limit} %) (x = {x} m, y = {y} m); the axis is not corrected.",
+        "Rampa «{entity}», banco {bench}: la pendiente del tramo en la abscisa {station} m es del {gradient} %, más que la pendiente "
+        "máxima de diseño ({limit} %) (x = {x} m, y = {y} m); el eje no se corrige.",
+        "warning",
+    ),
+    Message(
+        "des.pit_ramp_mean_gradient",
+        "Ramp «{entity}»: its mean gradient ({mean} %) is more than the maximum mean gradient of its haul road profile ({limit} %); the "
+        "steepest stretches are: {stretches}; the pit is not created without your express confirmation and a reason, which stay recorded.",
+        "Rampa «{entity}»: su pendiente media ({mean} %) pasa de la pendiente media máxima de su perfil de pista ({limit} %); los tramos "
+        "más empinados son: {stretches}; la corta no se crea sin su confirmación expresa y un motivo, que quedan registrados.",
+        "warning",
+    ),
+    Message(
+        "des.pit_ramp_radius_reduced",
+        "Ramp «{entity}», bench {bench}: the curve at vertex {vertex} has a radius of {fitted} m instead of the {radius} m of the haul "
+        "road profile, because its tangents do not fit in the stretches (x = {x} m, y = {y} m).",
+        "Rampa «{entity}», banco {bench}: la curva del vértice {vertex} tiene un radio de {fitted} m y no los {radius} m del perfil de "
+        "pista, porque sus tangentes no caben en los tramos (x = {x} m, y = {y} m).",
+        "warning",
     ),
     Message(
         "des.pit_no_search",
