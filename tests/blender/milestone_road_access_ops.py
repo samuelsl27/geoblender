@@ -75,7 +75,7 @@ PROPERTIES = {  # la propiedad → su nombre y su descripción (msgid en inglés
     "name_field": ("Name field", "Field of the layer with the name of each entry point (empty: its number (fid))"),
     "walk_slope": ("Maximum walkable gradient (%)", "Local gradient above which a cell cannot be walked, in per cent; a hypothesis without default value"),
     "walk_width": ("Minimum walkable width (m)", "Narrowest passage that can be walked, in metres, between cell centres; a hypothesis without default value"),
-    "min_berm_area": ("Minimum area of a berm stretch (m²)", "Smallest berm stretch that is listed, in square metres; a hypothesis without default value"),
+    "min_berm_area": ("Minimum berm stretch area (m²)", "Smallest berm stretch that is listed, in square metres; a hypothesis without default value"),
 }
 """Las propiedades del diálogo con el ``msgid`` de su nombre y de su descripción (las ocultas, que pone quien lanza la orden, no los llevan)."""
 THRESHOLDS = {"walk_slope": "12", "walk_width": "4", "min_berm_area": "100"}
@@ -295,7 +295,7 @@ class RoadAccessOpsTest(platform_ops.CreatePlatformTest):
 
         texts = draw(cls, bpy.context, **{**DEFAULTS, "surface": self.smooth_surface}).texts()
         for heading in ("Nombre", "Superficie", "Puntos de entrada", "Capa de los puntos de entrada", "Campo del nombre", "Pendiente máxima transitable (%)", "Ancho mínimo transitable (m)",
-                        "Área mínima de un tramo de berma (m²)"):
+                        "Área mín. de tramo de berma (m²)"):
             self.assertIn(heading, texts)
         self.assertEqual(len([text for text in texts if text == "HIPÓTESIS: sin valor por defecto, lo elige usted"]), 3, "los tres umbrales son hipótesis sin valor por defecto")
         self.assertEqual(self.dprov.ACCESS_COMMAND, cls.COMMAND)

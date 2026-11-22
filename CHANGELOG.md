@@ -1805,6 +1805,16 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Corregido
 
+- Las cifras de una pista **ya no llevan ruido de coma flotante**: una pista cuya rasante sigue el terreno a la última cifra enseñaba en la barra N «Relleno de la
+  sección = 3,41e-13 m³», «Mayor altura de terraplén = 1,42e-14 m» y «Volumen neto = −3,41e-13 m³», que se leen como un fallo; ahora el corte y el relleno de
+  la sección y del borde, el neto, las alturas máximas y la pared valen **0** cuando están por debajo de la exactitud de esas cifras (10⁻⁹ m, m² y m³) y, si no,
+  son la suma exacta de lo que mueve la pista: la misma que da la cubicación entre la partida y la pista. Solo cambia en las cifras de la pista (cómo se escribe
+  cualquier otra cifra del proyecto no cambia). Además, «Pista…» en «Sobre un eje» y en «Eje 3D» con la **Línea de la capa** vacía lo dice el propio diálogo
+  («Escriba el nombre o el número (fid) de la línea de la capa que es el eje de la pista»), en su idioma, y no el error del cálculo con la clave interna del
+  campo. Y ya se leen enteros, sin «…» en medio, los nombres de los campos que se cortaban a 1920 px (el de la altura máxima de desmonte y terraplén, el del peso
+  del movimiento de tierras y el del área mínima de un tramo de berma, ahora más cortos y con la misma descripción), las filas de las listas de la accesibilidad
+  (el texto en su fila y el botón **Ir a** debajo) y la frase de «Descartar…» que dice qué pasa con lo que se apoyaba (partida en dos líneas, con el mismo texto).
+  Ninguna cifra ni ningún cálculo cambian (spec 017; lo vio el H3, hallazgos H3-2, H3-5 y H3-7).
 - El diálogo de «Calcular» de «Pista…», de «Proponer el trazado…» y de «Accesibilidad de las pistas…» **cabe en la ventana y «Crear» (o «Confirmar y
   crear») se ve sin bajar el diálogo**, también con muchos avisos: de cada tipo de aviso enseña **hasta 3** y una línea en ámbar «… y 22 avisos como éste
   (en el informe)» con los que faltan (una rampa de 13 curvas daba un aviso de radio por vértice, y con los de la calzada y los de las restricciones el

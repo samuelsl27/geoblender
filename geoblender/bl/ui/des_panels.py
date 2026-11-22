@@ -2229,9 +2229,18 @@ def access_report_lines() -> list[tuple[str, bool]]:
     return [(row.text, True) for section in _ACCESS.sections for row in section.rows if row.alert]
 
 
+def _draw_go_to(layout: Any, place: Any) -> None:
+    """El botón **«Ir a»** (``geoblender.core_go_to_place`` con el lugar ``(x, y, radio)`` de ``place``) de una fila de las listas de la accesibilidad: **en su propia fila, debajo del texto** y a la
+    izquierda con su ancho natural. Con el texto en la misma fila, Blender reparte el ancho entre los dos y corta el texto con «…» (H3-7, T52: «Plataforma «Relleno d…cada, se llega a la cota 125,00 m»)."""
+    line = layout.row()
+    line.alignment = "LEFT"
+    button = line.operator(constraint_panels.GO_TO_PLACE, text=tr("Go to"), translate=False)
+    button.x, button.y, button.radius = place
+
+
 def draw_access_lists(layout: Any, width_px: int) -> None:
     """Las listas de la accesibilidad (:func:`access_sections`) en un diálogo de ``width_px`` (spec 017, T30; RF-017-25; M3): cada una en su caja con su título y, por fila, su texto (en alerta si no se
-    comunica) y su **«Ir a»** (``geoblender.core_go_to_place`` con el lugar y el radio), y, si faltan, una nota con cuántas."""
+    comunica) y su **«Ir a»** (``geoblender.core_go_to_place`` con el lugar y el radio) **debajo del texto, solo en su fila** (:func:`_draw_go_to`), y, si faltan, una nota con cuántas."""
     for section in _ACCESS.sections:
         box = layout.box()
         box.label(text=section.title, translate=False)
@@ -2239,11 +2248,9 @@ def draw_access_lists(layout: Any, width_px: int) -> None:
             box.label(text=tr("Nothing to list"), translate=False)
             continue
         for row in section.rows:
-            line = box.row()
-            draw_wrapped(line.column(), row.text, width_px - 90, alert=row.alert)
+            draw_wrapped(box, row.text, width_px, alert=row.alert)
             if row.place is not None:
-                button = line.operator(constraint_panels.GO_TO_PLACE, text=tr("Go to"), translate=False)
-                button.x, button.y, button.radius = row.place
+                _draw_go_to(box, row.place)
         if section.more:
             box.label(text=tr("… and {more} more (the whole list is recorded when the accessibility is created)", more=section.more), translate=False)
 
@@ -2271,13 +2278,13 @@ def _lines_more_text(count: int) -> str:
 
 
 def _access_list_rows() -> int:
-    """Las filas de etiqueta que ocupan, debajo del resumen, las tres listas de la accesibilidad (:func:`draw_access_lists`: su título, cada fila partida al ancho que le deja su «Ir a», la nota de
-    las que faltan y el margen de su caja): el resumen que se enseña las descuenta de su tope."""
-    width = labels.dialog_width(SUMMARY_WIDTH_PX - 90)
+    """Las filas de etiqueta que ocupan, debajo del resumen, las tres listas de la accesibilidad (:func:`draw_access_lists`: su título, cada fila partida al ancho del diálogo y, si tiene lugar, la
+    fila de su «Ir a» debajo, la nota de las que faltan y el margen de su caja): el resumen que se enseña las descuenta de su tope."""
+    width = labels.dialog_width(SUMMARY_WIDTH_PX)
     found = 0
     for section in _ACCESS.sections:
         found += 2 + (0 if section.rows else 1) + (1 if section.more else 0)
-        found += sum(max(1, len(labels.wrapped(row.text, width, icon=row.alert))) for row in section.rows)
+        found += sum(max(1, len(labels.wrapped(row.text, width, icon=row.alert))) + (0 if row.place is None else 1) for row in section.rows)
     return found
 
 
@@ -2930,10 +2937,8 @@ ROW_DECIDE = "decide"
 y los botones llaman a ``geoblender.des_stockpile_candidates`` con ella. No se dibuja como texto."""
 _BUTTON_ROWS = (*_EXPORT_ROWS, ROW_CANDIDATES, ROW_DECIDE)
 ROW_PLACE = "place"
-"""Una fila de las listas de la accesibilidad en la barra N (spec 017, T31b; RF-017-25) **con su «Ir a»**: su texto se dibuja como el de cualquier línea y, tras él, un botón (``geoblender.core_go_to_place``) con el
+"""Una fila de las listas de la accesibilidad en la barra N (spec 017, T31b; RF-017-25) **con su «Ir a»**: su texto se dibuja como el de cualquier línea y, **debajo**, un botón (``geoblender.core_go_to_place``; T52) con el
 lugar que lleva en su ``uid`` (``x;y;radio``, texto que se lee sin pérdida: ADR-0005). Una fila sin lugar es una ``ROW_FIELD``. En «Elemento activo», donde solo hay texto, se lee como cualquier línea."""
-GO_TO_BUTTON_PX = 80
-"""Lo que se le quita al ancho de una fila con «Ir a» para el botón (px a escala 1,0)."""
 STOCKPILE_CANDIDATES = "geoblender.des_stockpile_candidates"
 """La orden de la lista de candidatos de una detección (T35)."""
 EXPORT_PART_THICKNESS = "thickness"
@@ -4405,14 +4410,12 @@ def _draw_item(layout: Any, shown: Any, uid: str, width: float) -> bool:
 
 
 def _draw_place(layout: Any, row: Any, width: float) -> None:
-    """Una fila de las listas de la accesibilidad con su **«Ir a»** (spec 017, T31b; RF-017-25): su texto, partido al ancho que deja el botón, y ``geoblender.core_go_to_place`` con el lugar de su
-    ``uid`` (``x;y;radio``); en alerta si no se comunica. Un lugar que no se lee no dibuja el botón."""
+    """Una fila de las listas de la accesibilidad con su **«Ir a»** (spec 017, T31b; RF-017-25): su texto, partido al ancho de la barra, y **debajo, en su fila** (:func:`_draw_go_to`; T52, H3-7)
+    ``geoblender.core_go_to_place`` con el lugar de su ``uid`` (``x;y;radio``); en alerta si no se comunica. Un lugar que no se lee no dibuja el botón."""
     parts = str(row.uid).split(";")
-    line = layout.row()
-    _draw_text(line.column(), row.name, width - GO_TO_BUTTON_PX, alert=bool(row.alert))
+    _draw_text(layout, row.name, width, alert=bool(row.alert))
     if len(parts) == 3:
-        button = line.operator(constraint_panels.GO_TO_PLACE, text=tr("Go to"), translate=False)
-        button.x, button.y, button.radius = parts
+        _draw_go_to(layout, parts)
 
 
 def _is_detection(obj: Any) -> bool:

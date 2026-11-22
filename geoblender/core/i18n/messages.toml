@@ -10919,10 +10919,10 @@ es = "Malla de la ruta (m)"
 es = "Paso de cota (m)"
 
 ["Maximum cut and fill height (m)"]
-es = "Altura máxima de desmonte y terraplén (m)"
+es = "Alt. máx. desmonte/terraplén (m)"
 
 ["Weight of the earthworks (1/m)"]
-es = "Peso del movimiento de tierras (1/m)"
+es = "Peso del mov. de tierras (1/m)"
 
 ["Turn penalty (m)"]
 es = "Penalización de giro (m)"
@@ -10956,6 +10956,9 @@ es = "Geometría de la pista"
 
 ["Write the name of the road"]
 es = "Escriba el nombre de la pista"
+
+["Write the name or the number (fid) of the line of the layer that is the axis of the road"]
+es = "Escriba el nombre o el número (fid) de la línea de la capa que es el eje de la pista"
 
 ["Choose the layer of the road: there is none for this mode in the project"]
 es = "Elija la capa de la pista: el proyecto no tiene ninguna para este modo"
@@ -11275,8 +11278,8 @@ es = "Ancho mínimo transitable (m)"
 ["Narrowest passage that can be walked, in metres, between cell centres; a hypothesis without default value"]
 es = "El paso más estrecho por el que se puede andar, en metros, entre centros de celda; una hipótesis sin valor por defecto"
 
-["Minimum area of a berm stretch (m²)"]
-es = "Área mínima de un tramo de berma (m²)"
+["Minimum berm stretch area (m²)"]
+es = "Área mín. de tramo de berma (m²)"
 
 ["Smallest berm stretch that is listed, in square metres; a hypothesis without default value"]
 es = "El tramo de berma más pequeño que se lista, en metros cuadrados; una hipótesis sin valor por defecto"

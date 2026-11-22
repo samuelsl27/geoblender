@@ -39,7 +39,10 @@ terraplén (sección y borde) y la afección de «preferible no afectar» (las c
 **Interpretaciones** (la spec y el plan no las dicen; revisables, anotadas en la verificación de T13): la altura máxima de desmonte y terraplén se mide en **cada celda
 de la sección** (``|z − rasante|``), no solo en el eje (la sección tiene hasta ``pendiente transversal · semianchura`` más que el eje); en los modos «sobre un eje» y
 «eje 3D», que no tienen ruta, no hay altura máxima; la afección cuenta las celdas de las zonas **que cambian** (más de 10⁻⁹ m: la tolerancia numérica de la spec; T42, A-6),
-no las que la huella pisa sin moverlas, y una zona de peso exactamente 1 también cuenta (T42, S-2: la máscara de la zona, ``RoadJob.avoid_zone``, va aparte del peso).
+no las que la huella pisa sin moverlas, y una zona de peso exactamente 1 también cuenta (T42, S-2: la máscara de la zona, ``RoadJob.avoid_zone``, va aparte del peso). **Las cifras
+sin ruido** (T52, H3-2): el corte y el relleno se suman con ``math.fsum`` y lo que está por debajo de la exactitud de RF-017-23 (10⁻⁹ m por celda, y 10⁻⁹ m³ o m en la cifra: ``_TOL_M``)
+es **0,0 exacto**, no el 3,4·10⁻¹³ m³ ni el 1,4·10⁻¹⁴ m de una rasante que coincide con el terreno a la última cifra; las cuentas de celdas (``section_cut_cells``…) siguen siendo
+las del signo de cada diferencia. Es de **estas cifras** de la pista: cómo se presenta una cifra cualquiera (``core.provenance.figures``) es de la 008.
 
 Los pasos (:func:`engrave_steps`) ceden el hilo cada ≈ 0,05 s (``pace_progress``; RNF-017-06): las envolventes son por unidades, el resto va por bandas de filas. Cerrar el
 generador a mitad no deja nada: no escribe nada y no modifica sus entradas (principio 7). **Perezoso** (RNF-001-03): ni ``design.model`` ni nada del arranque lo importan.
@@ -103,6 +106,24 @@ _TOL_M = 1e-9
 """El ruido de la última cifra de una comparación de cotas (m): un movimiento que pasa de la altura máxima en menos de esto no la pasa."""
 _PHASE = "road_engrave"
 _BAND_ROWS = 64
+
+
+def _exact(value: float) -> float:
+    """``value`` (m, m² o m³) con **0,0 exacto** (positivo) si no pasa de la exactitud de RF-017-23 (:data:`_TOL_M`: 10⁻⁹ en valor absoluto) y, si pasa, tal cual. Lo que está por debajo es
+    el ruido de la última cifra de una suma de cotas que vale cero (3,4·10⁻¹³ m³ de relleno, 1,4·10⁻¹⁴ m de altura: T52, H3-2), no una cifra: dicho en las cifras de la pista, una persona
+    lo lee como un fallo. Solo se aplica **aquí, a lo que la 017 registra**: cómo se presenta una cifra en general (``core.provenance.figures``: «el valor va entero», RF-008-31) no se toca."""
+    return 0.0 if abs(value) <= _TOL_M else value
+
+
+def _volume(amounts: np.ndarray, area: float) -> float:
+    """El volumen (m³) de ``amounts`` (m, no negativas: la diferencia de cota de cada celda) por el área de una celda: la suma **exacta** (``math.fsum``) de las celdas que pasan de la exactitud
+    (**cada una**: 10⁻⁹ m, no la suma: mil celdas de 5·10⁻¹⁰ m no son 5·10⁻⁷ m³ de nada) y 0,0 exacto si el volumen no la pasa (:func:`_exact`)."""
+    return _exact(math.fsum(amounts[amounts > _TOL_M].tolist()) * area)
+
+
+def _height(amounts: np.ndarray) -> float:
+    """La mayor de ``amounts`` (m, no negativas; 0,0 sin ninguna), con 0,0 exacto si no pasa de la exactitud (:func:`_exact`)."""
+    return _exact(float(np.max(amounts, initial=0.0)))
 
 
 def _avoid_effect(zone: np.ndarray, weight: np.ndarray, moved: np.ndarray) -> tuple[int, float, float]:
@@ -229,8 +250,9 @@ class Engraved:
 
     @property
     def net_m3(self) -> float:
-        """El volumen neto (m³): corte menos relleno, de la sección y del borde juntos (puede ser negativo)."""
-        return self.cut_m3 - self.fill_m3
+        """El volumen neto (m³): corte menos relleno, de la sección y del borde juntos (puede ser negativo): la suma exacta (``math.fsum``) de los cuatro, con 0,0 exacto si no pasa de la
+        exactitud de RF-017-23 (:func:`_exact`: el corte y el relleno que se compensan a la última cifra no dejan −3,4·10⁻¹³ m³)."""
+        return _exact(math.fsum((self.section_cut_m3, self.edge_cut_m3, -self.section_fill_m3, -self.edge_fill_m3)))
 
     @property
     def held_cells(self) -> int:
@@ -481,8 +503,8 @@ def _units(job: RoadJob, section: Section, levels: np.ndarray, settings: _Settin
     cut_denied_cells, fill_denied_cells = over & ~can_cut, under & ~can_fill
     high_cells = (over | under) & ~cut_denied_cells & ~fill_denied_cells
     drop = ground - new
-    section_cut = float(np.sum(np.maximum(drop, 0.0))) * area
-    section_fill = float(np.sum(np.maximum(-drop, 0.0))) * area
+    section_cut = _volume(np.maximum(drop, 0.0), area)
+    section_fill = _volume(np.maximum(-drop, 0.0), area)
     yield None
     applied = np.array(z, dtype=np.float64, copy=True)
     applied[rows, cols] = new
@@ -539,18 +561,18 @@ def _units(job: RoadJob, section: Section, levels: np.ndarray, settings: _Settin
         yield None
     surface = np.where(changed, final, applied)
     moved = z[changed] - surface[changed]
-    edge_cut = float(np.sum(np.maximum(moved, 0.0))) * area
-    edge_fill = float(np.sum(np.maximum(-moved, 0.0))) * area
+    edge_cut = _volume(np.maximum(moved, 0.0), area)
+    edge_fill = _volume(np.maximum(-moved, 0.0), area)
     wall_max, wall_x, wall_y = 0.0, None, None
     if moved.size:
         size = np.abs(moved)
         where_rows, where_cols = np.nonzero(changed)
         top = int(np.argmax(size))
-        wall_max = float(size[top])
+        wall_max = _exact(float(size[top]))
         found_x, found_y = _places(grid, window, where_rows[top:top + 1], where_cols[top:top + 1])
         wall_x, wall_y = float(found_x[0]), float(found_y[0])
-    cut_height = max(float(np.max(np.maximum(drop, 0.0), initial=0.0)), float(np.max(np.maximum(moved, 0.0), initial=0.0)))
-    fill_height = max(float(np.max(np.maximum(-drop, 0.0), initial=0.0)), float(np.max(np.maximum(-moved, 0.0), initial=0.0)))
+    cut_height = max(_height(np.maximum(drop, 0.0)), _height(np.maximum(moved, 0.0)))
+    fill_height = max(_height(np.maximum(-drop, 0.0)), _height(np.maximum(-moved, 0.0)))
     yield None
     limit_cut = settings.cut_angle_deg + settings.tolerance_deg
     limit_fill = settings.fill_angle_deg + settings.tolerance_deg

@@ -985,6 +985,14 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(summary.net_m3, summary.cut_m3 - summary.fill_m3)
         self.assertAlmostEqual(summary.net_m3, found["des.road_net_m3"], delta=1e-9 * abs(summary.cut_m3))
 
+    def test_a2_b_the_net_of_the_summary_is_the_figure_that_is_registered_not_a_new_subtraction(self) -> None:
+        """RF-017-23, H3-2 (T52): el neto del resumen es **la cifra que se registra** (``des.road_net_m3``: la suma exacta de los cuatro volúmenes, con 0,0 exacto si no pasa de la exactitud), no
+        la resta ``corte − relleno`` de los totales, que con corte y relleno que se compensan a la última cifra daría −3,4·10⁻¹³ m³: con la cifra cambiada a mano el resumen dice la cambiada."""
+        figures = tuple(dataclasses.replace(figure, value=-0.0625) if figure.key == "des.road_net_m3" else figure for figure in self.outcome.figures)
+        summary = road_store.summary_of(dataclasses.replace(self.outcome, figures=figures), version="V01", profile=self.job.profile)
+        self.assertEqual(summary.net_m3, -0.0625)
+        self.assertNotEqual(summary.net_m3, summary.cut_m3 - summary.fill_m3)
+
     def test_a3_the_summary_gives_the_section_and_the_edge_apart_and_the_largest_deviation_of_the_axis(self) -> None:
         """RF-017-21, RF-017-23, RF-017-13 (T44, hallazgos S-1 y S-3): RF-017-21 y RF-017-23 piden el corte y el relleno **de la sección y del borde por separado** (y el neto): el resumen lleva los
         cuatro (``section_cut_m3``, ``section_fill_m3``, ``edge_cut_m3`` y ``edge_fill_m3``: las cifras que se registran, no una cuenta nueva) además de los totales, que son su suma; con el escarpe de

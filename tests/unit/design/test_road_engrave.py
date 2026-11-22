@@ -14,6 +14,7 @@ Blender, sobre una rejilla de 120 × 120 celdas de 1 m y con un alcance de 12,5 
 from __future__ import annotations
 
 import dataclasses
+import functools
 import hashlib
 import math
 import time
@@ -622,6 +623,28 @@ class NoticesTest(unittest.TestCase):
             road_engrave.carriageway_notice(tall, "Pista de prueba", blocker="x")
 
 
+NOISE_LINE = ((30.0, 60.0), (40.0, 60.0))
+"""El eje del caso del ruido (local): 10 m (los de las pruebas de «el ruido de la última cifra» son pequeños: cada caso cuesta unos 6 ms)."""
+NOISE_PROFILE = rd.profile_with(reach_m=3.5)
+"""El perfil de referencia con un alcance de 3,5 m: la ventana de trabajo del caso del ruido es de unas decenas de celdas."""
+
+
+@functools.cache
+def noise_case(scarp: bool) -> tuple[Case, Any]:
+    """Una pista de 10 m **cuya rasante es el terreno a la última cifra** (plano del 4 % y rasante del 4 %: coinciden a 1,4·10⁻¹⁴ m, no exactamente: es lo que dio 3,4·10⁻¹³ m³ de relleno
+    en el H3) y su grabado; con ``scarp``, con un talud al norte **justo sobre la envolvente de desmonte** del borde (la pendiente del ángulo de desmonte del perfil) y otro al sur **justo sobre
+    la de terraplén**, que el borde «mueve» 10⁻¹⁴ m (corte y relleno). El mismo caso para todas las pruebas que lo usan (el grabado cuesta unos ms y no se modifica)."""
+    up, down = (math.tan(math.radians(angle)) for angle in (NOISE_PROFILE.cut_angle_deg, NOISE_PROFILE.fill_angle_deg))
+
+    def terrain(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        if not scarp:
+            return plane(0.0)(x, y)  # type: ignore[no-any-return]
+        return 100.0 + 0.04 * x + np.where(y > 64.5, up * (y - 64.5), 0.0) - np.where(y < 54.5, down * (54.5 - y), 0.0)  # type: ignore[no-any-return]
+
+    case = build(terrain, line=NOISE_LINE, profile=NOISE_PROFILE, level_of=lambda s: 100.0 + 0.04 * (30.0 + s))
+    return case, case.engrave()
+
+
 class FiguresTest(unittest.TestCase):
     def test_the_figures_of_the_engraving_are_those_of_the_13_and_the_provenance_accepts_them(self) -> None:
         """RF-017-23: ``figure_values`` da las doce cifras del grabado con las claves de ``provenance.ROAD_FIGURES`` (el área grabada, el corte y el relleno de la
@@ -669,6 +692,72 @@ class FiguresTest(unittest.TestCase):
         quiet = build(plane(0.0), level_of=lambda s: 100.0 + 0.04 * (30.0 + s)).engrave()
         self.assertIsNone(quiet.wall_x)
         self.assertIsNone(quiet.figure_values()["des.road_wall_max_m"], "sin borde no hay pared: la cifra no se registra")
+
+    ZEROS = ("des.road_cut_m3", "des.road_fill_m3", "des.road_edge_cut_m3", "des.road_edge_fill_m3", "des.road_net_m3", "des.road_cut_height_max_m", "des.road_fill_height_max_m")
+    """Las cifras de volúmenes y de alturas del grabado que un ruido de coma flotante de una suma que vale cero deja distintas de cero (T52, H3-2)."""
+
+    def test_the_noise_of_a_sum_that_is_zero_is_an_exact_zero_in_the_figures(self) -> None:
+        """RF-017-23, H3-2 (T52): una pista cuya rasante es el terreno **a la última cifra** (el ruido de 1,4·10⁻¹⁴ m de la aritmética: así salió en el H3 con un plano del 4 % y la
+        rasante del 4 %) **no mueve nada**: el corte y el relleno de la sección y del borde, el neto y las alturas máximas de desmonte y de terraplén son **0,0 exacto** (con signo
+        positivo), no 3,1·10⁻¹³ m³ ni 4·10⁻¹³ m³ ni 1,4·10⁻¹⁴ m; y la pared del borde también: con un talud **sobre la envolvente de desmonte** del borde (a la última cifra encima de
+        ella) las celdas del borde «se mueven» 10⁻¹⁴ m y tampoco dan cifra. El ruido está en el cálculo (las celdas suben y bajan 10⁻¹⁴ m): lo que se presenta no lo lleva."""
+        for scarp in (False, True):
+            case, found = noise_case(scarp)
+            with self.subTest(talud_sobre_la_envolvente=scarp):
+                noise = np.abs(case.terrain[found.window] - found.surface)
+                self.assertTrue(0.0 < float(noise.max()) < 1e-13, "el ruido está en el cálculo: hay celdas que suben o bajan 10⁻¹⁴ m")
+                values = found.figure_values()
+                for key in (*self.ZEROS, "des.road_wall_max_m"):
+                    if values[key] is None:
+                        continue  # sin borde no hay pared: no se registra
+                    self.assertEqual(values[key], 0.0, key)
+                    self.assertEqual(math.copysign(1.0, values[key]), 1.0, f"{key}: ni −0,0")
+                self.assertEqual((found.cut_m3, found.fill_m3, found.net_m3), (0.0, 0.0, 0.0))
+        self.assertIsNone(noise_case(False)[1].wall_x, "sin talud no hay borde: la pared no se registra")
+        scarp_found = noise_case(True)[1]
+        self.assertTrue(scarp_found.changed.any() and scarp_found.wall_x is not None, "con el talud sobre la envolvente hay borde: su pared se registra, y vale 0,0")
+
+    def test_the_exactness_of_the_figures_is_a_millimicron_per_cell_and_what_is_over_it_is_kept(self) -> None:
+        """RF-017-23, CE-017-09, H3-2 (T52): lo que se da por cero es lo que está por debajo de la exactitud de RF-017-23, **10⁻⁹ m por celda** (en valor absoluto): una rasante a
+        5·10⁻¹⁰ m del terreno no mueve nada (los m³ de sus celdas, que juntos pasan de 10⁻⁹, tampoco: se mira la celda, no la suma); a 2·10⁻⁹ m, en cambio, sube o baja cada celda y la
+        cifra es la suma de lo que movió, a ≤ 10⁻⁹ relativo: la del cálculo a mano y la de la cubicación de la 011."""
+        case, _found = noise_case(False)
+        sign = np.where(np.arange(case.levels.size).reshape(case.levels.shape) % 2, 1.0, -1.0)
+        tiny = dataclasses.replace(case, levels=case.levels + 5e-10 * sign).engrave()
+        self.assertGreater(tiny.footprint_cells * GRID.cell_area * 5e-10, 1e-9, "la suma de las celdas pasaría de 10⁻⁹ m³ si no se mirase cada una")
+        for key in self.ZEROS:
+            self.assertEqual(tiny.figure_values()[key], 0.0, key)
+        found = dataclasses.replace(case, levels=case.levels + 2e-9).engrave()  # la rasante, 2·10⁻⁹ m más alta: la sección se rellena esa altura
+        by_hand = float(np.abs(case.terrain[found.window] - found.surface)[found.footprint].sum()) * GRID.cell_area
+        np.testing.assert_allclose(found.section_fill_m3, by_hand, rtol=TOL)
+        self.assertGreater(found.section_fill_m3, 1e-9)
+        self.assertEqual(found.section_cut_m3, 0.0)
+        self.assertAlmostEqual(found.fill_height_max_m, 2e-9, delta=1e-12)
+        np.testing.assert_allclose(found.net_m3, -by_hand, rtol=TOL)
+
+    def test_the_volume_and_the_height_add_exactly_what_passes_the_exactness_cell_by_cell(self) -> None:
+        """RF-017-23, H3-2 (T52): ``_volume`` suma con ``math.fsum`` (1 016 + 1 + 1 da 10¹⁶ + 2, no 10¹⁶) **solo las celdas que pasan de la exactitud** (10⁻⁹ m: la de 5·10⁻¹⁰ m no suma) por
+        el área de la celda, y da 0,0 exacto si el volumen no la pasa (2·10⁻⁹ m en una celda de 0,25 m² son 5·10⁻¹⁰ m³, pero en una de 4 m² son 8·10⁻⁹ m³: se queda); ``_height`` da la mayor
+        o 0,0; el límite, 10⁻⁹ en valor absoluto, es **cero** (no «menor que»), y el de signo contrario también (el neto)."""
+        self.assertEqual(road_engrave._volume(np.array([1e16, 1.0, 1.0, 5e-10]), 1.0), 1e16 + 2.0)
+        self.assertEqual(road_engrave._volume(np.array([5e-10] * 40), 4.0), 0.0)
+        self.assertEqual(road_engrave._volume(np.array([2e-9]), 0.25), 0.0)
+        self.assertEqual(road_engrave._volume(np.array([2e-9]), 4.0), 8e-9)
+        self.assertEqual(road_engrave._volume(np.zeros(0), 1.0), 0.0)
+        self.assertEqual((road_engrave._height(np.array([0.0, 1e-9])), road_engrave._height(np.array([2e-9, 1e-14])), road_engrave._height(np.zeros(0))), (0.0, 2e-9, 0.0))
+        self.assertEqual((road_engrave._exact(1e-9), road_engrave._exact(-1e-9), road_engrave._exact(-2e-9), road_engrave._exact(3.5)), (0.0, 0.0, -2e-9, 3.5))
+        self.assertEqual(math.copysign(1.0, road_engrave._exact(-1e-12)), 1.0, "0,0 positivo, no −0,0")
+
+    def test_the_net_is_the_exact_sum_of_the_four_volumes_and_a_net_below_the_exactness_is_zero(self) -> None:
+        """RF-017-23, H3-2 (T52): el neto suma con ``math.fsum`` el corte y el relleno de la sección y del borde (no ``(a + b) − (c + d)``, que pierde la unidad de 1 + 10¹⁶ − 10¹⁶) y,
+        si queda por debajo de la exactitud (el corte y el relleno que se compensan a la última cifra), es 0,0 exacto; con cifras reales es el neto de siempre."""
+        found = noise_case(False)[1]
+        big = dataclasses.replace(found, section_cut_m3=1e16, edge_cut_m3=1.0, section_fill_m3=1e16, edge_fill_m3=0.0)
+        self.assertEqual(big.net_m3, 1.0)
+        level = dataclasses.replace(found, section_cut_m3=100.0, edge_cut_m3=20.0, section_fill_m3=120.0 + 3e-14, edge_fill_m3=0.0)
+        self.assertEqual(level.net_m3, 0.0, "−3·10⁻¹⁴ m³ de ruido")
+        self.assertEqual(dataclasses.replace(found, section_cut_m3=100.0, edge_cut_m3=20.0, section_fill_m3=119.5, edge_fill_m3=0.0).net_m3, 0.5)
+        self.assertEqual(dataclasses.replace(found, section_cut_m3=0.0, edge_cut_m3=0.0, section_fill_m3=7.25, edge_fill_m3=0.5).net_m3, -7.75)
 
 
 class StepsTest(unittest.TestCase):

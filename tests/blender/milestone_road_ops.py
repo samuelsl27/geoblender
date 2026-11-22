@@ -321,8 +321,8 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
 
         trace = draw(cls, bpy.context, **{**DEFAULTS, "start": self.smooth_surface}).texts()
         for heading in ("Nombre", "Modo", "Geometría de la pista", "Capa", "El origen es", "Punto de origen", "Termina en", "Punto de destino", "Perfil de pista", "Superficie de partida",
-                        "Superficie de apoyo", "Cota de inicio (m)", "Cota de fin (m)", "Malla de la ruta (m)", "Paso de cota (m)", "Altura máxima de desmonte y terraplén (m)",
-                        "Peso del movimiento de tierras (1/m)", "Penalización de giro (m)", "Holgura del pasillo (m)", "Tolerancia de simplificación (m)",
+                        "Superficie de apoyo", "Cota de inicio (m)", "Cota de fin (m)", "Malla de la ruta (m)", "Paso de cota (m)", "Alt. máx. desmonte/terraplén (m)",
+                        "Peso del mov. de tierras (1/m)", "Penalización de giro (m)", "Holgura del pasillo (m)", "Tolerancia de simplificación (m)",
                         "Tolerancia de llegada de la ruta (m)", "Presupuesto de estados", "Vista previa"):
             self.assertIn(heading, trace)
         self.assertNotIn("Línea de la capa", trace)

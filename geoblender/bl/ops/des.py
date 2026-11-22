@@ -5429,9 +5429,9 @@ class GEOBLENDER_OT_des_entity_discard(_EntitySteps, DesignCommandAware, Provena
             for line in plan.lines(i18n.language()):
                 box.label(text=line, icon="DOT", translate=False)
             layout.label(text=tr("They are left as «support removed»."), translate=False)
-            layout.label(text=tr("«Recompute the stale results» does not recompute them until you remake them on "
-                                 "another surface, discard them or give them as good with a reason."),
-                         translate=False)
+            labels.draw_wrapped(layout, tr("«Recompute the stale results» does not recompute them until you remake them on "
+                                           "another surface, discard them or give them as good with a reason."),
+                                labels.dialog_width(DIALOG_WIDTH))  # más larga que el diálogo: partida en líneas que caben, no cortada con «…» (T52, H3-7)
         else:
             layout.label(text=tr("Nothing rests on the entity and nothing starts from it."), translate=False)
         layout.prop(self, "reason", text=tr("Reason"), translate=False)
@@ -8696,8 +8696,11 @@ class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _Chai
         if mode == "TRACE":
             changes.update(_road_points(self))
             changes.update(_route_changes(self))
-        else:
-            changes["feature"] = self.feature.strip() or None
+        else:  # «sobre un eje» y «eje 3D»: la línea de la capa; sin ella lo dice el diálogo, no el núcleo con la clave interna (T52, H3-5)
+            feature = self.feature.strip()
+            if not feature:
+                raise ComputeFormError(tr("Write the name or the number (fid) of the line of the layer that is the axis of the road"))
+            changes["feature"] = feature
         if mode != "AXIS_3D":
             changes["start_level_m"] = typed_number(self.start_level, tr("Start level (m)"))
             changes["end_level_m"] = typed_number(self.end_level, tr("End level (m)"))
@@ -8876,7 +8879,7 @@ def _access_rows() -> tuple[tuple[str, str, str], ...]:
     """Los tres umbrales de la accesibilidad (RF-017-24, RF-017-25, D-17): la propiedad del diálogo, el valor de ``AccessRequest`` (y de ``des.access.{e}.*``) y su etiqueta en el idioma de Geoblender.
     Los tres son HIPÓTESIS sin valor por defecto: el diálogo dice el tipo de cada uno."""
     return (("walk_slope", "walk_slope_pct", tr("Maximum walkable gradient (%)")), ("walk_width", "walk_width_m", tr("Minimum walkable width (m)")),
-            ("min_berm_area", "min_berm_area_m2", tr("Minimum area of a berm stretch (m²)")))
+            ("min_berm_area", "min_berm_area_m2", tr("Minimum berm stretch area (m²)")))
 
 
 def _access_text(param: str) -> str:
@@ -8913,7 +8916,7 @@ class GEOBLENDER_OT_des_road_access(_CreatesInSteps, _ChainsEntityLayer, _Calcul
         name="Minimum walkable width (m)",
         description="Narrowest passage that can be walked, in metres, between cell centres; a hypothesis without default value", options=_FIELD)
     min_berm_area: StringProperty(  # type: ignore[valid-type]
-        name="Minimum area of a berm stretch (m²)",
+        name="Minimum berm stretch area (m²)",
         description="Smallest berm stretch that is listed, in square metres; a hypothesis without default value", options=_FIELD)
     # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez. Una accesibilidad no retira
     # nada, no mueve ninguna celda ni deja una pared: no pide más confirmación que Crear.

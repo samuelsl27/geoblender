@@ -2122,6 +2122,7 @@ def summary_of(outcome: RoadOutcome, *, version: str, profile: road_profiles.Roa
     top = int(np.argmax(np.abs(np.diff(levels)) / np.diff(axis.stations)))
     section_cut, section_fill, edge_cut, edge_fill = (found[key] for key in ("des.road_cut_m3", "des.road_fill_m3", "des.road_edge_cut_m3", "des.road_edge_fill_m3"))
     cut, fill = section_cut + edge_cut, section_fill + edge_fill
+    net = found["des.road_net_m3"]  # el que se registra (suma exacta, 0,0 si no pasa de la exactitud: T52, H3-2), no ``cut - fill``
     route = outcome.route
     kept = tuple(obsolete)
     notes: list[Notice] = []
@@ -2131,7 +2132,7 @@ def summary_of(outcome: RoadOutcome, *, version: str, profile: road_profiles.Roa
     return RoadSummary(
         outcome.name, outcome.code, version, outcome.mode.value, profile.code, outcome.figures, axis.length_m, float(levels[0]), float(levels[-1]), found["des.road_gradient_mean_pct"],
         found["des.road_gradient_max_pct"], found["des.road_gradient_max_station_m"], float(axis.points[top, 0]), float(axis.points[top, 1]), axis.min_radius_m, axis.curve_count, cut, fill,
-        cut - fill, section_cut, section_fill, edge_cut, edge_fill, axis.deviation_m, None if route is None else route.margin_m, bool(outcome.mean_exceeded), float(profile.max_mean_gradient_pct), engraved.needs_confirmation,
+        net, section_cut, section_fill, edge_cut, edge_fill, axis.deviation_m, None if route is None else route.margin_m, bool(outcome.mean_exceeded), float(profile.max_mean_gradient_pct), engraved.needs_confirmation,
         sum(group.area_m2 for group in engraved.off_level), notices, kept)
 
 

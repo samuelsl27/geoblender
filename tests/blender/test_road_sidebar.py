@@ -26,8 +26,10 @@ import unittest
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 
+import bpy
+
 from tests.support import blender_ext
-from tests.support.fake_layout import FakeLayout
+from tests.support.fake_layout import FakeLayout, draw, operator_self
 
 
 def _module(name: str) -> ModuleType:
@@ -514,23 +516,187 @@ class SidebarTextsTest(unittest.TestCase):
         self.assertEqual(len(self.panels.access_report_lines()), 30, "lo que no se comunica sigue entero en el informe de la orden")
         short = (self.panels.AccessRow("Plataforma «Taller» (PLT-002): no comunicada", True, ("1", "2", "3")),)
         self.panels._ACCESS.sections = [self.panels.AccessSection("Plataformas", short, 0)]
-        self.assertEqual(self.panels._access_list_rows(), 3, "el título, su fila y el margen de su caja")
+        self.assertEqual(self.panels._access_list_rows(), 4, "el título, su fila, la de su «Ir a» debajo (T52) y el margen de su caja")
         self.assertEqual(len(self.panels.summary_lines(calculation, dialog=True)), 6, "con una lista corta caben los mismos avisos")
-        self.panels._ACCESS.sections = [self.panels.AccessSection("Plataformas", short * 6, 2)] * 2
-        self.assertEqual(self.panels._access_list_rows(), 2 * (2 + 6 + 1))
+        self.panels._ACCESS.sections = [self.panels.AccessSection("Plataformas", short * 3, 2)] * 2
+        self.assertEqual(self.panels._access_list_rows(), 2 * (2 + 3 * 2 + 1), "cada fila, la suya y la de su «Ir a» debajo (T52): las mismas 18 filas que antes con seis por lista")
         listed = self.panels.summary_lines(calculation, dialog=True)
         self.assertEqual(len(listed), 5, "la cabecera, dos avisos y la línea de los demás: el resumen deja a las listas lo que ocupan")
         self.assertEqual(listed[-1], ("… y 5 líneas más del resumen (el informe de la orden las lleva todas)", False), "el aviso que no cabe, los otros 4 que resumía la línea de «como éste» y nada más")
         self.assertLessEqual(self.rows(listed), self.preview.SUMMARY_ROWS - self.panels._access_list_rows())
         long = self.panels.AccessRow("Tramo de berma 3 de «des_brm_cantera»: cota 100,00 m, 400 m² · no comunicado", True, ("1", "2", "3"))
         self.panels._ACCESS.sections = [self.panels.AccessSection("Zonas", (), 0), self.panels.AccessSection("Bermas", (long,), 0)]
-        self.assertEqual(self.panels._access_list_rows(), 3 + 4, "una lista vacía dice «Nada que listar»; una fila a la que su «Ir a» deja menos ancho se parte en dos")
+        self.assertEqual(self.panels._access_list_rows(), 3 + 4, "una lista vacía dice «Nada que listar»; la fila con su «Ir a» son dos: el texto, que ya no comparte ancho con el botón, y el botón debajo")
+        quiet = self.panels.AccessRow("Zona «zona_de_la_balsa» que requiere acceso: comunicada", False, None)
+        self.panels._ACCESS.sections = [self.panels.AccessSection("Zonas", (quiet,), 0)]
+        self.assertEqual(self.panels._access_list_rows(), 3, "una fila sin lugar no lleva «Ir a»: el título, su fila y el margen de su caja")
         width, text = self.labels.dialog_width(self.panels.SUMMARY_WIDTH_PX), "m"
         while self.labels.label_px(f"{text} m", icon=False) <= width:
             text += " m"
         self.assertEqual((self.panels._dialog_rows(text, False), self.panels._dialog_rows(text, True)), (1, 2), "la línea que cabe justo sin el icono de la alerta, con él, pasa a dos filas")
         self.assertEqual(self.panels._lines_more_text(1), "… y 1 línea más del resumen (el informe de la orden la lleva)")
         self.assertEqual(self.panels._lines_more_text(5), "… y 5 líneas más del resumen (el informe de la orden las lleva todas)")
+
+    # --- f: lo que el diálogo dice antes que el núcleo y los textos que caben (T52; hallazgos H3-5 y H3-7) -------------
+
+    FEATURE_ASKED = {"es": "Escriba el nombre o el número (fid) de la línea de la capa que es el eje de la pista",
+                     "en": "Write the name or the number (fid) of the line of the layer that is the axis of the road"}
+
+    def test_f_an_axis_mode_without_its_line_asks_for_it_in_the_dialog_and_not_with_the_key_of_the_core(self) -> None:
+        """RF-017-02, RF-017-04, H3-5: «Pista…» en «Sobre un eje» y en «Eje 3D» con la «Línea de la capa» vacía (o con espacios) lo dice **el propio diálogo**, antes de llegar al error del
+        núcleo («des.road.rdw_002.feature» no tiene valor…, con la clave interna), **en su idioma y con el nombre del campo** y sin la clave; con la línea, arma la petición como antes; «Proponer el
+        trazado…» no tiene este campo (su origen y su destino son puntos de la capa, que siguen diciéndose por el cálculo)."""
+        des_ops = _module("bl.ops.des")
+        road = des_ops.GEOBLENDER_OT_des_create_road
+        shown = dict(name="Pista A", layer="gis_fea_ejes", profile="pista_principal", start="gis_dtm_a", support="none", name_field="", start_level="", end_level="")
+        for language, asked in self.FEATURE_ASKED.items():
+            self.i18n.set_language(language)
+            for mode in ("ON_AXIS", "AXIS_3D"):
+                for empty in ("", "   "):
+                    with self.subTest(language=language, mode=mode, feature=empty):
+                        with self.assertRaises(des_ops.ComputeFormError) as caught:
+                            road._request(operator_self(road, mode=mode, feature=empty, **shown))
+                        self.assertEqual(str(caught.exception), asked)
+                        self.assertNotIn("des.road", str(caught.exception), "sin la clave interna")
+        self.i18n.set_language("es")
+        made = road._request(operator_self(road, mode="ON_AXIS", feature=" Eje A15 ", **shown))
+        self.assertEqual((made.mode.value, made.feature), ("on_axis", "Eje A15"))
+        self.assertEqual(road._request(operator_self(road, mode="AXIS_3D", feature="Línea 1", **shown)).feature, "Línea 1")
+        self.assertEqual(self.i18n.untranslated(list(self.FEATURE_ASKED.values())[1:]), [], "el texto está en el catálogo, en los dos idiomas")
+
+    LABEL_COLUMN_PX = 185.0
+    """Lo más que mide, con la letra del diálogo (11 pt, escala 1,0), una etiqueta de sus propiedades para verse entera: la de «Tolerancia de llegada de la ruta (m)», que se vio entera en el H3;
+    las que se cortaron medían 195, 211 y 228 px (``tasks.md``, T52)."""
+    SHORTER_LABELS = (("max_cut_fill", "Alt. máx. desmonte/terraplén (m)", "Maximum cut and fill height (m)"), ("lambda_weight", "Peso del mov. de tierras (1/m)", "Weight of the earthworks (1/m)"),
+                      ("min_berm_area", "Área mín. de tramo de berma (m²)", "Minimum berm stretch area (m²)"))
+    """Las tres etiquetas que se cortaron en el H3 (la propiedad, su texto en español y su ``msgid``): más cortas, con el mismo sentido (≤ 34 caracteres)."""
+
+    def dialog_properties(self) -> list:
+        """Las propiedades con nombre de los diálogos de la pista, de «Proponer el trazado…» y de la accesibilidad: (la clase, la propiedad, su nombre ya registrado, sus palabras clave)."""
+        des_ops = _module("bl.ops.des")
+        found = []
+        for cls in (des_ops.GEOBLENDER_OT_des_create_road, des_ops.GEOBLENDER_OT_des_propose_road, des_ops.GEOBLENDER_OT_des_road_access):
+            for prop, deferred in cls.__annotations__.items():
+                if "name" in deferred.keywords:
+                    found.append((cls, prop, deferred.keywords["name"], deferred.keywords))
+        return found
+
+    def test_g_the_labels_of_the_road_and_accessibility_dialogs_fit_their_column(self) -> None:
+        """RF-017-29, RF-017-24, RF-015-28, H3-7: las etiquetas de los campos de la pista, de «Proponer el trazado…» y de la accesibilidad **caben en su columna a 1920 px** (medidas con la letra
+        del diálogo, no más de ``LABEL_COLUMN_PX``): las tres que se cortaron («Altura máxima d…e y terraplén (m)», «Peso del movimiento de tierras (1…» y «Área mínima de un tramo de berm…») son
+        más cortas, de **≤ 34 caracteres** en los dos idiomas y con el mismo sentido, y **su descripción, la larga, no cambia**; el catálogo las trae en español y en inglés."""
+        found = self.dialog_properties()
+        self.assertGreater(len(found), 40)
+        for cls, prop, name, _keywords in found:
+            with self.subTest(clase=cls.__name__, propiedad=prop):
+                self.assertLessEqual(self.labels.text_px(name), self.LABEL_COLUMN_PX, f"«{name}» se cortaría con «…»")
+        self.i18n.set_language("es")
+        des_ops = _module("bl.ops.des")
+        for rows, cls in ((des_ops._route_rows(), des_ops.GEOBLENDER_OT_des_create_road), (des_ops._access_rows(), des_ops.GEOBLENDER_OT_des_road_access)):
+            for prop, _param, label in rows:  # el nombre del campo en «(campo «…»)» de los errores es el de su propiedad
+                with self.subTest(fila=prop):
+                    self.assertEqual(label, cls.__annotations__[prop].keywords["name"])
+        described = {"max_cut_fill": "Most the level profile of the route may be above or below the ground, in metres; a hypothesis without default value",
+                     "lambda_weight": "How much the cost of the route grows with the height of cut and fill, in 1/m; a hypothesis without default value",
+                     "min_berm_area": "Smallest berm stretch that is listed, in square metres; a hypothesis without default value"}
+        for prop, spanish, english in self.SHORTER_LABELS:
+            owners = [(cls, keywords) for cls, found_prop, _name, keywords in found if found_prop == prop]
+            self.assertTrue(owners, prop)
+            for cls, keywords in owners:
+                with self.subTest(clase=cls.__name__, propiedad=prop):
+                    self.assertEqual(keywords["name"], spanish)
+                    self.assertEqual(self.i18n.translate("es", english), spanish)
+                    self.assertEqual(self.i18n.untranslated([english]), [])
+                    self.assertLessEqual((len(spanish), len(english)), (34, 34))
+                    self.assertLessEqual((self.labels.text_px(spanish), self.labels.text_px(english)), (self.LABEL_COLUMN_PX,) * 2)
+                    self.assertEqual(keywords["description"], self.i18n.translate("es", described[prop]), "la descripción larga no cambia")
+
+    def discard_texts(self, language: str) -> list:
+        """Lo que dibuja el diálogo de «Descartar…» de una plataforma de la que algo depende (``_plan`` de mentira: sin proyecto), en el idioma dado."""
+        self.i18n.set_language(language)
+        plan = SimpleNamespace(name="Relleno del fondo", code="PLT-001", dependents=(object(),), lines=lambda _language: ["Pista a P1 (Pista): superficie de partida"])
+        cls = _module("bl.ops.des").GEOBLENDER_OT_des_entity_discard
+        return draw(cls, bpy.context, entity="PLT-001", reason="", _plan=plan).texts()
+
+    def test_h_the_long_line_of_the_discard_dialog_is_split_in_two_without_changing_its_text(self) -> None:
+        """RF-015-17, RF-015-28, H3-7: la línea «Recalcular lo obsoleto no los recalcula hasta que los rehaga…, los descarte o los dé por buenos con un motivo» del diálogo de «Descartar…» (de la 015)
+        medía más que el diálogo y Blender la cortaba con «…»: **se parte en líneas que caben**, y **su texto no cambia** (unidas, son la misma frase), en los dos idiomas; el resto del diálogo, igual."""
+        width = self.labels.dialog_width(_module("bl.ops.des").DIALOG_WIDTH)
+        for language, sentence in (("es", "«Recalcular lo obsoleto» no los recalcula hasta que los rehaga sobre otra superficie, los descarte o los dé por buenos con un motivo."),
+                                   ("en", "«Recompute the stale results» does not recompute them until you remake them on another surface, discard them or give them as good with a reason.")):
+            with self.subTest(language=language):
+                shown = self.discard_texts(language)
+                start = next(index for index, text in enumerate(shown) if text.startswith(sentence.split(" ")[0]))
+                lines: list[str] = []
+                while " ".join(lines) != sentence:
+                    lines.append(shown[start + len(lines)])
+                    self.assertTrue(sentence.startswith(" ".join(lines)), "las líneas son la misma frase, en su orden")
+                self.assertGreater(self.labels.label_px(sentence), width, "la frase entera no cabe en una línea: se corta")
+                self.assertGreaterEqual(len(lines), 2)
+                for line in lines:
+                    self.assertLessEqual(self.labels.label_px(line), width, f"«{line}» cabe en el diálogo")
+        spanish = self.discard_texts("es")
+        self.assertEqual(spanish[0], "«Relleno del fondo» (PLT-001) se descartará: queda en el proyecto como registro y no se borra nada")
+        self.assertEqual(spanish[1:3], ["Esto se apoya en la entidad o parte de ella:", "Pista a P1 (Pista): superficie de partida"])
+        self.assertIn("Quedan como «apoyo retirado».", spanish)
+        self.assertEqual(spanish[-1], "Motivo")
+
+    @staticmethod
+    def in_row(layout: FakeLayout, button: object) -> list:
+        """Lo dibujado en la fila (o la columna) del ``button`` o en cualquiera de sus hijos: lo que Blender reparte con él en el mismo ancho."""
+        found = []
+        for item in layout.items:
+            sheet = item.layout
+            while sheet is not None and sheet is not button.layout:  # type: ignore[attr-defined]
+                sheet = sheet.parent
+            if sheet is not None:
+                found.append(item)
+        return found
+
+    def drawn_access(self, rows: tuple) -> FakeLayout:
+        """Las listas de la accesibilidad de un diálogo de 520 px (``draw_access_lists``) con ``rows`` en la lista de plataformas."""
+        self.i18n.set_language("es")
+        sections = self.panels._ACCESS.sections
+        self.addCleanup(setattr, self.panels._ACCESS, "sections", sections)
+        self.panels._ACCESS.sections = [self.panels.AccessSection("Plataformas", rows, 0)]
+        layout = FakeLayout()
+        self.panels.draw_access_lists(layout, 520)
+        return layout
+
+    def test_i_an_accessibility_row_has_its_text_in_its_own_line_and_the_go_to_button_below(self) -> None:
+        """RF-017-25, H3-7: en el diálogo de «Calcular» la accesibilidad, cada fila de las listas (la plataforma «Relleno del fondo» comunicada: «…, se llega a la cota 125,00 m») dibuja **su
+        texto en su fila, partido al ancho del diálogo**, y **el botón «Ir a» debajo, solo en la suya** (a la izquierda): antes iban en la misma fila y Blender cortaba el texto con «…»; la que
+        no tiene lugar no dibuja botón."""
+        text = "Plataforma «Relleno del fondo» (PLT-001): comunicada, se llega a la cota 125,00 m"
+        width = self.labels.dialog_width(520)
+        place = self.panels.AccessRow(text, False, ("700000", "4400000", "60"))
+        layout = self.drawn_access((place, self.panels.AccessRow("Plataforma «Taller» (PLT-002): no comunicada", True, None)))
+        (button,) = layout.of_kind("operator")
+        self.assertEqual((button.target, button.text), (self.constraint_panels.GO_TO_PLACE, "Ir a"))
+        self.assertEqual((button.properties.x, button.properties.y, button.properties.radius), ("700000", "4400000", "60"))
+        self.assertEqual(self.in_row(layout, button), [button], "el botón, solo en su fila: sin texto al lado (ni en una columna de su fila) que Blender corte")
+        self.assertIs(button.layout.parent, layout.items[0].layout, "la fila del botón es hija directa de la caja de la lista (la del título), no de una fila que comparta con el texto")
+        self.assertEqual(button.layout.alignment, "LEFT", "a la izquierda, con su ancho natural")
+        before = [item.text for item in layout.items[:layout.items.index(button)] if item.kind == "label"]
+        self.assertEqual(before[0], "Plataformas")
+        self.assertEqual(" ".join(before[1:]), text, "el texto, entero, justo antes de su botón")
+        self.assertEqual(before[1:], self.labels.wrapped(text, width), "partido al ancho entero del diálogo (ya no comparte fila con el botón, que no le quita ancho)")
+        for line in before[1:]:
+            self.assertLessEqual(self.labels.label_px(line), width, "cada línea cabe en el diálogo")
+        after = [item.text for item in layout.items[layout.items.index(button) + 1:] if item.kind == "label"]
+        self.assertEqual(" ".join(after), "Plataforma «Taller» (PLT-002): no comunicada", "la fila sin lugar, sin botón")
+        wide = self.panels.AccessRow("Zona «zona_del_camino» que requiere acceso: no comunicada; lo alcanzable más próximo está a 18,50 m (diferencia de cota 30,00 m) " * 2, True, ("1", "2", "3"))
+        self.assertGreater(len(self.drawn_access((wide,)).of_kind("label")), 3, "una fila larga se parte en varias líneas, todas de su fila")
+
+    def test_i_b_the_go_to_row_of_the_side_bar_has_its_text_and_its_button_apart(self) -> None:
+        """RF-017-25, H3-7: en la barra N la fila de una lista de la accesibilidad con su «Ir a» dibuja el botón **solo en su fila, debajo del texto** (como en el diálogo), no al lado: el ancho
+        que le quedaba al texto era el que Blender repartía con el botón y lo cortaba con «…»."""
+        layout = self.drawn([self.panels.CardLine(self.panels.ROW_PLACE, "Plataforma «Relleno del fondo» (PLT-001): comunicada, se llega a la cota 125,00 m", uid="1;2;3")])
+        (button,) = layout.of_kind("operator")
+        self.assertEqual(self.in_row(layout, button), [button])
+        self.assertIs(button.layout.parent, layout, "la fila del botón es hija directa de la columna de la barra, no de una fila que comparta con el texto")
+        self.assertEqual(button.layout.alignment, "LEFT")
+        self.assertLess(max(index for index, item in enumerate(layout.items) if item.kind == "label"), layout.items.index(button), "el texto, antes de su botón")
 
     # --- z: el registro --------------------------------------------------------------------------------
 
