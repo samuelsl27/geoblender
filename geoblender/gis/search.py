@@ -40,7 +40,7 @@ from typing import Any
 import numpy as np
 
 from ..core.project.model import Progress
-from .polygons import _box_pairs, _boxes, _inside, _ray_counts, segment_distance
+from .polygons import _boxes, _inside, box_pairs, ray_counts, segment_distance
 from .vector import FeatureLayer
 
 __all__ = [
@@ -312,7 +312,7 @@ def _chunk(sector: _Sector, layer: FeatureLayer, indices: range, distance: float
     hit = _inside(vertices, sector.edges[:, 0], sector.edges[:, 1])
     inside[vertex_owner[hit]] = True
     if layer.kind == "polygon":
-        counts = _ray_counts(sector.firsts, segments[:, 0], segments[:, 1], segment_owner, count)
+        counts = ray_counts(sector.firsts, segments[:, 0], segments[:, 1], segment_owner, count)
         inside |= np.any(counts % 2 == 1, axis=0)
     result[inside] = 0.0
 
@@ -321,7 +321,7 @@ def _chunk(sector: _Sector, layer: FeatureLayer, indices: range, distance: float
     if pending.any():
         which = np.flatnonzero(pending)
         mine = segments[which]
-        a, b = _box_pairs(_boxes(mine[:, 0], mine[:, 1], distance), sector.boxes)
+        a, b = box_pairs(_boxes(mine[:, 0], mine[:, 1], distance), sector.boxes)
         if a.size:
             values = segment_distance(mine[a], sector.edges[b])
             np.minimum.at(result, segment_owner[which[a]], values)

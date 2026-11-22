@@ -330,8 +330,8 @@ class MainNamesTest(unittest.TestCase):
             "design.envelopes": (), "design.benching": (),
             "design.road_axis": ("axis_of",), "design.road_gradient": ("check_axis_3d",),
             "design.report": ("max_tangents",),
-            "gis.polygons": ("clip", "overlay", "problems", "_box_pairs", "_crossings", "_splice", "_chain",
-                             "_ray_counts", "_following", "_expand"),
+            "gis.polygons": ("clip", "overlay", "problems", "box_pairs", "crossings", "splice", "chain",
+                             "ray_counts", "following", "expand"),
             "gis.cdt": ("PureTriangulator", "STEP_POINTS"),
             "gis.tin": ("tin_to_raster",),
             "gis.contours": ("contours_from_raster",),
@@ -342,14 +342,14 @@ class MainNamesTest(unittest.TestCase):
                 self.assertTrue(hasattr(loaded, name), f"{module}.{name}")
 
     def test_the_pit_type_is_registered_but_not_the_new_modules(self) -> None:
-        """Estado tras la T05: el tipo ``pit`` está registrado (T02), la roseta, la definición de rampa y los datos existen (T04 y T05) y los demás módulos
+        """Estado tras la T06 (``gis/offset.py`` ya existe): el tipo ``pit`` está registrado (T02), la roseta, la definición de rampa y los datos existen (T04 y T05) y los demás módulos
         nuevos del plan, aún no."""
         entities = import_geoblender("design.entities")
         self.assertIn("pit", {str(getattr(item, "value", item)) for item in entities._TYPES})
         for module in ("pit_offset", "pit_bench", "pit_ramp", "pit_surface",
                        "pit_sky", "pit_report", "pit_check013", "pit_store", "pit_layer"):
             self.assertFalse((EXTENSION_DIR / "design" / f"{module}.py").exists(), module)
-        self.assertFalse((EXTENSION_DIR / "gis" / "offset.py").exists())
+        self.assertTrue((EXTENSION_DIR / "gis" / "offset.py").exists())  # T06
 
     def test_blender_names(self) -> None:
         """``bl/ops/des.py``, ``bl/scene/des_views.LOADERS``, ``bl/props/core.OBJECT_KINDS`` y ``bl/scene/views.BRANCHES``

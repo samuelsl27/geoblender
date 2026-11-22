@@ -61,14 +61,21 @@ __all__ = [
     "PolygonProblem",
     "Region",
     "Rings",
+    "box_pairs",
+    "chain",
     "clip",
+    "crossings",
     "drain",
+    "expand",
+    "following",
     "local_edges",
     "overlaps",
     "overlay",
     "problem_steps",
     "problems",
+    "ray_counts",
     "segment_distance",
+    "splice",
 ]
 
 Rings = Sequence[np.ndarray]
@@ -199,7 +206,7 @@ def _overlap_steps(valid: list[tuple[int, list[np.ndarray]]]
     boxes = np.array([[*ring.min(axis=0), *ring.max(axis=0)]
                       for ring in (rings[0] for _, rings in valid)])
     padded = boxes + np.array([-TOLERANCE_M, -TOLERANCE_M, TOLERANCE_M, TOLERANCE_M])
-    first, second = _box_pairs(padded, boxes)
+    first, second = box_pairs(padded, boxes)
     keep = first < second
     found = []
     for i, j in sorted(zip(first[keep].tolist(), second[keep].tolist(), strict=True)):
@@ -239,12 +246,12 @@ def _geometry_problem(rings: list[np.ndarray]) -> str | None:
 def _self_contacts(points: np.ndarray, ring: np.ndarray) -> tuple[bool, bool]:
     """(dos aristas no contiguas se cruzan; dos no contiguas pasan a ≤ :data:`TOLERANCE_M` o un
     lado vuelve sobre el contiguo)."""
-    following = _following(ring)
-    a, b = points, points[following]
-    i, j = _box_pairs(_boxes(a, b, TOLERANCE_M), _boxes(a, b))
+    nxt = following(ring)
+    a, b = points, points[nxt]
+    i, j = box_pairs(_boxes(a, b, TOLERANCE_M), _boxes(a, b))
     keep = i < j
     i, j = i[keep], j[keep]
-    adjacent = (following[i] == j) | (following[j] == i)
+    adjacent = (nxt[i] == j) | (nxt[j] == i)
     ni, nj = i[~adjacent], j[~adjacent]
     r, s = b[ni] - a[ni], b[nj] - a[nj]
     side_p, side_q = _cross(r, a[nj] - a[ni]), _cross(r, b[nj] - a[ni])
@@ -255,7 +262,7 @@ def _self_contacts(points: np.ndarray, ring: np.ndarray) -> tuple[bool, bool]:
         _segment_distance(a[ni], a[nj], b[nj]), _segment_distance(b[ni], a[nj], b[nj]),
     ]) if ni.size else np.zeros(0)
     ai, aj = i[adjacent], j[adjacent]
-    forward = following[ai] == aj
+    forward = nxt[ai] == aj
     before, after = np.where(forward, ai, aj), np.where(forward, aj, ai)
     # «before» llega al vértice común y «after» sale de él: vuelve si un extremo lejano cae
     # sobre la otra arista.
@@ -274,7 +281,7 @@ def _holes_misplaced(rings: list[np.ndarray]) -> bool:
     if len(holes) < 2:
         return False
     points, group = _flatten(holes)
-    counts = _ray_counts(firsts, points, points[_following(group)], group, len(holes))
+    counts = ray_counts(firsts, points, points[following(group)], group, len(holes))
     inside = counts % 2 == 1
     np.fill_diagonal(inside, False)
     return bool(inside.any())
@@ -352,13 +359,13 @@ def _union_all(sets: list[list[np.ndarray]]) -> list[np.ndarray]:
     for polygon in sets:
         if not polygon:
             continue
-        rings = polygon if not rings else _chain(_combine(rings, polygon, "union"))
+        rings = polygon if not rings else chain(_combine(rings, polygon, "union"))
     return rings
 
 
 def _region(edges: np.ndarray, origin: np.ndarray) -> Region:
     """La región del borde orientado ``edges`` (relativo a ``origin``): sus partes."""
-    rings = _chain(edges)
+    rings = chain(edges)
     moments = [_ring_moments(ring) for ring in rings]
     outer = [k for k, (area, _, _) in enumerate(moments) if area > 0.0]
     holes = [k for k, (area, _, _) in enumerate(moments) if area <= 0.0]
@@ -401,7 +408,7 @@ def _hole_owner(hole: np.ndarray, outers: list[np.ndarray]) -> int | None:
     return None
 
 
-def _chain(edges: np.ndarray) -> list[np.ndarray]:
+def chain(edges: np.ndarray) -> list[np.ndarray]:
     """Las aristas orientadas ``edges`` encadenadas en anillos por sus extremos (los mismos
     números). En un vértice con varias salidas, la que más gira a la izquierda (el anillo más
     ceñido: dos partes que se tocan en un vértice quedan separadas)."""
@@ -483,11 +490,11 @@ def _combine(first: list[np.ndarray], second: list[np.ndarray], op: str) -> np.n
     p_vertices, q_vertices = p, q
     p, p_ring = _insert_near(p, p_ring, q_vertices)
     q, q_ring = _insert_near(q, q_ring, p_vertices)
-    p_next, q_next = p[_following(p_ring)], q[_following(q_ring)]
+    p_next, q_next = p[following(p_ring)], q[following(q_ring)]
     # (3) cruces propios, el mismo punto en las dos aristas.
-    i, j, t, u, cut = _crossings(p, p_next, q, q_next)
-    p_cut, p_cut_ring = _splice(p, p_ring, i, t, cut)
-    q_cut, q_cut_ring = _splice(q, q_ring, j, u, cut)
+    i, j, t, u, cut = crossings(p, p_next, q, q_next)
+    p_cut, p_cut_ring = splice(p, p_ring, i, t, cut)
+    q_cut, q_cut_ring = splice(q, q_ring, j, u, cut)
     ps, pe = _pieces(p_cut, p_cut_ring)
     qs, qe = _pieces(q_cut, q_cut_ring)
     # (4) trozos comunes; (5) los demás, por su punto medio.
@@ -517,7 +524,7 @@ def _combine(first: list[np.ndarray], second: list[np.ndarray], op: str) -> np.n
 
 def _snap(points: np.ndarray, others: np.ndarray) -> np.ndarray:
     """Cada vértice a ≤ :data:`TOLERANCE_M` de uno de ``others`` pasa a ser el más cercano."""
-    i, j = _box_pairs(_boxes(points, points, TOLERANCE_M), _boxes(others, others))
+    i, j = box_pairs(_boxes(points, points, TOLERANCE_M), _boxes(others, others))
     if not i.size:
         return points
     gap = np.hypot(*(points[i] - others[j]).T)
@@ -538,8 +545,8 @@ def _insert_near(points: np.ndarray, ring: np.ndarray,
     """Los vértices ``others`` a ≤ :data:`TOLERANCE_M` del interior de una arista (y a más de
     sus extremos), insertados en ella en su orden: el propio vértice, no su proyección."""
     a = points
-    b = points[_following(ring)]
-    edge, vertex = _box_pairs(_boxes(a, b, TOLERANCE_M), _boxes(others, others))
+    b = points[following(ring)]
+    edge, vertex = box_pairs(_boxes(a, b, TOLERANCE_M), _boxes(others, others))
     if not edge.size:
         return points, ring
     start, end, point = a[edge], b[edge], others[vertex]
@@ -551,15 +558,15 @@ def _insert_near(points: np.ndarray, ring: np.ndarray,
           & (np.hypot(*w.T) > TOLERANCE_M) & (np.hypot(*(point - end).T) > TOLERANCE_M))
     if not ok.any():
         return points, ring
-    return _splice(points, ring, edge[ok], t[ok], point[ok])
+    return splice(points, ring, edge[ok], t[ok], point[ok])
 
 
-def _crossings(pa: np.ndarray, pb: np.ndarray, qa: np.ndarray, qb: np.ndarray
+def crossings(pa: np.ndarray, pb: np.ndarray, qa: np.ndarray, qb: np.ndarray
                ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Los cruces propios de las aristas ``pa→pb`` con las ``qa→qb`` (cada extremo, a más de
     :data:`_ZERO_M` de la recta de la otra y en lados opuestos): sus aristas, su posición en
     cada una (0..1) y el punto, el mismo para las dos."""
-    i, j = _box_pairs(_boxes(pa, pb), _boxes(qa, qb))
+    i, j = box_pairs(_boxes(pa, pb), _boxes(qa, qb))
     a, b, p, q = pa[i], pb[i], qa[j], qb[j]
     r, s = b - a, q - p
     lr, ls = np.hypot(r[:, 0], r[:, 1]), np.hypot(s[:, 0], s[:, 1])
@@ -590,7 +597,7 @@ def _opposite(first: np.ndarray, second: np.ndarray) -> np.ndarray:
 
 def _pieces(points: np.ndarray, ring: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Los trozos (inicio, fin) de los anillos, sin los de longitud 0."""
-    start, end = points, points[_following(ring)]
+    start, end = points, points[following(ring)]
     keep = np.any(start != end, axis=1)
     return start[keep], end[keep]
 
@@ -704,18 +711,18 @@ def _flatten(rings: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     return points, ring
 
 
-def _following(ring: np.ndarray) -> np.ndarray:
+def following(ring: np.ndarray) -> np.ndarray:
     """El índice del vértice siguiente en su anillo (los anillos, en bloques seguidos)."""
-    following = np.arange(1, ring.size + 1, dtype=np.int64)
+    nxt = np.arange(1, ring.size + 1, dtype=np.int64)
     if ring.size:
         last = np.flatnonzero(np.concatenate([ring[1:] != ring[:-1], [True]]))
-        following[last] = np.concatenate([[0], last[:-1] + 1])
-    return following
+        nxt[last] = np.concatenate([[0], last[:-1] + 1])
+    return nxt
 
 
 def _dedupe(points: np.ndarray, ring: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Sin vértices repetidos seguidos y sin anillos de menos de tres vértices."""
-    keep = ~np.all(points == points[_following(ring)], axis=1)
+    keep = ~np.all(points == points[following(ring)], axis=1)
     points, ring = points[keep], ring[keep]
     if ring.size:
         enough = np.bincount(ring)[ring] >= 3
@@ -723,7 +730,7 @@ def _dedupe(points: np.ndarray, ring: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return points, ring
 
 
-def _splice(points: np.ndarray, ring: np.ndarray, edge: np.ndarray, t: np.ndarray,
+def splice(points: np.ndarray, ring: np.ndarray, edge: np.ndarray, t: np.ndarray,
             new: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Los puntos ``new`` insertados en las aristas ``edge`` (la que sale de ese vértice), en
     el orden de su posición ``t`` (0..1) en ella."""
@@ -753,7 +760,7 @@ def _boxes(a: np.ndarray, b: np.ndarray, pad: float = 0.0) -> np.ndarray:
     return np.concatenate([np.minimum(a, b) - pad, np.maximum(a, b) + pad], axis=1)
 
 
-def _expand(count: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def expand(count: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Para cada ``k``, ``count[k]`` entradas: (dueño, 0..count[k] − 1)."""
     owner = np.repeat(np.arange(count.size), count)
     offset = np.arange(owner.size) - np.repeat(np.cumsum(count) - count, count)
@@ -770,7 +777,7 @@ def _join(cell_a: np.ndarray, cell_b: np.ndarray, cells: int) -> tuple[np.ndarra
     order_a, order_b = np.argsort(cell_a, kind="stable"), np.argsort(cell_b, kind="stable")
     start_a, start_b = np.cumsum(count_a) - count_a, np.cumsum(count_b) - count_b
     width = count_b[both]
-    group, k = _expand(count_a[both] * width)
+    group, k = expand(count_a[both] * width)
     cell = both[group]
     return (order_a[start_a[cell] + k // width[group]],
             order_b[start_b[cell] + k % width[group]])
@@ -784,11 +791,11 @@ def _cells(boxes: np.ndarray, west: float, south: float, sx: float, sy: float, n
     iy0 = np.clip(np.floor((boxes[:, 1] - south) / sy), 0, ny - 1).astype(np.int64)
     iy1 = np.clip(np.floor((boxes[:, 3] - south) / sy), 0, ny - 1).astype(np.int64)
     wide = ix1 - ix0 + 1
-    owner, k = _expand(wide * (iy1 - iy0 + 1))
+    owner, k = expand(wide * (iy1 - iy0 + 1))
     return owner, (iy0[owner] + k // wide[owner]) * nx + ix0[owner] + k % wide[owner]
 
 
-def _box_pairs(box_a: np.ndarray, box_b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def box_pairs(box_a: np.ndarray, box_b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Las parejas (de ``box_a``, de ``box_b``) de cajas que se tocan, sin repetir, buscadas por
     cubetas sobre la zona común (unas pocas cajas por cubeta)."""
     none = (np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64))
@@ -830,7 +837,7 @@ def _box_pairs(box_a: np.ndarray, box_b: np.ndarray) -> tuple[np.ndarray, np.nda
     return ia[touch], ib[touch]
 
 
-def _ray_counts(points: np.ndarray, a: np.ndarray, b: np.ndarray, group: np.ndarray | None = None,
+def ray_counts(points: np.ndarray, a: np.ndarray, b: np.ndarray, group: np.ndarray | None = None,
                 groups: int = 1) -> np.ndarray:
     """Cuántas aristas ``a→b`` de cada grupo cruza el rayo hacia +X desde cada punto
     (``(puntos, grupos)``; una arista cuenta si ``min(y) ≤ y < max(y)`` o al revés, como en el
@@ -849,7 +856,7 @@ def _ray_counts(points: np.ndarray, a: np.ndarray, b: np.ndarray, group: np.ndar
     sy = (top - bottom) / strips if top > bottom else 1.0
     first = np.clip(np.floor((low - bottom) / sy), 0, strips - 1).astype(np.int64)
     last = np.clip(np.floor((high - bottom) / sy), 0, strips - 1).astype(np.int64)
-    owner, k = _expand(last - first + 1)
+    owner, k = expand(last - first + 1)
     point_strip = np.clip(np.floor((py[candidates] - bottom) / sy), 0, strips - 1).astype(np.int64)
     pe, pp = _join(first[owner] + k, point_strip, strips)
     edge, point = owner[pe], candidates[pp]
@@ -865,4 +872,4 @@ def _ray_counts(points: np.ndarray, a: np.ndarray, b: np.ndarray, group: np.ndar
 
 def _inside(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Si cada punto está dentro de las aristas ``a→b`` (par-impar)."""
-    return _ray_counts(points, a, b)[:, 0] % 2 == 1
+    return ray_counts(points, a, b)[:, 0] % 2 == 1
