@@ -34,12 +34,12 @@ en el límite del alcance y junto a lo que las máscaras no dejan mover: :class:
 
 **Las cifras** de RF-017-23 que salen del grabado (:meth:`Engraved.figure_values`: las doce claves de ``provenance.ROAD_FIGURES`` que no son del eje ni de la rasante): el
 área de la sección, el corte y el relleno **de la sección y del borde por separado** y el neto (corte menos relleno), la pared, las alturas máximas de desmonte y de
-terraplén (sección y borde) y la afección de «preferible no afectar» (las celdas de peso mayor que 1 que cambian: su área, su volumen y su volumen por el peso).
+terraplén (sección y borde) y la afección de «preferible no afectar» (las celdas de sus zonas que cambian más que la tolerancia numérica, de **cualquier peso**, el 1 incluido: su área, su volumen y su volumen por el peso).
 
 **Interpretaciones** (la spec y el plan no las dicen; revisables, anotadas en la verificación de T13): la altura máxima de desmonte y terraplén se mide en **cada celda
 de la sección** (``|z − rasante|``), no solo en el eje (la sección tiene hasta ``pendiente transversal · semianchura`` más que el eje); en los modos «sobre un eje» y
-«eje 3D», que no tienen ruta, no hay altura máxima; una zona «preferible no afectar» de peso exactamente 1 no se cuenta (``avoid_weight`` no la distingue de lo que no
-lo es); la afección cuenta las celdas **que cambian**, no las que la huella pisa sin moverlas.
+«eje 3D», que no tienen ruta, no hay altura máxima; la afección cuenta las celdas de las zonas **que cambian** (más de 10⁻⁹ m: la tolerancia numérica de la spec; T42, A-6),
+no las que la huella pisa sin moverlas, y una zona de peso exactamente 1 también cuenta (T42, S-2: la máscara de la zona, ``RoadJob.avoid_zone``, va aparte del peso).
 
 Los pasos (:func:`engrave_steps`) ceden el hilo cada ≈ 0,05 s (``pace_progress``; RNF-017-06): las envolventes son por unidades, el resto va por bandas de filas. Cerrar el
 generador a mitad no deja nada: no escribe nada y no modifica sus entradas (principio 7). **Perezoso** (RNF-001-03): ni ``design.model`` ni nada del arranque lo importan.
@@ -103,6 +103,16 @@ _TOL_M = 1e-9
 """El ruido de la última cifra de una comparación de cotas (m): un movimiento que pasa de la altura máxima en menos de esto no la pasa."""
 _PHASE = "road_engrave"
 _BAND_ROWS = 64
+
+
+def _avoid_effect(zone: np.ndarray, weight: np.ndarray, moved: np.ndarray) -> tuple[int, float, float]:
+    """La afección de «preferible no afectar» (RF-017-06, RF-017-23) de unas celdas: cuántas son **de la zona** (``zone``: su máscara, **no** ``weight > 1``, así que una zona de peso
+    exactamente 1 cuenta: S-2) y se **mueven** (``moved``: m, con su signo) más de :data:`_TOL_M` (el ruido de 1,4·10⁻¹⁴ m de la aritmética no es movimiento: A-6), la suma de lo
+    movido (m, sin signo) y la suma de lo movido por su ``weight`` (m × peso). Para la sección y para el borde, que suman."""
+    size = np.abs(moved)
+    hit = zone & (size > _TOL_M)
+    amount = size[hit]
+    return int(np.count_nonzero(hit)), float(np.sum(amount)), float(np.sum(amount * weight[hit]))
 
 
 class EngraveCause(StrEnum):
@@ -582,17 +592,14 @@ def _units(job: RoadJob, section: Section, levels: np.ndarray, settings: _Settin
     order = None if quarry is None else order_check(surface, quarry.other, quarry.side, grid, window)
     # --- la afección de «preferible no afectar» (RF-017-06) ---
     avoid_cells, avoid_m2, avoid_m3, avoid_weighted = 0, 0.0, 0.0, 0.0
-    if job.avoid_weight is not None:
-        weight = job.avoid_weight[window]
-        section_weight = weight[rows, cols]
-        hit = (section_weight > 1.0) & (drop != 0.0)
-        edge_weight = weight[changed]
-        edge_hit = edge_weight > 1.0
-        avoid_cells = int(np.count_nonzero(hit)) + int(np.count_nonzero(edge_hit))
-        moved_here, moved_there = np.abs(drop[hit]), np.abs(moved[edge_hit])
+    if job.avoid_weight is not None and job.avoid_zone is not None:
+        zone, weight = job.avoid_zone[window], job.avoid_weight[window]
+        here = _avoid_effect(zone[rows, cols], weight[rows, cols], drop)
+        there = _avoid_effect(zone[changed], weight[changed], moved)
+        avoid_cells = here[0] + there[0]
         avoid_m2 = avoid_cells * area
-        avoid_m3 = (float(np.sum(moved_here)) + float(np.sum(moved_there))) * area
-        avoid_weighted = (float(np.sum(moved_here * section_weight[hit])) + float(np.sum(moved_there * edge_weight[edge_hit]))) * area
+        avoid_m3 = (here[1] + there[1]) * area
+        avoid_weighted = (here[2] + there[2]) * area
     notices = [*_edge_notices(name, settings, walls, outside, created, grid, window)]
     if order is not None and quarry is not None:
         notices.append(order_notice(name, quarry, order))

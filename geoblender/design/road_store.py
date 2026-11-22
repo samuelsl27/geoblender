@@ -172,7 +172,9 @@ __all__ = [
     "ProposalSummary",
     "ResolvedLevel",
     "RoadConfirmed",
+    "avoid_layers",
     "avoid_weight",
+    "avoid_zone",
     "axis_point_at",
     "carriageway_notices",
     "check_road_confirmed",
@@ -709,27 +711,110 @@ def _check_point(grid: Grid, surface: np.ndarray, point: tuple[float, float], re
         raise _reject("des.road_point_no_data", request, code, param, value, surface=surface_name, **where)
 
 
+_CROSS_PAD_REL = 1e-6
+"""Cuánto se agranda la caja de cada tramo al buscar con quién se cruza, en partes de su longitud (T42, B-4): ``t`` y ``u`` de dos tramos casi paralelos salen del cociente de dos
+números pequeños y se redondean en el último dígito; un par que la cuenta da por tocado a lo sumo a esa distancia relativa de tocarse no puede perderse en la búsqueda."""
+_CROSS_PAD_ULPS = 1024.0
+"""Y, además, cuántas unidades de la última cifra de la mayor coordenada (en UTM, 4,4 Mm: 1 µm): lo que redondea restar dos coordenadas absolutas."""
+_CROSS_CELLS_PER_SEGMENT = 16
+"""Las celdas de la rejilla de la búsqueda que, como mucho y de media, ocupa un tramo (con más, las celdas se agrandan: un tramo larguísimo entre miles de cortos no llena la memoria)."""
+_CROSS_PAIRS_FIRST_BATCH = 1 << 12
+_CROSS_PAIRS_PER_BATCH = 1 << 20
+"""Los pares candidatos que se comprueban de una vez: el primer lote es pequeño (una línea que se corta al principio se rechaza sin mirar el resto: ≈ 1 ms) y cada lote duplica al
+anterior hasta el tope (≈ 30 ms por llamada): la memoria de la búsqueda no crece con la línea."""
+
+
+def _crossing_candidates(start: np.ndarray, end: np.ndarray) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Los pares de tramos ``(i, j)`` con ``j ≥ i + 2`` (los contiguos no cuentan) cuyas cajas, agrandadas (:data:`_CROSS_PAD_REL`, :data:`_CROSS_PAD_ULPS`), se solapan, **por lotes**
+    de ``i`` y ``j`` (``(k,)``, índices de ``start``; los de un lote son de tramos ``i`` consecutivos y menores que los del siguiente: el primer lote con un cruce da el primero de
+    todos, como con todos contra todos, sin mirar el resto de la línea): una rejilla uniforme de celdas (el doble de la mediana de los tramos; T42, B-4) con los tramos que pisa su caja, y los pares de
+    cada celda. Con una línea digitalizada (tramos parecidos, que no vuelven sobre sí) salen unos pocos por tramo: O(n log n) en vez de los n²/2 de todos contra todos. **Solo
+    descarta** pares que no pueden cortarse; si se cortan lo decide :func:`_touching`. Un tramo con una coordenada que no es finita no se corta con nada (como con todos contra todos:
+    sus comparaciones dan falso)."""
+    ids = np.flatnonzero(np.isfinite(start).all(axis=1) & np.isfinite(end).all(axis=1))
+    count = ids.size
+    if count < 2:
+        return
+    low, high = np.minimum(start[ids], end[ids]), np.maximum(start[ids], end[ids])
+    biggest = max(float(np.abs(low).max()), float(np.abs(high).max()))
+    pad = _CROSS_PAD_REL * np.hypot(*(high - low).T) + _CROSS_PAD_ULPS * float(np.spacing(biggest))
+    low, high = low - pad[:, None], high + pad[:, None]
+    origin = low.min(axis=0)
+    cell = max(2.0 * float(np.median((high - low).max(axis=1))), float((high - origin).max()) / 65536.0)
+    if not cell > 0.0:
+        cell = 1.0
+    while True:  # las celdas que ocupan los tramos: si son demasiadas (un tramo larguísimo), mayores
+        first = np.floor((low - origin) / cell).astype(np.int64)
+        last = np.floor((high - origin) / cell).astype(np.int64)
+        span = last - first + 1
+        per = span[:, 0] * span[:, 1]
+        total = int(per.sum())
+        if total <= _CROSS_CELLS_PER_SEGMENT * count + 1024:
+            break
+        cell *= 2.0
+    owner = np.repeat(np.arange(count), per)  # una entrada por celda de cada tramo, por tramos
+    within = np.arange(total) - np.repeat(np.cumsum(per) - per, per)
+    key = (first[owner, 0] + within % span[owner, 0]) * (int(last[:, 1].max()) + 1) + first[owner, 1] + within // span[owner, 0]
+    order = np.argsort(key, kind="stable")  # estable: en cada celda, los tramos por su número
+    sorted_key, sorted_owner = key[order], owner[order]
+    rank = np.empty(total, dtype=np.int64)
+    rank[order] = np.arange(total)
+    begin = np.ones(total, dtype=bool)
+    begin[1:] = sorted_key[1:] != sorted_key[:-1]
+    cell_end = np.append(np.flatnonzero(begin)[1:], total)[np.cumsum(begin) - 1]
+    later = cell_end[rank] - rank - 1  # de cada entrada, los tramos que siguen al suyo en su celda
+    entries = np.cumsum(per) - per
+    through = np.concatenate(([0], np.cumsum(later)))[entries + per]  # los pares hasta cada tramo, él incluido
+    index, batch = 0, _CROSS_PAIRS_FIRST_BATCH
+    while index < count:  # por lotes de tramos seguidos: los pares de un lote tienen ``i`` menor que los del siguiente
+        base = int(through[index - 1]) if index else 0
+        stop = min(count, max(index + 1, int(np.searchsorted(through, base + batch, side="right"))))
+        batch = min(2 * batch, _CROSS_PAIRS_PER_BATCH)
+        first_entry, last_entry = int(entries[index]), int(entries[stop - 1] + per[stop - 1])
+        counts = later[first_entry:last_entry]
+        pairs = int(counts.sum())
+        if pairs:
+            left = np.repeat(np.arange(first_entry, last_entry), counts)
+            a = owner[left]
+            b = sorted_owner[rank[left] + np.arange(pairs) - np.repeat(np.cumsum(counts) - counts, counts) + 1]
+            near = (low[a] <= high[b]).all(axis=1) & (low[b] <= high[a]).all(axis=1) & (ids[b] - ids[a] >= 2)
+            if near.any():
+                yield ids[a[near]], ids[b[near]]
+        index = stop
+
+
+def _touching(start: np.ndarray, end: np.ndarray, i: np.ndarray, j: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Si se cortan, se tocan o se solapan los tramos ``i`` y ``j`` (``(k,)``, índices de ``start``): ``(hit, parallel, t)``, con ``hit`` el cruce (o el contacto en un extremo: ``t`` y
+    ``u`` en [0, 1]), ``parallel`` el solapamiento sobre una misma recta y ``t`` el punto del cruce sobre el tramo ``i``. **Las mismas cuentas, una a una**, que la comprobación de todos
+    contra todos de la T19 (T42: la búsqueda solo elige los pares)."""
+    p, q = start[i], start[j]
+    r, s = end[i] - p, end[j] - q
+    offset = q - p
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cross = r[:, 0] * s[:, 1] - r[:, 1] * s[:, 0]
+        t = (offset[:, 0] * s[:, 1] - offset[:, 1] * s[:, 0]) / cross
+        u = (offset[:, 0] * r[:, 1] - offset[:, 1] * r[:, 0]) / cross
+        long = r[:, 0] * r[:, 0] + r[:, 1] * r[:, 1]
+        t0 = (offset[:, 0] * r[:, 0] + offset[:, 1] * r[:, 1]) / long
+        t1 = t0 + (s[:, 0] * r[:, 0] + s[:, 1] * r[:, 1]) / long
+    hit = (cross != 0.0) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
+    parallel = (cross == 0.0) & ((offset[:, 0] * r[:, 1] - offset[:, 1] * r[:, 0]) == 0.0) & (np.maximum(np.minimum(t0, t1), 0.0) <= np.minimum(np.maximum(t0, t1), 1.0))
+    return hit, parallel, t
+
+
 def _first_crossing(points: np.ndarray) -> tuple[float, float] | None:
-    """El primer cruce de una línea consigo misma (de los segmentos que no son contiguos), o ``None``: dos tramos que se cortan o se tocan, o que se solapan en una misma recta."""
+    """El primer cruce de una línea consigo misma (de los segmentos que no son contiguos), o ``None``: dos tramos que se cortan o se tocan, o que se solapan en una misma recta.
+    El primero es el del tramo ``i`` más bajo y, con él, el ``j`` más bajo, y su punto: el cruce, el contacto o, si se solapan, el inicio del tramo ``j``. **Subcuadrática** (T42, B-4:
+    0,58 s con 5.000 vértices y 8 s con 20.000 con todos contra todos, sin ceder el hilo): :func:`_crossing_candidates` elige, con una rejilla, los pares de tramos que pueden cortarse y
+    :func:`_touching` los comprueba con las mismas cuentas de siempre."""
     start, end = points[:-1], points[1:]
-    for i in range(len(start) - 2):
-        others = np.arange(i + 2, len(start))
-        p, r = start[i], end[i] - start[i]
-        q, s = start[others], end[others] - start[others]
-        offset = q - p
-        cross = r[0] * s[:, 1] - r[1] * s[:, 0]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            t = (offset[:, 0] * s[:, 1] - offset[:, 1] * s[:, 0]) / cross
-            u = (offset[:, 0] * r[1] - offset[:, 1] * r[0]) / cross
-            long = float(r @ r)
-            t0 = (offset @ r) / long
-            t1 = t0 + (s @ r) / long
-        hit = (cross != 0.0) & (t >= 0.0) & (t <= 1.0) & (u >= 0.0) & (u <= 1.0)
-        parallel = (cross == 0.0) & ((offset[:, 0] * r[1] - offset[:, 1] * r[0]) == 0.0) & (np.maximum(np.minimum(t0, t1), 0.0) <= np.minimum(np.maximum(t0, t1), 1.0))
+    for i, j in _crossing_candidates(start, end):
+        hit, parallel, t = _touching(start, end, i, j)
         found = hit | parallel
         if found.any():
-            k = int(np.argmax(found))
-            point = p + t[k] * r if bool(hit[k]) else q[k]
+            k = int(np.argmin(i[found] * len(start) + j[found]))  # el ``i`` más bajo y, con él, el ``j`` más bajo
+            first, other = int(i[found][k]), int(j[found][k])
+            point = start[first] + t[found][k] * (end[first] - start[first]) if bool(hit[found][k]) else start[other]
             return float(point[0]), float(point[1])
     return None
 
@@ -891,17 +976,34 @@ def untouchable_cells(masks: Any) -> np.ndarray:
     return (np.asarray(masks.classes) & np.uint16(int(ClassBit.UNTOUCHABLE))) != 0
 
 
-def avoid_weight(masks: Any) -> np.ndarray | None:
-    """El peso de cada celda de las zonas «preferible no afectar» de las máscaras (RF-017-06): el **mayor** de las zonas que la pisan, de 1 o más (un peso menor no abarata el paso);
-    1 donde no hay ninguna. ``None`` si las máscaras no tienen ninguna zona de ese tipo: todo pesa 1."""
+def avoid_layers(masks: Any) -> tuple[np.ndarray, np.ndarray] | None:
+    """El peso de cada celda de las zonas «preferible no afectar» de las máscaras (RF-017-06) y, **aparte**, sus celdas (S-2): ``(peso, zona)``. El peso es el **mayor** de las zonas
+    que pisan la celda, de 1 o más (un peso menor no abarata el paso), y 1 donde no hay ninguna; la zona es un booleano por celda (la unión de las zonas), porque una zona de peso
+    exactamente 1 —válida: la 012 pide ≥ 1— pesa como «ninguna» y solo la distingue su máscara. ``None`` si las máscaras no tienen ninguna zona de ese tipo: todo pesa 1."""
     zones = masks.avoid_weights()
     if not zones:
         return None
     shape = masks.grid.shape
     weight = np.ones(shape, dtype=np.float64)
+    cells = np.zeros(shape, dtype=bool)
     for runs, value in zones.values():
-        weight = np.where(runs.mask(shape), np.maximum(weight, float(value)), weight)
-    return weight
+        mask = runs.mask(shape)
+        weight = np.where(mask, np.maximum(weight, float(value)), weight)
+        cells |= mask
+    return weight, cells
+
+
+def avoid_weight(masks: Any) -> np.ndarray | None:
+    """El peso de cada celda de las zonas «preferible no afectar» de las máscaras (RF-017-06; la primera de :func:`avoid_layers`): el mayor de las zonas que la pisan, de 1 o más, y 1
+    donde no hay ninguna; ``None`` si no hay ninguna zona."""
+    found = avoid_layers(masks)
+    return None if found is None else found[0]
+
+
+def avoid_zone(masks: Any) -> np.ndarray | None:
+    """Las celdas de las zonas «preferible no afectar» de las máscaras (S-2; la segunda de :func:`avoid_layers`): un booleano por celda, también las de peso 1; ``None`` si no hay ninguna."""
+    found = avoid_layers(masks)
+    return None if found is None else found[1]
 
 
 # --- Los parámetros -----------------------------------------------------------------------------
@@ -1470,13 +1572,13 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
         destination, zone_layer = _level_destination(project, request, chosen)
     cut, fill = admitted_pair(masks, (slice(0, grid.nrows), slice(0, grid.ncols)))
     untouchable = untouchable_cells(masks)
-    weight = avoid_weight(masks)
+    weight, zone = avoid_layers(masks) or (None, None)
     if mode is RoadMode.TRACE:
         geometry = RoadGeometry(origin=geometry_points[0], destination=destination if destination is not None else geometry_points[1])
     else:
         geometry = RoadGeometry(line=line)
     asked = replace(request, start=start_ref)
-    job = RoadJob(asked, chosen, profile, grid, values_start, cut, fill, untouchable, geometry, route, resolved_start, resolved_end, weight)
+    job = RoadJob(asked, chosen, profile, grid, values_start, cut, fill, untouchable, geometry, route, resolved_start, resolved_end, weight, zone)
     yield
     mesh: road_net.RouteMesh | None = None
     if destination is not None or (mode is RoadMode.TRACE and any(item.pending for item in design_sectors(project, version.uid))):
@@ -2646,10 +2748,10 @@ def prepare_propose_units(project: StoreProject, request: RoadRequest, version: 
         destination, zone_layer = _level_destination(project, request, code)
     cut, fill = admitted_pair(masks, (slice(0, grid.nrows), slice(0, grid.ncols)))
     untouchable = untouchable_cells(masks)
-    weight = avoid_weight(masks)
+    weight, zone = avoid_layers(masks) or (None, None)
     geometry = RoadGeometry(origin=resolved.origin, destination=destination if destination is not None else resolved.destination)
     asked = replace(request, start=start_ref)
-    job = RoadJob(asked, code, profile, grid, values_start, cut, fill, untouchable, geometry, route, resolved_start, resolved_end, weight)
+    job = RoadJob(asked, code, profile, grid, values_start, cut, fill, untouchable, geometry, route, resolved_start, resolved_end, weight, zone)
     yield
     sectors = design_sectors(project, version.uid)
     mesh: road_net.RouteMesh | None = None

@@ -96,7 +96,7 @@ class Case:
 
 def build(z_of: Z_OF, *, line: Any = LINE, profile: Any = SHORT, level_of: Callable[[np.ndarray], np.ndarray] | None = None, cut_allowed: np.ndarray | None = None,
           fill_allowed: np.ndarray | None = None, untouchable: np.ndarray | None = None, avoid_weight: np.ndarray | None = None,
-          route: Any = None, grid: Any = GRID) -> Case:
+          route: Any = None, grid: Any = GRID, avoid_zone: np.ndarray | None = None) -> Case:
     """El grabado de la pista de eje ``line`` (local) sobre el terreno ``z_of``: con la rasante ``level_of`` (de las estaciones del eje a cotas) o, sin ella, la del
     terreno en el eje; con ``route`` (los parámetros de la ruta) el trabajo es «trazar» y lleva la altura máxima de desmonte y terraplén; sin ella, «sobre un eje»."""
     terrain = np.asarray(z_of(*rd.local_centers(grid)), dtype=np.float64)
@@ -108,11 +108,11 @@ def build(z_of: Z_OF, *, line: Any = LINE, profile: Any = SHORT, level_of: Calla
     levels = section.levels(axis.stations, on_axis)
     if route is None:
         job = rd.axis_job(grid, terrain, rd.absolute(line, grid), profile=profile, cut_allowed=cut_allowed, fill_allowed=fill_allowed,
-                          untouchable=untouchable, avoid_weight=avoid_weight)
+                          untouchable=untouchable, avoid_weight=avoid_weight, avoid_zone=avoid_zone)
     else:
         first, last = rd.absolute(line, grid)[0], rd.absolute(line, grid)[-1]
         job = rd.route_job(grid, terrain, (float(first[0]), float(first[1])), (float(last[0]), float(last[1])), route=route, profile=profile,
-                           untouchable=untouchable, avoid_weight=avoid_weight)
+                           untouchable=untouchable, avoid_weight=avoid_weight, avoid_zone=avoid_zone)
         job = dataclasses.replace(job, cut_allowed=np.ones(grid.shape, bool) if cut_allowed is None else cut_allowed,
                                   fill_allowed=np.ones(grid.shape, bool) if fill_allowed is None else fill_allowed)
     free = ~job.untouchable
@@ -528,6 +528,50 @@ class NoticesTest(unittest.TestCase):
         none = build(plane(20.0)).engrave()
         self.assertEqual((none.avoid_cells, none.avoid_m2, none.avoid_m3, none.avoid_weighted_m3), (0, 0.0, 0.0, 0.0))
         self.assertNotIn("des.road_avoid_affected", [item.code for item in none.notices])
+
+    def test_a_road_that_follows_the_terrain_does_not_affect_a_zone_by_the_noise_of_the_arithmetic(self) -> None:
+        """RF-017-06, RF-017-23, CE-017-01, A-6: una pista cuya rasante es el terreno (una rampa del 7 %) con una zona «preferible no afectar» encima **no la afecta**: 0 celdas,
+        0 m², 0 m³ y sin ``des.road_avoid_affected``, aunque la aritmética deje en 198 celdas de la sección un «movimiento» de 1,4·10⁻¹⁴ m (que ``!= 0`` contaba: 198 m² y un aviso
+        donde no se movía nada); lo que pasa de la tolerancia numérica (10⁻⁹ m) sí cuenta."""
+        weight = np.ones(GRID.shape)
+        zone = box_mask((20.0, 40.0, 80.0, 80.0))
+        weight[zone] = 3.0
+        case = build(lambda x, y: 100.0 + 0.07 * x, avoid_weight=weight)
+        found = case.engrave()
+        gap = np.abs(case.terrain[case.window] - found.applied)
+        noise = found.footprint & zone[case.window] & (gap > 0.0) & (gap < 1e-9)
+        self.assertGreater(int(noise.sum()), 100, "la aritmética deja ruido bajo la zona: la prueba es del caso")
+        self.assertEqual((found.avoid_cells, found.avoid_m2, found.avoid_m3, found.avoid_weighted_m3), (0, 0.0, 0.0, 0.0))
+        self.assertNotIn("des.road_avoid_affected", [item.code for item in found.notices])
+
+    def test_a_zone_of_weight_1_counts_in_the_effect(self) -> None:
+        """RF-017-06, RF-017-23, S-2: una zona «preferible no afectar» de **peso exactamente 1** (válido: la 012 pide ≥ 1) cuenta en la afección como las demás —área, volumen y
+        volumen por el peso (= el volumen) a mano, y el aviso—: la máscara de la zona va aparte del peso (con ``peso > 1`` salían 0 de sus celdas); con el peso 3 y 5, ``test_the_effect_on_the_zones…``."""
+        zone = box_mask((44.0, 50.0, 56.0, 66.0))
+        light = build(plane(20.0), avoid_weight=np.ones(GRID.shape), avoid_zone=zone)
+        found = light.engrave()
+        gap = np.abs(found.surface - light.terrain[light.window])
+        moved = (gap > 1e-9) & zone[light.window]
+        self.assertGreater(int(moved.sum()), 100)
+        self.assertEqual(found.avoid_cells, int(moved.sum()))
+        np.testing.assert_allclose(found.avoid_m2, moved.sum() * GRID.cell_area, rtol=TOL)
+        np.testing.assert_allclose(found.avoid_m3, gap[moved].sum() * GRID.cell_area, rtol=TOL)
+        np.testing.assert_allclose(found.avoid_weighted_m3, found.avoid_m3, rtol=TOL)
+        notice = next(item for item in found.notices if item.code == "des.road_avoid_affected")
+        np.testing.assert_allclose(notice.values["area"], found.avoid_m2, rtol=TOL)
+
+    def test_the_effect_of_a_zone_counts_what_moves_by_more_than_the_numerical_tolerance(self) -> None:
+        """RF-017-06, A-6, S-2: ``_avoid_effect`` cuenta las celdas **de la zona** (no el peso: el 1 es de la zona) que se mueven más de 10⁻⁹ m (sin signo: corte y relleno), con su
+        volumen y su volumen por el peso; el ruido (1,4·10⁻¹⁴ m), lo que justo no pasa de la tolerancia y lo que se mueve fuera de la zona no cuentan."""
+        zone = np.array([True, True, True, False, True, True])
+        weight = np.array([1.0, 3.0, 1.5, 9.0, 1.0, 2.0])
+        moved = np.array([0.5, -1.4e-14, -2.0, 4.0, 1e-9, 2e-9])
+        cells, volume, weighted = road_engrave._avoid_effect(zone, weight, moved)
+        self.assertEqual(cells, 3)
+        self.assertAlmostEqual(volume, 0.5 + 2.0 + 2e-9, places=12)
+        self.assertAlmostEqual(weighted, 0.5 * 1.0 + 2.0 * 1.5 + 2e-9 * 2.0, places=12)
+        self.assertEqual(road_engrave._avoid_effect(np.zeros(3, dtype=bool), np.ones(3), np.ones(3)), (0, 0.0, 0.0))
+        self.assertEqual(road_engrave._avoid_effect(np.ones(0, dtype=bool), np.ones(0), np.ones(0)), (0, 0.0, 0.0))
 
     def test_the_notice_of_a_carriageway_group_names_what_stops_it(self) -> None:
         """RF-017-22: el aviso de una celda de la calzada que no queda en su rasante (``des.road_carriageway_*``) lleva el área, la diferencia máxima y el lugar del

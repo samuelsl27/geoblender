@@ -522,6 +522,38 @@ class RoadPrepareTest(PrepareCase):
 class PureTest(unittest.TestCase):
     """Las piezas puras de la preparación (sin proyecto)."""
 
+    def test_the_cells_of_the_zones_to_avoid_are_apart_from_their_weight(self) -> None:
+        """RF-017-06, S-2: ``avoid_layers`` da el peso (el **mayor** de las zonas que pisan la celda) y **aparte** las celdas de las zonas (la unión de sus máscaras), de modo que una
+        zona de peso exactamente 1 —válida: la 012 pide ≥ 1— es zona aunque pese lo mismo que «ninguna»; sin zonas, ninguna de las dos; ``avoid_weight`` y ``avoid_zone`` dan cada una la suya."""
+        zone = np.zeros(GRID.shape, dtype=bool)
+        zone[10:20, 30:40] = True
+        other = np.zeros(GRID.shape, dtype=bool)
+        other[15:25, 35:45] = True
+
+        class FakeRuns:
+            def __init__(self, mask: np.ndarray) -> None:
+                self.found = mask
+
+            def mask(self, shape: tuple[int, int]) -> np.ndarray:
+                return self.found
+
+        def masks_of(zones: dict[str, Any]) -> Any:
+            return SimpleNamespace(grid=GRID, avoid_weights=lambda: zones)
+
+        self.assertIsNone(road_store.avoid_layers(masks_of({})))
+        light = masks_of({"a": (FakeRuns(zone), 1.0)})
+        weight, cells = road_store.avoid_layers(light)
+        np.testing.assert_array_equal(weight, np.ones(GRID.shape))
+        np.testing.assert_array_equal(cells, zone)
+        self.assertEqual((int(cells.sum()), cells.dtype), (100, np.bool_))
+        mixed = masks_of({"a": (FakeRuns(zone), 1.0), "b": (FakeRuns(other), 5.0)})
+        weight, cells = road_store.avoid_layers(mixed)
+        np.testing.assert_array_equal(cells, zone | other)
+        self.assertEqual((float(weight[12, 32]), float(weight[17, 37]), float(weight[22, 42]), float(weight[0, 0])), (1.0, 5.0, 5.0, 1.0))
+        np.testing.assert_array_equal(road_store.avoid_weight(mixed), weight)
+        np.testing.assert_array_equal(road_store.avoid_zone(mixed), cells)
+        self.assertIsNone(road_store.avoid_zone(masks_of({})))
+
     def test_the_references_of_an_origin_and_a_destination(self) -> None:
         """RF-017-02, RF-017-03: ``RDW-001@100,5`` es el eje de otra pista a la abscisa 100,5; ``entity:PLT-001``, una entidad; lo demás, un punto de la capa por su nombre o su ``fid``."""
         parse = road_store.parse_reference

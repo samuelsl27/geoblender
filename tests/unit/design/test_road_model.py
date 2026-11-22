@@ -363,7 +363,7 @@ class RoadJobTest(unittest.TestCase):
         found = job()
         names = [item.name for item in dataclasses.fields(road_model.RoadJob)]
         self.assertEqual(names, ["request", "code", "profile", "grid", "start", "cut_allowed", "fill_allowed",
-                                 "untouchable", "geometry", "route", "start_level_m", "end_level_m", "avoid_weight"])
+                                 "untouchable", "geometry", "route", "start_level_m", "end_level_m", "avoid_weight", "avoid_zone"])
         for forbidden in ("project", "path", "conn", "store", "version", "writer"):
             self.assertFalse(any(forbidden in name for name in names), forbidden)
         for item in dataclasses.fields(road_model.RoadJob):
@@ -373,7 +373,7 @@ class RoadJobTest(unittest.TestCase):
         self.assertFalse(hasattr(found, "__dict__"))
         self.assertEqual((found.request, found.code, found.mode), (road(), "RDW-001", road_model.RoadMode.TRACE))
         self.assertIs(found.grid, GRID)
-        self.assertEqual((found.start_level_m, found.end_level_m, found.avoid_weight), (101.0, 105.0, None))
+        self.assertEqual((found.start_level_m, found.end_level_m, found.avoid_weight, found.avoid_zone), (101.0, 105.0, None, None))
         for name in ("request", "code", "start", "route"):
             with self.subTest(name=name), self.assertRaises(dataclasses.FrozenInstanceError):
                 setattr(found, name, None)
@@ -417,6 +417,26 @@ class RoadJobTest(unittest.TestCase):
         for wrong in (np.full(SHAPE, 0.5), np.where(flags(), np.nan, 1.0), np.ones((2, 2))):
             with self.subTest(wrong=wrong.shape), self.assertRaises(ValueError):
                 job(avoid_weight=wrong)
+
+    def test_the_cells_of_the_zones_to_avoid_are_apart_from_their_weight(self) -> None:
+        """RF-017-06, S-2: las celdas de las zonas «preferible no afectar» (``avoid_zone``: un booleano por celda) van **aparte del peso**: una zona de peso exactamente 1
+        (válida: la 012 admite ≥ 1) no se distingue por el peso de «ninguna zona», así que la lleva la máscara; sin ella (quien solo tiene el peso), la zona son las celdas de peso
+        mayor que 1; es de la forma de la rejilla y de solo lectura; sin peso no hay zona, y una celda de peso mayor que 1 que no es de la zona es un error del programa."""
+        weight = np.ones(SHAPE)
+        zone = np.zeros(SHAPE, dtype=bool)
+        zone[2:4, 2:5] = True
+        found = job(avoid_weight=weight, avoid_zone=zone)
+        np.testing.assert_array_equal(found.avoid_zone, zone)
+        self.assertEqual(int(found.avoid_zone.sum()), 6)
+        self.assertEqual((found.avoid_zone.dtype, found.avoid_zone.flags.writeable), (np.bool_, False))
+        heavy = np.ones(SHAPE)
+        heavy[2:4, 2:5] = 3.0
+        np.testing.assert_array_equal(job(avoid_weight=heavy).avoid_zone, heavy > 1.0)
+        np.testing.assert_array_equal(job(avoid_weight=heavy, avoid_zone=zone).avoid_zone, zone)
+        for wrong in ({"avoid_weight": weight, "avoid_zone": np.ones((2, 2), dtype=bool)}, {"avoid_zone": zone},
+                      {"avoid_weight": heavy, "avoid_zone": np.zeros(SHAPE, dtype=bool)}):
+            with self.subTest(wrong=sorted(wrong)), self.assertRaises(ValueError):
+                job(**wrong)
 
     def test_the_code_and_the_profile_are_the_ones_of_a_road(self) -> None:
         """RF-017-01, RF-017-07: el código es el de una pista (``RDW-001``: no el de una accesibilidad, una plataforma ni

@@ -12,6 +12,8 @@
   (ni ninguno ni varios), su cota es la de su ``des_psf_`` y la pista **se apoya en ella** (la superficie y la tabla de su huella son entradas; la fila ``supports`` lo dice).
 - **Los parámetros de la ruta** (:class:`RouteGuardsTest`, RF-017-04, RF-017-10, RF-017-12, RNF-017-07; B-3 y B-5 de la verificación única, T41): preparando de verdad, el paso de cota que da más de 2.000 niveles a
   cada lado, el origen y el destino en el mismo nodo de la malla y el aviso de la memoria de un presupuesto de estados de más del doble del de por defecto; los comprobadores puros son de ``test_road_prepare``.
+- **Las zonas «preferible no afectar»** (:class:`AvoidZoneTest`, RF-017-06; S-2 de la verificación única, T42): preparando de verdad, una zona de peso 1 llega al trabajo con sus celdas aparte del
+  peso (``RoadJob.avoid_zone``), y las cuatro construcciones de ``RoadJob`` del dominio le dan la zona junto al peso.
 
 Sobre el proyecto de las pistas (``tests.support.road_data``, rejilla de 2 m, 200 × 200 celdas). **Nada se escribe** al preparar; lo que cambia el proyecto es el montaje de cada clase.
 """
@@ -307,3 +309,51 @@ class RouteGuardsTest(PrepareCase):
         self.assertEqual((found[0].values["entity"], found[0].values["budget"]), ("Pista de la rampa", 20_000_000))
         self.assertAlmostEqual(found[0].values["memory"], 2.6, places=1)
         self.assertEqual([notice.code for notice in self.prepare(request()).notices if notice.code == "des.road_budget_memory"], [])
+
+
+class AvoidZoneTest(PrepareCase):
+    """S-2 de la verificación única (T42; RF-017-06) **preparando de verdad**: las celdas de una zona «preferible no afectar» llegan al trabajo aparte del peso (también las de peso 1), en la preparación
+    y en la reproducción de lo congelado; la pieza pura es de ``test_road_prepare.PureTest``."""
+
+    def test_a_zone_of_weight_1_reaches_the_job_apart_from_the_weight(self) -> None:
+        """RF-017-06, S-2: con una zona «preferible no afectar» de peso 1 en las máscaras de V01 (el proyecto no tiene ninguna), el trabajo preparado lleva el peso (todo 1) **y** las celdas de la
+        zona (``avoid_zone``: 800 celdas); con otra de peso 3 encima, el peso 3 en las suyas y la unión de las dos como zona; sin zonas, ni peso ni zona."""
+        zone = np.zeros(GRID.shape, dtype=bool)
+        zone[40:60, 40:80] = True
+        heavy = np.zeros(GRID.shape, dtype=bool)
+        heavy[70:80, 40:50] = True
+
+        def one(self: Any) -> dict[str, Any]:
+            return {"Encinar": (mock.Mock(mask=lambda shape: zone), 1.0)}
+
+        def two(self: Any) -> dict[str, Any]:
+            return {"Encinar": (mock.Mock(mask=lambda shape: zone), 1.0), "Franja": (mock.Mock(mask=lambda shape: heavy), 3.0)}
+
+        kind = type(self.masks_v1)
+        with mock.patch.object(kind, "avoid_weights", one):
+            light = self.prepare(request()).job
+        with mock.patch.object(kind, "avoid_weights", two):
+            both = self.prepare(request()).job
+        np.testing.assert_array_equal(light.avoid_weight, np.ones(GRID.shape))
+        np.testing.assert_array_equal(light.avoid_zone, zone)
+        self.assertEqual(int(light.avoid_zone.sum()), 800)
+        np.testing.assert_array_equal(both.avoid_weight, np.where(heavy, 3.0, 1.0))
+        np.testing.assert_array_equal(both.avoid_zone, zone | heavy)
+        plain = self.prepare(request()).job
+        self.assertEqual((plain.avoid_weight, plain.avoid_zone), (None, None))
+
+    def test_every_road_job_of_the_domain_carries_the_zone_with_the_weight(self) -> None:
+        """RF-017-06, S-2: las cuatro construcciones de ``RoadJob`` del dominio (preparar, preparar «Proponer», reproducir la pista y reproducir el trazado) le dan la zona junto al peso: sin ella
+        el trabajo la deduce de ``peso > 1`` y una zona de peso 1 se pierde en silencio (es lo que pasaba); se lee del código, sin proyecto."""
+        import ast
+        import pathlib
+
+        root = pathlib.Path(road_store.__file__).parent
+        found = 0
+        for name in ("road_store.py", "reproduce.py"):
+            for node in ast.walk(ast.parse((root / name).read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "RoadJob":
+                    found += 1
+                    with self.subTest(file=name, line=node.lineno):
+                        self.assertTrue(any(keyword.arg == "avoid_zone" for keyword in node.keywords) or len(node.args) >= 14, "RoadJob sin la zona")
+        self.assertEqual(found, 4)

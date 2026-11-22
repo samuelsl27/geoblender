@@ -526,15 +526,17 @@ class RoadJob:
     (``grid``), la superficie de partida ``start`` (m, float64; ``NaN``, sin dato), las máscaras de la versión como arrays
     booleanos de la rejilla —el corte y el relleno admitidos (``cut_allowed`` y ``fill_allowed``) y las celdas que la ruta y
     la sección no pisan (``untouchable``: intocables y exclusiones; RF-017-06)—, el peso de las zonas «preferible no
-    afectar» (``avoid_weight``: ≥ 1 en cada celda; ``None`` si no hay ninguna, todo pesa 1), la ``geometry`` de origen
+    afectar» (``avoid_weight``: ≥ 1 en cada celda; ``None`` si no hay ninguna, todo pesa 1) y **aparte** sus celdas (``avoid_zone``,
+    un booleano por celda: una zona de peso exactamente 1 pesa como «ninguna» y solo la distingue esta máscara; sin ella, las celdas de
+    peso mayor que 1; no la lleva quien no lleva el peso), la ``geometry`` de origen
     (:class:`RoadGeometry`), los parámetros de la ruta (``route``: solo «trazar») y las cotas de inicio y de fin resueltas
     (``start_level_m`` y ``end_level_m``, D-13; ``None`` si las da la geometría —«eje 3D»— o la ruta —un destino por cota—).
 
     **No lleva** ruta de fichero, conexión, proyecto ni versión: se calcula sin proyecto y se reproduce con el mismo
     resultado. Los arrays son de la **rejilla entera** y vistas de solo lectura. :class:`TypeError` o :class:`ValueError`
     (errores del programa: la preparación rechazó antes, con su capa, su pista, su campo y su valor) si un tipo no es el
-    suyo, el código no es el de una pista, un array no es de la forma de la rejilla, un peso baja de 1, o la geometría y la
-    ruta no son las del modo (P-14): «trazar» lleva el origen, el destino y la ruta y no la línea; los otros dos, la línea y
+    suyo, el código no es el de una pista, un array no es de la forma de la rejilla, un peso baja de 1, una celda de peso mayor que 1 no es
+    de la zona o la zona no lleva su peso, o la geometría y la ruta no son las del modo (P-14): «trazar» lleva el origen, el destino y la ruta y no la línea; los otros dos, la línea y
     ni origen, ni destino ni ruta, y la de «eje 3D» con una Z finita en cada vértice."""
 
     request: RoadRequest
@@ -550,6 +552,7 @@ class RoadJob:
     start_level_m: float | None = None
     end_level_m: float | None = None
     avoid_weight: np.ndarray | None = None
+    avoid_zone: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         from . import road_profiles  # solo al usarlo: la tabla de los perfiles no se carga al importar este módulo
@@ -570,6 +573,15 @@ class RoadJob:
             if not bool((weight >= 1.0).all()):
                 raise ValueError("el peso de una celda «preferible no afectar» es un número de 1 o más (RF-017-06)")
             object.__setattr__(self, "avoid_weight", weight)
+            if self.avoid_zone is None:
+                object.__setattr__(self, "avoid_zone", _readonly(weight > 1.0, shape, np.bool_, "las celdas de «preferible no afectar»"))
+            else:
+                zone = _readonly(self.avoid_zone, shape, np.bool_, "las celdas de «preferible no afectar»")
+                if not bool(zone[weight > 1.0].all()):
+                    raise ValueError("una celda de peso mayor que 1 es de una zona «preferible no afectar» (RF-017-06)")
+                object.__setattr__(self, "avoid_zone", zone)
+        elif self.avoid_zone is not None:
+            raise ValueError("las celdas de «preferible no afectar» llevan su peso (RF-017-06)")
         if not isinstance(self.geometry, RoadGeometry):
             raise TypeError(f"la geometría de una pista es RoadGeometry, no {self.geometry!r}")
         if self.route is not None and not isinstance(self.route, RouteParams):

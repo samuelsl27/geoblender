@@ -301,11 +301,11 @@ def road_profile(profile: ProfileData = PROFILE) -> Any:
 def route_job(grid: Any, surface: np.ndarray, origin: tuple[float, float], destination: Any, *,
               route: RouteData = ROUTE, profile: ProfileData = PROFILE, untouchable: np.ndarray | None = None,
               avoid_weight: np.ndarray | None = None, start_level_m: float | None = None,
-              end_level_m: float | None = None) -> Any:
+              end_level_m: float | None = None, avoid_zone: np.ndarray | None = None) -> Any:
     """Un ``RoadJob`` en el modo «trazar» sobre ``grid`` con la superficie de partida ``surface`` (m, float64; ``NaN``, sin dato): del
     punto absoluto ``origin`` a ``destination`` (un punto absoluto o un ``LevelDestination``), con los parámetros de la ruta ``route``,
     el perfil ``profile`` (``road_profile``), lo que no se pisa (``untouchable``, ``None``: nada), el peso de «preferible no afectar»
-    (``avoid_weight``, ``None``: todo pesa 1) y las cotas de inicio y de fin ya resueltas (``None``: las del terreno). El corte y el
+    (``avoid_weight``, ``None``: todo pesa 1; ``avoid_zone``, sus celdas: sin ella, las de peso mayor que 1) y las cotas de inicio y de fin ya resueltas (``None``: las del terreno). El corte y el
     relleno se admiten en todas partes."""
     road_model = import_geoblender("design.road_model")
     shape = grid.shape
@@ -317,7 +317,7 @@ def route_job(grid: Any, surface: np.ndarray, origin: tuple[float, float], desti
         untouchable=np.zeros(shape, dtype=bool) if untouchable is None else untouchable,
         geometry=road_model.RoadGeometry(origin=origin, destination=destination),
         route=road_model.RouteParams(**{name: getattr(route, name) for name in RouteData.__slots__}),
-        start_level_m=start_level_m, end_level_m=end_level_m, avoid_weight=avoid_weight)
+        start_level_m=start_level_m, end_level_m=end_level_m, avoid_weight=avoid_weight, avoid_zone=avoid_zone)
 
 
 def route_corridor(job: Any, *, target: Any = None, margin_m: float | None = None) -> tuple[Any, Any]:
@@ -1159,10 +1159,11 @@ ENGRAVE_CAUSES: tuple[str, ...] = ("cut_allowed", "fill_allowed", "max_height")
 
 
 def axis_job(grid: Any, surface: np.ndarray, line: np.ndarray, *, profile: ProfileData = PROFILE, cut_allowed: np.ndarray | None = None,
-             fill_allowed: np.ndarray | None = None, untouchable: np.ndarray | None = None, avoid_weight: np.ndarray | None = None) -> Any:
+             fill_allowed: np.ndarray | None = None, untouchable: np.ndarray | None = None, avoid_weight: np.ndarray | None = None,
+             avoid_zone: np.ndarray | None = None) -> Any:
     """Un ``RoadJob`` en el modo «sobre un eje» (sin ruta, sin altura máxima de desmonte y terraplén) sobre ``grid`` con la superficie de partida
     ``surface`` y la línea absoluta ``line`` (``(k, 2)``): el perfil ``profile`` y, si no se dan, el corte y el relleno admitidos en todas partes, nada
-    intocable y ninguna zona «preferible no afectar»."""
+    intocable y ninguna zona «preferible no afectar» (``avoid_weight`` y ``avoid_zone``: su peso y sus celdas; sin la zona, las de peso mayor que 1)."""
     road_model = import_geoblender("design.road_model")
     shape = grid.shape
     request = road_model.RoadRequest("Pista de prueba", road_model.LayerFields("gis_fea_pistas_ejes", "nombre"), "on_axis", "pista_principal", "gis_dtm_prueba")
@@ -1171,7 +1172,7 @@ def axis_job(grid: Any, surface: np.ndarray, line: np.ndarray, *, profile: Profi
         cut_allowed=np.ones(shape, dtype=bool) if cut_allowed is None else cut_allowed,
         fill_allowed=np.ones(shape, dtype=bool) if fill_allowed is None else fill_allowed,
         untouchable=np.zeros(shape, dtype=bool) if untouchable is None else untouchable,
-        geometry=road_model.RoadGeometry(line=np.asarray(line, dtype=np.float64)), avoid_weight=avoid_weight)
+        geometry=road_model.RoadGeometry(line=np.asarray(line, dtype=np.float64)), avoid_weight=avoid_weight, avoid_zone=avoid_zone)
 
 
 @dataclass(frozen=True, slots=True)

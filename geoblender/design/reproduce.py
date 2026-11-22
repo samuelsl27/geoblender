@@ -1187,8 +1187,9 @@ def _reproduce_road(request: ReproduceRequest, budget_s: float) -> Iterator[Prog
     geometry, fid = road_store.frozen_geometry(asked, code, frozen.grid, layer, zone_layer=zone, axis=axis, footprint=footprint, lines=lines)
     whole = (slice(0, frozen.grid.nrows), slice(0, frozen.grid.ncols))
     cut, fill = admitted(masks, BenchSense.CUT)[whole], admitted(masks, BenchSense.FILL)[whole]
+    weight, zone = road_store.avoid_layers(masks) or (None, None)
     job = RoadJob(asked, code, road_store.frozen_profile(frozen.values, asked.profile), frozen.grid, start, cut, fill, road_store.untouchable_cells(masks), geometry,
-                  RouteParams.from_values(values) if asked.mode is RoadMode.TRACE else None, asked.start_level_m, asked.end_level_m, road_store.avoid_weight(masks))
+                  RouteParams.from_values(values) if asked.mode is RoadMode.TRACE else None, asked.start_level_m, asked.end_level_m, weight, zone)
     common = {name: store.number(frozen.values, name) for name in provenance.PLATFORM_COMMON_PARAMS}
     others = tuple(item.name for item in request.inputs if item.role == provenance.ROAD_OTHER_DESIGN_ROLE)
 
@@ -1286,8 +1287,9 @@ def _reproduce_road_propose(request: ReproduceRequest, budget_s: float) -> Itera
         geometry = RoadGeometry(origin=settled["origin"], destination=settled["destination"])
     whole = (slice(0, frozen.grid.nrows), slice(0, frozen.grid.ncols))
     cut, fill = admitted(masks, BenchSense.CUT)[whole], admitted(masks, BenchSense.FILL)[whole]
+    weight, zone = road_store.avoid_layers(masks) or (None, None)
     job = RoadJob(asked, code, road_store.frozen_profile(frozen.values, asked.profile), frozen.grid, start, cut, fill, road_store.untouchable_cells(masks), geometry,
-                  RouteParams.from_values(values), settled["start_level_m"], settled["end_level_m"], road_store.avoid_weight(masks))
+                  RouteParams.from_values(values), settled["start_level_m"], settled["end_level_m"], weight, zone)
     outcome = yield from road_store.propose_compute_steps(job, surface=start_item.name, budget_s=budget_s)
     made = _route_layer_output(request, road_store.propose_layer_rows(outcome), frozen.crs)
     yield Progress(_PHASE, 1, 1, "Trazado reproducido", result=ReproducedResult((made,), tuple(outcome.figures)))
