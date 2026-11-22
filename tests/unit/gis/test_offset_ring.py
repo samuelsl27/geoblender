@@ -275,6 +275,101 @@ class SteppedDistanceTest(unittest.TestCase):
         self.assertTrue(np.any(cap[:, 0] < -5.77 - 1e-6))
 
 
+def _sampled(ring: np.ndarray, step: float) -> np.ndarray:
+    """El anillo con un vértice cada ``step`` m (o menos) a lo largo de cada arista: vértices alineados."""
+    out = []
+    for a, b in zip(ring, np.roll(ring, -1, axis=0), strict=True):
+        n = max(1, round(float(np.hypot(*(b - a))) / step))
+        out.extend(a + (b - a) * k / n for k in range(n))
+    return np.array(out)
+
+
+def _rotated(ring: np.ndarray, angle: float) -> np.ndarray:
+    c, s = math.cos(angle), math.sin(angle)
+    return ring @ np.array([[c, s], [-s, c]])
+
+
+class AlignedVerticesTest(unittest.TestCase):
+    """T09c: anillos con vértices alineados (muestreados cada ≤ la distancia) y esquinas cóncavas. Un trozo del contorno de una losa
+    que va por el borde de la fuente (el lado perpendicular de un rectángulo en una esquina cóncava) lo clasificaba mal el rayo desde un
+    punto sobre el borde, y dejaba un anillo suelto de tres vértices: el desfase salía no verificado (falta de casi ``d``)."""
+
+    def check(self, ring: np.ndarray, d: object, side: int, label: object, cell: float = 0.25) -> None:
+        result = offset.offset_ring(ring, d, side, tol=TOL)
+        self.assertTrue(result.verified, (label, side, result.defect, result.defect_at, result.max_defect_m))
+        loops = list(result.rings) + list(result.holes)
+        for loop in loops:
+            self.assertTrue(_simple(loop), (label, side))
+        dist = np.broadcast_to(np.asarray(d, dtype=np.float64), (len(ring),))
+        self.assertLessEqual(_shortfall(loops, ring, dist), TOL + 1e-9, (label, side))
+        area = sum(_area(loop) for loop in loops)
+        exact = _capsule_area(ring, dist, side, cell=cell)
+        self.assertLess(abs(area - exact), (0.01 if cell < 0.5 else 0.03) * exact + 4.0 * cell, (label, side, area, exact))
+
+    def test_dumbbell_sampled_every_meter_with_d_10(self) -> None:
+        """El caso de la T11: la mancuerna muestreada a 1 m, ``d = 10`` m, hacia fuera y hacia dentro (sin muestrear, bien)."""
+        for step in (None, 1.0):
+            ring = DUMBBELL if step is None else _sampled(DUMBBELL, step)
+            for side in (1, -1):
+                self.check(ring, 10.0, side, ("dumbbell", step))
+
+    def test_variants_of_aligned_vertices(self) -> None:
+        """Girada (7° y 45°), muestreada a 1 y 3 m, en L, en C y en mancuerna, con distancias menores y mayores que la arista."""
+        for name, shape in (("dumbbell", DUMBBELL), ("L", L_SHAPE), ("C", C_SHAPE)):
+            for angle in (math.radians(7.0), math.radians(45.0)):
+                for step in (1.0, 3.0):
+                    ring = _sampled(_rotated(shape, angle), step)
+                    for d in (3.0, 10.0):
+                        for side in (1, -1):
+                            self.check(ring, d, side, (name, round(math.degrees(angle)), step, d), cell=0.5)
+
+    def test_aligned_vertices_with_a_step_of_distance(self) -> None:
+        """Vértices alineados y la distancia con un escalón (la roseta): la unión de losas sigue siendo correcta."""
+        ring = _sampled(L_SHAPE, 1.0)
+        dist = np.where(np.arange(len(ring)) < len(ring) // 2, 5.77, 8.0)
+        self.check(ring, dist, 1, "L stepped")
+
+    def test_dumbbell_sampled_does_not_leave_a_stray_ring(self) -> None:
+        """La causa: ningún anillo del resultado tiene un vértice sobre la fuente (el desfase está a ``d`` de ella)."""
+        ring = _sampled(DUMBBELL, 1.0)
+        result = offset.offset_ring(ring, 10.0, 1, tol=TOL)
+        self.assertEqual((len(result.rings), len(result.holes)), (1, 0))
+        self.assertGreater(float(_distance(result.rings[0], ring).min()), 10.0 - TOL - 1e-9)
+
+
+class SteppedDistancePerformanceTest(unittest.TestCase):
+    """T09c: la cresta que sigue al terreno cambia la distancia en cada arista de 1 m; cada salto lleva un círculo, y con 400 aristas
+    el desfase tardaba ≈ 2 s con 0,05 m de arco y ≈ 20 s con 1 mm. Los plazos son holgados por la carga paralela (≈ 0,15 s y ≈ 0,8 s
+    medidos)."""
+
+    @staticmethod
+    def _ring(count: int = 400) -> tuple[np.ndarray, np.ndarray]:
+        angle = np.linspace(0.0, 2.0 * math.pi, count, endpoint=False)
+        radius = count / (2.0 * math.pi)
+        return (np.column_stack([radius * np.cos(angle), radius * np.sin(angle)]), 8.0 + 4.0 * np.sin(3.0 * angle))
+
+    def best_of(self, tol: float, side: int, runs: int = 3) -> tuple[float, object]:
+        ring, dist = self._ring()
+        best, result = math.inf, None
+        for _ in range(runs):
+            start = time.perf_counter()
+            result = offset.offset_ring(ring, dist, side, tol=tol)
+            best = min(best, time.perf_counter() - start)
+        return best, result
+
+    def test_400_edges_of_1_m_with_a_distance_per_edge(self) -> None:
+        for side in (1, -1):
+            elapsed, result = self.best_of(0.05, side)
+            self.assertTrue(result.verified)
+            self.assertEqual((len(result.rings), len(result.holes)), (1, 0))
+            self.assertLess(elapsed, 0.8, (side, elapsed))
+
+    def test_the_same_with_an_arc_tolerance_of_1_mm(self) -> None:
+        elapsed, result = self.best_of(0.001, 1, runs=1)
+        self.assertTrue(result.verified)
+        self.assertLess(elapsed, 5.0, elapsed)
+
+
 class NoisyRingTest(unittest.TestCase):
     """T-1 y T-2 del plan: los trozos de menos de 1 mm y los vértices que se multiplican."""
 

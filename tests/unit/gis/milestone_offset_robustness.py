@@ -24,6 +24,7 @@ T09b (unión de losas, plan §5.4 A4) los acepta todos."""
 from __future__ import annotations
 
 import dataclasses
+import math
 import unittest
 from collections import Counter
 from typing import Any
@@ -146,6 +147,71 @@ class RobustnessTest(unittest.TestCase):
         con la unión de losas (T09b), ninguno."""
         rejected = [row.case.index for row in outcomes("noise") if row.case.with_rose and not row.verified]
         self.assertEqual(rejected, [], f"{len(rejected)} de {pd.ROUGH_CASES // 2} casos con roseta rechazados")
+
+
+def sampled(ring: np.ndarray, step: float) -> np.ndarray:
+    """El anillo con un vértice cada ≤ ``step`` m a lo largo de cada arista (vértices alineados)."""
+    out = []
+    for a, b in zip(ring, np.roll(ring, -1, axis=0), strict=True):
+        n = max(1, round(float(np.hypot(*(b - a))) / step))
+        out.extend(a + (b - a) * k / n for k in range(n))
+    return np.array(out)
+
+
+def rotated(ring: np.ndarray, angle: float) -> np.ndarray:
+    c, s = math.cos(angle), math.sin(angle)
+    return ring @ np.array([[c, s], [-s, c]])
+
+
+L_SHAPE = np.array([(0, 0), (40, 0), (40, 20), (20, 20), (20, 40), (0, 40)], dtype=np.float64)
+DUMBBELL = np.array([(0, 0), (30, 0), (30, 13), (50, 13), (50, 0), (80, 0), (80, 30), (50, 30), (50, 17), (30, 17), (30, 30), (0, 30)],
+                    dtype=np.float64)
+C_SHAPE = np.array([(0, 0), (40, 0), (40, 18), (30, 18), (30, 10), (10, 10), (10, 30), (30, 30), (30, 22), (40, 22), (40, 40), (0, 40)],
+                   dtype=np.float64)
+
+
+class AlignedVerticesRobustnessTest(unittest.TestCase):
+    """T09c: anillos con **vértices alineados** (el contorno muestreado cada ≤ la distancia, que es lo que deja la densificación del primer
+    banco, RF-018-12) y esquinas cóncavas, que la batería rugosa no cubre: un trozo del borde de una losa que va por la fuente lo
+    clasificaba mal el rayo desde un punto sobre el borde. Con distancia constante, ningún caso se rechaza; con el escalón de la roseta,
+    lo que se da por bueno es correcto."""
+
+    @staticmethod
+    def cases() -> list[tuple[str, np.ndarray]]:
+        out = []
+        for name, shape in (("L", L_SHAPE), ("dumbbell", DUMBBELL), ("C", C_SHAPE)):
+            for degrees in (0.0, 7.0, 30.0, 45.0, 70.0):
+                for step in (0.5, 1.0, 1.7, 3.0):
+                    out.append((f"{name} {degrees:g}° cada {step:g} m", sampled(rotated(shape, math.radians(degrees)), step)))
+        return out
+
+    def run_ring(self, ring: np.ndarray, dist: np.ndarray, side: int, label: str) -> bool:
+        result = offset.offset_ring(ring, dist, side, tol=H.arc_m)
+        loops = list(result.rings) + list(result.holes)
+        if result.verified:
+            self.assertEqual(oracle.crossing_count(loops), 0, (label, side, "no simple"))
+            for loop in loops:
+                self.assertLessEqual(oracle.capsule_shortfall(loop, ring, dist - H.arc_m), SLACK_M, (label, side, "distancia"))
+        return result.verified
+
+    def test_constant_distance_is_never_rejected(self) -> None:
+        rejected = []
+        for label, ring in self.cases():
+            for d in (3.0, 10.0):
+                for side in (1, -1):
+                    if not self.run_ring(ring, np.full(len(ring), d), side, label):
+                        rejected.append((label, d, side))
+        self.assertEqual(rejected, [])
+
+    def test_stepped_distance_accepted_results_are_correct(self) -> None:
+        """La roseta de dos rangos (5,77 y 10 m) en la mitad de cada anillo: lo dado por bueno es simple y está a la distancia."""
+        done = 0
+        for label, ring in self.cases():
+            dist = np.where(np.arange(len(ring)) < len(ring) // 2, 5.77, 10.0)
+            for side in (1, -1):
+                done += int(self.run_ring(ring, dist, side, label))
+        print(f"\ndistancia con escalón y vértices alineados: {done} de {2 * len(self.cases())} verificados")
+        self.assertGreater(done, 0)
 
 
 if __name__ == "__main__":

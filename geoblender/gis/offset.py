@@ -363,13 +363,26 @@ def _step_of(radius: np.ndarray, tol: float) -> np.ndarray:
     return 2.0 * np.arccos(radius / (radius + tol))
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _Discs:
+    """Los círculos de las losas, que son los últimos polígonos: el índice del primero, y de cada uno
+    el centro, el radio (la apotema) y el paso angular. Un polígono regular circunscrito tiene los
+    lados a ``k·paso``, y la distancia de un punto a su interior sale sin recorrer los lados."""
+
+    first: int
+    centre: np.ndarray
+    radius: np.ndarray
+    share: np.ndarray
+
+
 def _slabs(points: np.ndarray, dist: np.ndarray, side: int, tol: float, corner: str
-           ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+           ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, _Discs]:
     """Las **losas** del desfase (plan §5.4 A4, S-1 b): polígonos convexos antihorarios cuya unión
     es el entorno de la fuente a la distancia de cada arista (la unión de las cápsulas de cada
     arista: la arista engrosada ``d`` a cada lado y un círculo de radio ``d`` en cada extremo).
     Devuelve los vértices de todos, el polígono de cada vértice (bloques seguidos), la arista de
-    la fuente de la que sale cada vértice y si el lado que sale de él va por la fuente. Son:
+    la fuente de la que sale cada vértice, si el lado que sale de él va por la fuente y los
+    círculos (:class:`_Discs`, los últimos polígonos). Son:
 
     - un **rectángulo** por arista, del lado del desfase (``d`` de ancho);
     - en cada vértice con la misma distancia a los dos lados y que abre el lado del desfase, un
@@ -449,6 +462,7 @@ def _slabs(points: np.ndarray, dist: np.ndarray, side: int, tol: float, corner: 
         made += fans.size
 
     discs = np.flatnonzero(disc)
+    found = _Discs(made, np.zeros((0, 2)), np.zeros(0), np.zeros(0))
     if discs.size:
         total = np.maximum(np.ceil(2.0 * math.pi / step[discs]).astype(np.int64), 3)
         owner, k = expand(total)
@@ -461,9 +475,10 @@ def _slabs(points: np.ndarray, dist: np.ndarray, side: int, tol: float, corner: 
         out_poly.append(made + owner)
         out_source.append(np.where(d_prev[v] > d_next[v], (v - 1) % count, v))
         out_flag.append(np.zeros(len(out), dtype=bool))
+        found = _Discs(made, points[discs], radius[discs], 2.0 * math.pi / total)
         made += discs.size
     return (np.concatenate(out_points), np.concatenate(out_poly), np.concatenate(out_source),
-            np.concatenate(out_flag))
+            np.concatenate(out_flag), found)
 
 
 def _depth(points: np.ndarray, which: np.ndarray, vertices: np.ndarray, start: np.ndarray,
@@ -499,7 +514,7 @@ def _frame(points: np.ndarray, dist: np.ndarray, side: int
 def _slab_depth(points: np.ndarray, which: np.ndarray, rects: int,
                 frame: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
                 circle: tuple[np.ndarray, np.ndarray], vertices: np.ndarray, start: np.ndarray,
-                size: np.ndarray) -> np.ndarray:
+                size: np.ndarray, discs: _Discs) -> np.ndarray:
     """:func:`_depth` de cada punto a su losa; los rectángulos (los ``rects`` primeros), con sus
     dos proyecciones y no con sus cuatro lados, y los demás, fuera de su círculo envolvente, ``-1``
     (fuera), sin recorrer sus lados."""
@@ -513,7 +528,16 @@ def _slab_depth(points: np.ndarray, which: np.ndarray, rects: int,
         along = w[:, 0] * tangent[e, 0] + w[:, 1] * tangent[e, 1]
         across = w[:, 0] * normal[e, 0] + w[:, 1] * normal[e, 1]
         out[r] = np.minimum(np.minimum(along, length[e] - along), np.minimum(across, wide[e] - across))
-    o = np.flatnonzero(~is_rect)
+    is_disc = which >= discs.first
+    c = np.flatnonzero(is_disc)
+    if c.size:
+        e = which[c] - discs.first
+        w = points[c] - discs.centre[e]
+        reach = np.hypot(w[:, 0], w[:, 1])
+        angle = np.arctan2(w[:, 1], w[:, 0])
+        share = discs.share[e]
+        out[c] = discs.radius[e] - reach * np.cos(angle - np.round(angle / share) * share)
+    o = np.flatnonzero(~is_rect & ~is_disc)
     if o.size:
         centre, radius = circle
         out[o] = -1.0
@@ -535,7 +559,7 @@ def _offset_work(points: np.ndarray, dist: np.ndarray, side: int, tol: float, co
     if not float(dist.max()) > 0.0:
         return OffsetResult((points.copy(),), (), (np.arange(count, dtype=np.int64),), True, 0.0)
     eff = np.maximum(dist, MIN_DISTANCE_M)
-    verts, poly, vsource, on_source = _slabs(points, eff, side, tol, corner)
+    verts, poly, vsource, on_source, discs = _slabs(points, eff, side, tol, corner)
     total = len(verts)
     nxt = following(poly)
     size = np.bincount(poly)
@@ -559,7 +583,25 @@ def _offset_work(points: np.ndarray, dist: np.ndarray, side: int, tol: float, co
     twin = np.ones(total, dtype=bool)
     twin[first_one] = False
     skip |= twin
-    yield 1
+    # Un lado cuyos dos extremos están dentro de otra misma losa (convexa) va por dentro de ella: no
+    # es borde ni cruza el borde de la unión (que son lados que quedan), y no hace falta partirlo.
+    known: list[np.ndarray] = []
+    for low in _blocks(total, chunk):
+        part = verts[low:low + chunk]
+        k, q = box_pairs(np.concatenate([part, part], axis=1), poly_boxes)
+        keep = q != poly[low + k]
+        k, q = k[keep], q[keep]
+        deep = _slab_depth(part[k], q, count, frame, circle, verts, start, size, discs) > _EDGE_M
+        k, q = k[deep], q[deep]
+        if k.size:
+            pairs = (low + k).astype(np.int64) * len(size) + q
+            known.append(pairs)
+        yield 1
+    if known:
+        inner = np.concatenate(known)
+        vertex_of, slab_of = inner // len(size), inner % len(size)
+        ahead = nxt[vertex_of].astype(np.int64) * len(size) + slab_of
+        skip[vertex_of[np.isin(ahead, inner)]] = True
     live = np.flatnonzero(~skip)
     a_live, b_live = verts[live], verts[nxt[live]]
     edge_boxes = np.concatenate([np.minimum(a_live, b_live), np.maximum(a_live, b_live)], axis=1)
@@ -620,6 +662,7 @@ def _offset_work(points: np.ndarray, dist: np.ndarray, side: int, tol: float, co
     right = np.column_stack([along[:, 1], -along[:, 0]]) / long[:, None]
     covered = np.zeros(len(mid), dtype=bool)
     winding = np.zeros(len(mid), dtype=np.int64)
+    on_border = np.zeros(len(mid), dtype=bool)
     group = (src_b[:, 1] <= src_a[:, 1]).astype(np.int64)
     for low in _blocks(len(mid), chunk):
         part = slice(low, min(low + chunk, len(mid)))
@@ -627,24 +670,35 @@ def _offset_work(points: np.ndarray, dist: np.ndarray, side: int, tol: float, co
                          poly_boxes)
         other = q != own[part][k]
         k, q = k[other], q[other]
-        depth = _slab_depth(mid[part][k], q, count, frame, circle, verts, start, size)
+        depth = _slab_depth(mid[part][k], q, count, frame, circle, verts, start, size, discs)
         covered[part] = np.bincount(k[depth > _EDGE_M], minlength=part.stop - part.start) > 0
         edge = np.unique(k[np.abs(depth) <= _EDGE_M])
         if edge.size:  # va por el borde de otra losa: un punto a su derecha
             probe = mid[part][edge] + PROBE_M * right[part][edge]
             kk, qq = box_pairs(np.concatenate([probe, probe], axis=1), poly_boxes)
-            hit = ((_slab_depth(probe[kk], qq, count, frame, circle, verts, start, size) > 0.0)
+            hit = ((_slab_depth(probe[kk], qq, count, frame, circle, verts, start, size, discs) > 0.0)
                    & (qq != own[part][edge][kk]))
             covered[low + edge] = np.bincount(kk[hit], minlength=len(edge)) > 0
         turns = ray_counts(mid[part], src_a, src_b, group, 2)
         winding[part] = turns[:, 0] - turns[:, 1]
+        yield 1
+    # Un trozo que va por el borde de la fuente (el lado perpendicular de un rectángulo en una
+    # esquina, o el de otra losa con vértices alineados) no es nunca el desfase (d > 0): lo que
+    # dice el rayo desde un punto sobre el borde es arbitrario.
+    edge_boxes_src = np.concatenate([np.minimum(src_a, src_b), np.maximum(src_a, src_b)], axis=1)
+    for low in _blocks(len(mid), chunk):
+        part = mid[low:low + chunk]
+        k, e = box_pairs(np.concatenate([part - _EDGE_M, part + _EDGE_M], axis=1), edge_boxes_src)
+        if k.size:
+            near = _point_edge_distance(part[k], src_a[e], src_b[e]) <= _EDGE_M
+            on_border[low + k[near]] = True
         yield 1
     in_source = winding == 1
     if side > 0:
         border = ~(covered | in_source)
     else:
         border = in_source & ~covered
-    border &= ~on_source[vertex[pick]]
+    border &= ~on_source[vertex[pick]] & ~on_border
     begin, end, owner = begin[border], end[border], owner[border]
     if side < 0:
         begin, end = end, begin
