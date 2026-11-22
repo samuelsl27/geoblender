@@ -38,6 +38,10 @@ describe; estas pruebas avisan de que se separan:
   lista; las cifras, los tipos y los valores por defecto de sus tablas son los del código—, el glosario, ``limites-y-restricciones.md``
   con las tres respuestas de «requiere acceso», el ``CHANGELOG.md``, el índice de specs, el roadmap, ``jobs.md`` sin el worker de la
   ruta 3D y la trampa nueva de ``docs/trampas.md``).
+- la 017 (su T46b, tras la convergencia: el estado, dicho **igual** en la ficha de ``des``, el índice de specs, el roadmap y ``AGENTS.md``: T01 a T46b hechas,
+  T47 y el H3 por hacer, sin cerrar; las fichas que aún decían que las pistas no existen o que «Recalcular lo obsoleto» no asienta una pista anterior a un
+  relleno —H2-2, desmentido—; las etiquetas del catálogo en la barra superior; ARQ-13; las trampas con los nombres de los módulos renombrados; y la tabla
+  «nombre antiguo → nuevo», la nota de M1 y las «Decisiones de Samuel» de ``tasks.md`` y ``verificacion.md`` §10).
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``). Las pruebas del emparejado de las
 citas (:class:`QuoteMatcherTest`) no la necesitan: comprueban que la regla no da falsos verdes.
@@ -1880,6 +1884,14 @@ ROAD_COMMANDS = ("des_create_road", "des_propose_road", "des_road_access", "des_
 ROAD_CLASSES = tuple(f"GEOBLENDER_OT_{name}" for name in ROAD_COMMANDS)
 GONE_COMMANDS = ("des_draw_haul_road", "des_route_haul_road", "des_burn_roads")
 DES_OPS_PATH = EXTENSION_DIR / "bl" / "ops" / "des.py"
+# El estado de la 017 tras la T46b, **dicho igual** en la cabecera y la fila de «Specs» de ``des.md``, en el índice de specs, en el roadmap y en ``AGENTS.md``
+# (T46b, S-8): la T47 y el H3 por hacer, la T36 con CE-017-10 «sin ejecutar con los datos originales». Cuando la sesión principal haga la T47 y el H3, cambia
+# aquí y en los cuatro sitios, juntos.
+STATE_017 = ("con las tareas T01 a T46b hechas, salvo el H3 (T38) —el banco de Silvestre (T36, con CE-017-10 sin ejecutar con los datos originales), "
+             "la verificación única (T37) y la convergencia (T39 a T46b)—, y por hacer la T47 (la verificación de lo cambiado, de la sesión principal) "
+             "y el H3 en pantalla (T38) con CE-017-11")
+# Lo que decían esos cuatro sitios hasta la T46 y ya no.
+STALE_STATE_017 = ("T01 a T35b", "faltan el banco de Silvestre", "por hacer el banco de Silvestre (T36)", "por hacer **la T35b**", "T01 a T35 hechas")
 # Cuántos valores tiene cada familia de parámetros de la 017 y cuáles son HIPÓTESIS.
 ROAD_FAMILY_COUNTS = ((dparams.ROAD_ENTITY, 26), (dparams.ACCESS_ENTITY, 8))
 ROAD_ROUTE_HYPOTHESES = {"mesh_m", "level_step_m", "max_cut_fill_m", "lambda_per_m", "turn_m", "margin_m", "simplify_m",
@@ -2012,15 +2024,15 @@ class RoadsCardDocTest(unittest.TestCase):
 
     def test_the_card_says_where_the_017_is_and_names_the_real_modules(self) -> None:
         """Definición de hecho §3.7 (T35 y T35b; plan 017 §5.1; los nombres que las tareas cambiaron): la cabecera de ``des.md`` dice que la 017
-        (R-40) está hecha en ``main``, sin publicar, con las tareas T01 a T35b hechas, su guía de uso y sus trece módulos nuevos en §4.5; §4.5 existe y la «API prevista» pasó a §4.6
+        (R-40) está hecha en ``main``, sin publicar, con las tareas T01 a T46b hechas salvo el H3 (:data:`STATE_017`), su guía de uso y sus trece módulos nuevos en §4.5; §4.5 existe y la «API prevista» pasó a §4.6
         **sin** el ``design.roads.Road`` del plan; §1.9 nombra los módulos con sus nombres **reales** (``road_gradient``, no
         ``road_grade``, que el glosario §14 prohíbe, y ``road_card``) y §2.4 dice que las reglas de la rampa las aplica ya la pista."""
         head = one_line(self.des[:self.des.index("## Responsabilidad")])
         for fact in ("**Desde la spec 017**", "pistas y rampas, R-40", "sin ADR nuevo", "trece módulos nuevos (§4.5)", "hecha en `main`, sin publicar",
-                     "las tareas T01 a T35b hechas", "docs/usuario/pistas-y-rampas.md", "el banco de Silvestre (T36)", "el H3"):
+                     STATE_017, "docs/usuario/pistas-y-rampas.md", "la 017 no está cerrada: el cierre lo pone la sesión principal"):
             with self.subTest(head=fact):
                 self.assertIn(fact, head)
-        for stale in ("por hacer **la T35b**", "T01 a T35 hechas"):  # T35b: la guía, el glosario, el CHANGELOG, el roadmap y el índice ya están
+        for stale in STALE_STATE_017:  # T46b: la 017 lleva hechas las tareas T01 a T46b (salvo el H3); ya no «por hacer el banco de Silvestre»
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, head)
         self.assertNotIn("§1.8 en adelante", head)
@@ -2044,10 +2056,13 @@ class RoadsCardDocTest(unittest.TestCase):
         row = re.search(r"^\| 017-des-pistas-y-rampas .*$", self.des, re.MULTILINE)
         self.assertIsNotNone(row)
         assert row is not None
-        for fact in ("R-40", "hecha en `main`, sin publicar", "T01 a T35b", "pistas-y-rampas.md"):
+        specs_row = one_line(row.group(0))
+        for fact in ("R-40", "hecha en `main`, sin publicar", STATE_017, "pistas-y-rampas.md", "no está cerrada: el cierre lo pone la sesión principal"):
             with self.subTest(row=fact):
-                self.assertIn(fact, row.group(0))
-        self.assertNotIn("faltan la T35b", row.group(0))  # T35b: ya está hecha
+                self.assertIn(fact, specs_row)
+        for stale in STALE_STATE_017:
+            with self.subTest(row_stale=stale):
+                self.assertNotIn(stale, specs_row)
         self.assertIsNone(re.search(r"^\| Pistas y rampas \(R-40\) \| 1\.9 y las reglas de rampa de 2\.4 \| R-33 \|$", self.des, re.MULTILINE))
 
     def test_the_card_tells_what_the_017_adds_to_the_other_modules(self) -> None:
@@ -2528,8 +2543,8 @@ class RoadsGuideDocTest(unittest.TestCase):
 @docs.requires_docs
 class RoadsStateDocTest(unittest.TestCase):
     """El índice de specs, el roadmap, el glosario, ``limites-y-restricciones.md``, ``jobs.md``, ``docs/trampas.md`` y el ``CHANGELOG.md`` del código
-    dicen el estado de la 017 tras la T35b: **implementada en ``main``, sin publicar**, a falta del banco de Silvestre, la verificación única, el H3 y
-    CE-017-11 (la sesión principal marca «Cerrada» tras el H3, con R-36 como dependencia)."""
+    dicen el estado de la 017 tras la T46b: **implementada en ``main``, sin publicar** y sin cerrar, con las tareas T01 a T46b hechas salvo el H3 y por hacer
+    la T47 y el H3 en pantalla con CE-017-11 (:data:`STATE_017`; la sesión principal marca «Cerrada» tras ellos, con R-36 como dependencia)."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -2542,35 +2557,35 @@ class RoadsStateDocTest(unittest.TestCase):
         cls.ledger = re.findall(r"^\| 2026-11-21 \| R-40.*$", cls.roadmap, re.MULTILINE)
 
     def test_the_index_says_where_the_017_is(self) -> None:
-        """Definición de hecho §3.7 (T35b): la fila de la 017 dice que está **implementada** en ``main``, sin publicar, con las tareas T01 a T35b
-        hechas, su guía (``docs/usuario/pistas-y-rampas.md``) y lo que falta (el banco de Silvestre, la verificación única, el H3 y CE-017-11), que
-        «Cerrada» no se pone hasta el H3 (R-36 como dependencia, D-3), la 012 en su 0.6 y los 51 que son sus tareas; y ya no dice que falte
-        ``tasks.md``."""
+        """Definición de hecho §3.7 (T35b, T46b): la fila de la 017 dice que está **implementada** en ``main``, sin publicar, con las tareas T01 a T46b
+        hechas salvo el H3 (el banco de Silvestre, la verificación única y la convergencia) y lo que falta (la T47, el H3 y CE-017-11), que «Cerrada» no se
+        pone hasta el H3 (R-36 como dependencia, D-3), su guía (``docs/usuario/pistas-y-rampas.md``), la 012 en su 0.6, las 51 tareas más las 10 de la
+        convergencia y las 19 decisiones de Samuel abiertas; y ya no dice «T01 a T35b» ni que falte ``tasks.md``."""
         self.assertIsNotNone(self.index_row)
         assert self.index_row is not None
         row = one_line(self.index_row.group(0))
-        for fact in ("**implementada en `main`, sin publicar**", "T01 a T35b", "docs/usuario/pistas-y-rampas.md", "el banco de Silvestre (T36)",
-                     "la verificación única (T37)", "el H3 en pantalla (T38)", "CE-017-11", "«Cerrada» solo tras el H3 y CE-017-11",
-                     "R-36", "51 (T01–T38", "**Aprobada** (0.3"):
+        for fact in ("**implementada en `main`, sin publicar**", STATE_017, "docs/usuario/pistas-y-rampas.md", "CE-017-11",
+                     "«Cerrada» solo tras el H3 y CE-017-11", "(no está cerrada)", "R-36", "51 (T01–T38", "más 10 de convergencia (T39 a T47 y la T46b",
+                     "las 19 decisiones de Samuel que no son del código siguen abiertas", "**Aprobada** (0.3"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, row)
-        for stale in ("falta `tasks.md`", "36 tareas orientativas más", "| — |", "**Cerrada**"):
+        for stale in ("falta `tasks.md`", "36 tareas orientativas más", "| — |", "**Cerrada**", *STALE_STATE_017):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, row)
 
     def test_the_roadmap_says_where_the_017_is(self) -> None:
-        """Definición de hecho §3.7 (T35b): la fila de R-40 dice que la 017 está **implementada** en ``main``, sin publicar, a falta del banco de Silvestre,
-        de la verificación única, del H3 en pantalla y de CE-017-11, que «Cerrada» solo la marca la sesión principal tras ellos, con R-36 como
-        dependencia (D-3), y con su guía; y su registro del 21/11/2026 lo cuenta; ya no dice «en especificación» ni que falte ``tasks.md``."""
+        """Definición de hecho §3.7 (T35b, T46b): la fila de R-40 dice que la 017 está **implementada** en ``main``, sin publicar, con las tareas T01 a T46b
+        hechas salvo el H3 y por hacer la T47 y el H3 en pantalla con CE-017-11, que «Cerrada» solo la marca la sesión principal tras ellos, con R-36 como
+        dependencia (D-3), y con su guía; y su registro del 21/11/2026 lo cuenta (el del 22/11/2026, la convergencia); ya no dice «en especificación»,
+        que falte ``tasks.md`` ni «de la T01 a la T35b»."""
         self.assertIsNotNone(self.roadmap_row)
         assert self.roadmap_row is not None
         row = one_line(self.roadmap_row.group(0))
-        for fact in ("**implementada** en `main`, sin publicar", "de la T01 a la T35b", "a falta del banco de Silvestre (T36)",
-                     "de la verificación única (T37)", "del H3 en pantalla (T38) y de CE-017-11", "«Cerrada» solo la marca la sesión principal",
-                     "R-33, R-36", "docs/usuario/pistas-y-rampas.md"):
+        for fact in ("**implementada** en `main`, sin publicar", STATE_017, "«Cerrada» solo la marca la sesión principal tras ellos (no está cerrada)",
+                     "R-33, R-36", "docs/usuario/pistas-y-rampas.md", "RF-017-19", "no tiene tarea"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, row)
-        for stale in ("en especificación", "falta `tasks.md`", "36 tareas orientativas)"):
+        for stale in ("en especificación", "falta `tasks.md`", "36 tareas orientativas)", "de la T01 a la T35b", "a falta del banco de Silvestre (T36)", *STALE_STATE_017):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, row)
         self.assertEqual(len(self.ledger), 1, self.ledger)
@@ -2579,6 +2594,51 @@ class RoadsStateDocTest(unittest.TestCase):
                      "las tres respuestas de «requiere acceso»", "no marca R-40 como cerrada", "R-36"):
             with self.subTest(ledger=fact):
                 self.assertIn(fact, entry)
+
+    def test_the_four_places_say_the_same_state(self) -> None:
+        """Definición de hecho §3.7 (T46b; S-8): la cabecera y la fila de «Specs» de ``des.md``, el índice de specs, el roadmap y ``AGENTS.md`` dicen **el mismo
+        estado** de la 017 (:data:`STATE_017`: T01 a T46b hechas salvo el H3, T36 con CE-017-10 sin ejecutar con los datos originales, T47 y H3 por hacer),
+        que **no está cerrada** y que la 017 no es de las cerradas de ``AGENTS.md``; y ninguno lo dice como antes (T01 a T35b, el banco por hacer)."""
+        des = docs.read(DES_RELPATH)
+        agents = one_line(docs.read("AGENTS.md"))
+        assert self.index_row is not None and self.roadmap_row is not None
+        start = des.index("\n| 017-des-pistas-y-rampas ") + 1
+        places = {"des.md (cabecera)": one_line(des[:des.index("## Responsabilidad")]), "des.md (Specs)": one_line(des[start:des.index("\n", start)]),
+                  "specs/README.md": one_line(self.index_row.group(0)), "roadmap.md": one_line(self.roadmap_row.group(0)), "AGENTS.md": agents}
+        problems = []
+        for where, text in places.items():
+            if STATE_017 not in text:
+                problems.append(f"{where}: no dice el estado")
+            if re.search(r"no está cerrada|sin cerrar|el cierre lo pone la sesión principal", text) is None:
+                problems.append(f"{where}: no dice que no está cerrada")
+            problems += [f"{where}: dice «{stale}»" for stale in STALE_STATE_017 if stale in text]
+        self.assertEqual(problems, [])
+        self.assertIn("**017** (pistas y rampas, R-40) en `main`, sin publicar y sin cerrar", agents)
+        self.assertNotIn("001, 013, 014, 015, 016 y 017 cerradas", agents)  # la 017 no está en la lista de las cerradas
+
+    def test_the_ledger_tells_the_convergence(self) -> None:
+        """Definición de hecho §3.7 (T46b): el registro del roadmap del 22/11/2026 cuenta la convergencia de la verificación única (las pruebas de plazo, los 16
+        arreglos de código, las pruebas que faltaban y la documentación), que H2-2 se desmintió con la orden real, que quedan la T47, el H3 y las 19 decisiones
+        de Samuel, y que no marca R-40 como cerrada; el del 21/11/2026 se queda como estaba."""
+        ledger = re.findall(r"^\| 2026-11-22 \| R-40.*$", self.roadmap, re.MULTILINE)
+        self.assertEqual(len(ledger), 1, ledger)
+        entry = one_line(ledger[0])
+        facts = ("sigue **implementada en `main`, sin publicar** y sin cerrar", "66 hallazgos", "las pruebas de plazo (T39)", "los 16 arreglos de código (T40 a T44",
+                 "las pruebas que faltaban (T45)", "la documentación (T46 y T46b", "H2-2", "se desmintió con la orden real", "la T47", "el H3 en pantalla (T38) con CE-017-11",
+                 "**19 decisiones de Samuel**", "no marca R-40 como cerrada")
+        self.assertEqual([fact for fact in facts if fact not in entry], [])
+        self.assertEqual(len(self.ledger), 1, self.ledger)
+        self.assertIn("T01 a T35b", self.ledger[0])  # el registro de lo que pasó el 21/11/2026 no se reescribe
+
+    def test_the_roadmap_puts_the_linear_programming_and_the_vertical_curves_outside(self) -> None:
+        """RF-017-19 (S-17; DS-17; T46b): la entrada R-40 ya no da «rasante acotada o por programación lineal» como si estuviera dentro: dice que la rasante es la
+        acotada, que la de mínimo movimiento (RF-017-19) es P3 y no tiene tarea, y que las curvas verticales van a R-44 o R-31 «si hacen falta» (la propuesta por
+        defecto, pendiente de Samuel)."""
+        start = self.roadmap.index("**R-40 · Pistas y rampas.**")
+        entry = one_line(self.roadmap[start:self.roadmap.index("**R-41 ·", start)])
+        facts = ("- rasante acotada;", "RF-017-19", "P3", "no tiene tarea", "curvas verticales", "R-44", "R-31", "«si hacen falta»", "DS-17", "propuesta por defecto, pendiente de Samuel")
+        self.assertEqual([fact for fact in facts if fact not in entry], [])
+        self.assertNotIn("rasante acotada o por programación lineal", entry)
 
     def test_the_changelog_says_what_the_017_does_and_what_it_changes(self) -> None:
         """Definición de hecho §3.7 (T35b): el ``CHANGELOG.md`` del código, para el ingeniero de minas y sin jerga, dice lo nuevo de la 017 (las cinco
@@ -2672,6 +2732,153 @@ class RoadsStateDocTest(unittest.TestCase):
                      "La pista no tiene `protect`"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, text)
+
+
+# --- La 017 (su T46b: las demás fichas, ``tasks.md`` y ``verificacion.md``, tras la convergencia) -------------------------------
+
+VISION_RELPATH = "docs/arquitectura/vision-general.md"
+SPEC_017_TASKS_RELPATH = "specs/017-des-pistas-y-rampas/tasks.md"
+SPEC_017_VERIFICATION_RELPATH = "specs/017-des-pistas-y-rampas/verificacion.md"
+# Los módulos de prueba que renombró la T34b (el nombre antiguo, el nuevo y su carpeta en ``tests/``) y el que el plan llamaba «grade».
+RENAMED_TEST_MODULES = (("test_road_ops", "milestone_road_ops", "blender"), ("test_road_extra_ops", "milestone_road_extra_ops", "blender"),
+                        ("test_road_calculate_brought", "milestone_road_calculate_brought", "blender"),
+                        ("test_road_access_ops", "milestone_road_access_ops", "blender"), ("test_road_steps", "milestone_road_steps_cuts", "blender"),
+                        ("test_road_preview_data", "milestone_road_preview_data", "unit/design"), ("test_road_fixtures", "milestone_road_fixtures", "unit/design"),
+                        ("test_road_grade", "test_road_gradient", "unit/design"))
+# Los hallazgos de código que cerró la convergencia (T40 a T44): ``verificacion.md`` §10 los nombra todos.
+CLOSED_CODE_FINDINGS = ("A-1", "A-2", "A-3", "A-6", "B-1", "B-2", "B-3", "B-4", "B-5", "B-11", "C-2", "D-1", "D-2", "S-1", "S-2", "S-3")
+
+
+def missing(text: str, facts: Iterable[str]) -> list[str]:
+    """Lo de ``facts`` que ``text`` no dice (una lista vacía, si lo dice todo; más barato que un ``subTest`` por frase y dice todo lo que falta)."""
+    return [fact for fact in facts if fact not in text]
+
+
+@docs.requires_docs
+class RoadsCardsDocTest(unittest.TestCase):
+    """Las demás fichas de la 017 tras la convergencia (T46b; S-6 a S-9, S-17, S-20, E-5 y H2-2): la guía de las entidades sabe que las pistas existen, la barra
+    superior da las etiquetas del catálogo, ninguna ficha dice que «Recalcular lo obsoleto» no asienta una pista anterior a un relleno (H2-2, desmentido), ARQ-13
+    lleva los términos de cota, las trampas citan los módulos con su nombre de hoy y recogen lo que aprendió la convergencia, y ``tasks.md`` y ``verificacion.md``
+    dicen la cuenta, los nombres antiguos, la nota de M1, qué cerró cada tarea y que las decisiones de Samuel siguen abiertas."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tasks = docs.read(SPEC_017_TASKS_RELPATH)
+        cls.verification = docs.read(SPEC_017_VERIFICATION_RELPATH)
+
+    def test_the_entities_guide_knows_the_roads_exist(self) -> None:
+        """RF-017-01, RF-015-01 (S-6; T46b): la guía de las entidades de diseño (015) ya no dice que las pistas (R-40) «aún no existen» ni que los acopios, el
+        contrafuerte y los cuerpos apoyados «usarán este mismo marco en la spec 016»: dice que las de la 016 y las pistas de la 017 ya lo usan y que solo la balsa, el
+        canal y los rellenos con balance faltan."""
+        guide = one_line(docs.read(ENTITIES_GUIDE_RELPATH))
+        for stale in ("usarán este mismo marco en la spec 016", "las pistas (R-40) son entidades que usarán este marco", "las pistas (R-40) son entidades que usarán"):
+            self.assertNotIn(stale, guide)
+        self.assertEqual(missing(guide, ("y las pistas y rampas (spec 017) usan este mismo marco", "(spec 016) y las pistas y rampas (spec 017) **ya usan este marco**",
+                                         "la balsa y el canal (R-37) y los rellenos con balance (R-39) son entidades que usarán este marco y **aún no existen**")), [])
+
+    def test_the_bar_table_gives_the_labels_of_the_catalog(self) -> None:
+        """RF-017-29, RF-015-28 (S-9; BS §8.7; T46b): la tabla de «Pistas y entidades» de la barra superior da, de las cinco órdenes de la 017 que están en el menú, la
+        **etiqueta del catálogo** («Pista…», «Proponer el trazado…», «Accesibilidad de las pistas…», «Perfil de pista…» y «Exportar pista…»); ``test_catalog_matches_docs``
+        solo compara los identificadores. Y la frase de la disponibilidad ya no dice «desactivadas con su motivo en los demás casos» (D-7: sin versión piden una)."""
+        table = section(docs.read(BS_RELPATH), "### 8.7 Diseño")
+        commands = catalog.load().commands
+        wrong = []
+        for name in ("des_create_road", "des_propose_road", "des_road_access", "des_edit_road_profile", "des_export_road"):
+            row = re.search(rf"^\| ([^|]+?) \| `{name}` \|", table, re.MULTILINE)
+            if row is None or row.group(1) != commands[f"geoblender.{name}"].label_es:
+                wrong.append((name, row and row.group(1)))
+        self.assertEqual(wrong, [])
+        text = one_line(table[table.index("**Desde la spec 017**"):])  # solo el párrafo de la 017: los de la 015 y la 016 son de sus specs
+        self.assertNotIn("están disponibles con un proyecto en escritura y una versión activa que se puede editar y desactivadas con su motivo en los demás casos", text)
+        self.assertIn("**sin versión activa quedan activas y piden una**", text)
+
+    def test_h2_2_is_denied_in_every_card_that_said_it(self) -> None:
+        """RF-017-05 (b), RF-015-15, RF-015-17 (S-18, DS-13; T44 y T46b): ninguna ficha dice ya que «Recalcular lo obsoleto» **no la asienta** si una pista anterior a un
+        relleno se le apoya (la orden real converge en tres pasadas: ``milestone_road_ce.BeforeTheFillTest.test_c``): ni ``paneles-contextuales.md``, ni la ficha de
+        ``des``, ni ``docs/trampas.md``; dicen en cambio que la pista no tiene en cuenta el relleno hasta que se rehace sobre su superficie."""
+        des, panels, traps = docs.read(DES_RELPATH), docs.read(PC_RELPATH), docs.read(TRAPS_RELPATH)  # sin ``one_line`` de ficheros enteros: cada frase va en un renglón
+        for where, text in (("des.md", des), ("paneles-contextuales.md", panels), ("trampas.md", traps)):
+            self.assertIsNone(re.search(r"no\s+la\s+asienta", text), where)
+        self.assertEqual(missing(des, ("**H2-2, desmentido:**", "«Recalcular lo obsoleto» **sí la pone al día**", "converge en tres pasadas")), [])
+        self.assertIn("«Recalcular lo obsoleto» la pone al día y, si debe tener en cuenta ese diseño, rehacerla sobre su superficie o descartarla", panels)
+        self.assertEqual(missing(traps, ("(**desmentido: no es un bucle**, véase abajo)", "**Corregido el 22/11/2026 (T44 y T46b): la afirmación era falsa.**",
+                                         "converge** en 3 pasadas", "**No escribas un límite en la barra N, la guía y las fichas sin una prueba con la orden real**")), [])
+
+    def test_arq_13_lists_the_elevation_terms(self) -> None:
+        """ARQ-13, principio 6 (E-5; T45 y T46b): la fila de ARQ-13 de ``vision-general.md`` dice que la lista cerrada de ``ABS_COORD_TOKENS`` incluye ahora ``level``,
+        ``cota`` y ``elev``, que son los que la regla tiene de verdad."""
+        source = (ROOT / "tools" / "gbtools" / "rules" / "props.py").read_text(encoding="utf-8")
+        tokens = source[source.index("ABS_COORD_TOKENS"):source.index("FLOAT_PROPERTIES")]
+        elevation = ("level", "cota", "elev")
+        self.assertEqual(missing(tokens, [f'"{term}",' for term in elevation]), [])  # lo prueban ``test_geoorigin_properties`` (la regla) y esta (que la ficha lo dice)
+        start = docs.read(VISION_RELPATH)
+        row = start[start.index("\n| ARQ-13 |"):]
+        row = one_line(row[:row.index("\n", 1)])
+        self.assertEqual(missing(row, [f"`{term}`" for term in elevation] + ["desde la 017 (T45, hallazgo E-5)", "`dest_level`", "017 (T45: los términos de cota)"]), [])
+
+    def test_the_traps_cite_the_renamed_modules_and_tell_what_the_convergence_learnt(self) -> None:
+        """Definición de hecho §3.8 (S-7; T46b): ``docs/trampas.md`` ya no cita ``test_road_fixtures``, ``test_road_ops``, ``test_road_access_ops`` ni ``test_road_steps``
+        (T34b: ahora ``milestone_road_fixtures``, ``milestone_road_ops``, ``milestone_road_access_ops`` y ``milestone_road_steps_cuts``) sin decir «antes»; los módulos
+        con su nombre nuevo existen; y recoge lo que aprendieron la T39 a la T45 (el recorte de un intervalo, el paso de cota sin tope, la rejilla de la línea que se
+        corta, la zona de peso 1, la superficie por defecto de la accesibilidad, la vista previa de una propuesta, la cita de la guía, el hito con proyecto compartido
+        y el ``git stash``), sin repetir lo que ya decían ``OperationStart.carry``, ``bank_folder`` y ``one_unit_per_event``."""
+        text = docs.read(TRAPS_RELPATH)  # sin ``one_line`` del fichero entero: cada trampa es un renglón
+        wrong = []
+        for old, new, folder in RENAMED_TEST_MODULES[:5]:
+            if not (ROOT / "tests" / folder / f"{new}.py").is_file():
+                wrong.append(f"no existe {new}")
+            if text.count(old) != text.count(f"antes `{old}"):
+                wrong.append(f"{old}: se cita sin «antes»")
+        self.assertEqual(wrong, [])
+        self.assertEqual(missing(text, ("`milestone_road_steps_cuts.RoadStepsTest.test_a_esc_in_each_phase_of_calculating_leaves_nothing`", "`milestone_road_access_ops.test_e`",
+                                        "`milestone_road_fixtures.py`", "`milestone_road_ops.py`", "`tests/blender/milestone_road_access_ops.py`",
+                                        "**`np.clip` de los dos extremos de un intervalo que cae entero fuera del rango lo vuelve un valor permitido**",
+                                        "un cero de más al teclear `level_step_m`", "**Una búsqueda por rejilla que sustituye a un O(n²) pierde un par si las cajas no llevan margen",
+                                        "**«Hay zona» no es «peso > 1»", "`access_store._chain_origin`", "`RoadAsk(propose=True)`", "**Cambiar un texto de la barra N o del catálogo",
+                                        "**En un hito con un proyecto compartido, añadir una pista antes", "**Un `git stash` «para comparar»", "`carry=False`", "`bank_folder`",
+                                        "step_modals.one_unit_per_event")), [])
+        self.assertEqual(text.count("`tests.support.step_modals.one_unit_per_event`"), 1)  # la de la T39 no se duplica
+
+    def test_tasks_say_the_count_the_renamed_modules_and_the_m1_note(self) -> None:
+        """Definición de hecho §3.7 (S-7, S-20, D-7; T46b): ``tasks.md`` de la 017 lleva, sin reescribir las líneas viejas, la nota con la cuenta real («Son 38 tareas» eran
+        las de la redacción: 61 entradas, de las que quedan la T47 y el H3), la tabla «nombre antiguo → nuevo» de los módulos de prueba que renombró la T34b (y
+        ``test_road_grade`` → ``test_road_gradient``), cada uno con su módulo nuevo existente, y la nota a la comprobación manual M1 (sin versión activa, las órdenes
+        quedan activas y piden una: RF-009-05, como la 013 y la 015)."""
+        start = self.tasks.index("> **Nota de la T46b (22/11/2026) — la cuenta y los nombres.**")
+        note = self.tasks[start:self.tasks.index("**Requisitos previos.**", start)]
+        text = one_line(note)
+        self.assertEqual(missing(text, ("*«Son 38 tareas»* es la cuenta de la redacción", "**61 entradas de tarea**", "las **51** de la T01 a la T38",
+                                        "las **10** de la convergencia (T39 a T47 y la T46b", "**2 pendientes: la T47** (la verificación de lo cambiado, de la sesión principal) **y el H3 (T38)**",
+                                        "**no se reescriben**")), [])
+        rows = {match.group(1): (match.group(2), match.group(3)) for match in re.finditer(r"^> \| `(test_[a-z_]+)`[^|]*\| `(\w+)`[^|]*\| `([^`]+)` \|$", note, re.MULTILINE)}
+        self.assertEqual(rows, {old: (new, f"tests/{folder}/") for old, new, folder in RENAMED_TEST_MODULES})
+        self.assertEqual([new for _, new, folder in RENAMED_TEST_MODULES if not (ROOT / "tests" / folder / f"{new}.py").is_file()], [])
+        m1 = one_line(self.tasks[self.tasks.index("- **M1 (T29b)**"):self.tasks.index("- **M2 (T29)**")])
+        self.assertEqual(missing(m1, ("la orden sale desactivada con su motivo", "*Nota de la T46b (D-7; 22/11/2026):* **sin versión activa las órdenes quedan activas y piden una**",
+                                      "RF-009-05", "como las de la 013 y la 015", "**no se reescribe**")), [])
+
+    def test_the_decisions_of_samuel_say_what_the_convergence_did_and_stay_open(self) -> None:
+        """Definición de hecho §3.7 (T46b): «Decisiones de Samuel» de ``tasks.md`` da la tabla de lo que cerró cada tarea de la convergencia con sus commits y, bajo **cada una
+        de las 19** decisiones, lo que la convergencia hizo con ella (en cursiva: DS-13 y DS-15 aplicadas, DS-1, 4, 11, 12, 14 y 17 cambiadas), **sin resolver ninguna**:
+        la línea «Resolución» de las que Samuel no ha contestado sigue diciendo «pendiente»; y ``verificacion.md`` §10 nombra los 16 hallazgos de código cerrados."""
+        block = self.tasks[self.tasks.index("## Decisiones de Samuel"):self.tasks.index("## Decisión de la sesión principal")]
+        self.assertEqual(missing(block, ("**Lo que cerró la convergencia (T39 a T46b; 22/11/2026)**", "`6581f8b`", "`e3d4604`", "`7e293a5`", "`0aacd0d`", "`e1e7747`", "`c32742d`",
+                                         "`9755219`", "`180f233`", "**ninguna está resuelta: Samuel no ha dicho nada**", "Quedan la **T47**")), [])
+        items = [item for item in re.split(r"(?m)^(?=\d+\. \*\*)", block[block.index("1. **RNF-017-04"):]) if item.strip()]
+        self.assertEqual(len(items), 19)
+        wrong = []
+        for number, item in enumerate(items, start=1):
+            after = item.find("*Tras la convergencia")
+            if not item.startswith(f"{number}. **") or not 0 < after < item.find("**Resolución:**") or "**Resolución:** pendiente" not in item:
+                wrong.append(number)
+        self.assertEqual(wrong, [], "las decisiones sin su nota «Tras la convergencia» o con una resolución que Samuel no ha dado")
+        thirteen, fifteen = one_line(items[12]), one_line(items[14])
+        self.assertIn("el código y los textos ya están como proponía esta decisión; falta solo que Samuel la dé por vista", thirteen)
+        self.assertEqual(missing(fifteen, ("la propuesta por defecto está aplicada", "Sigue pendiente solo lo del formato guardado")), [])
+        section_10 = one_line(self.verification[self.verification.index("## 10. Tras la convergencia"):])
+        self.assertEqual(missing(section_10, ("(T39 a T46b; 22/11/2026)", "**La 017 no está cerrada ni publicada.**", "**(i) 16 arreglos de código**", "**19 decisiones**",
+                                              "ninguna tiene resolución", "la **causa de la intermitencia de `test_road_bank.LatestTest`**", "la **T47**", "el **H3 en pantalla**",
+                                              "no se marca cerrada") + CLOSED_CODE_FINDINGS), [])
 
 
 def road_net():
