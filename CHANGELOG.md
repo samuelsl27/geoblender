@@ -127,22 +127,22 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
 
-- **Pistas y rampas** (spec 017, R-40; hecha en `main`, sin publicar: probada sin pantalla, a falta de verla en pantalla, del banco del proyecto
-  de referencia y de su verificación única). En el proyecto de referencia las pistas se resolvieron con cinco métodos sucesivos repartidos en varios
+- **Pistas y rampas** (spec 017, R-40; hecha en `main`, sin publicar: probada con Blender sin su interfaz, a falta de verla en pantalla y de
+  contrastarla con el proyecto de referencia). En el proyecto de referencia las pistas se resolvieron con cinco métodos sucesivos repartidos en varios
   scripts, y cada uno dejó su lección: pistas trazadas sobre la superficie final restaurada que no llegaban al fondo (se quedaban en la cota
   152,6), ninguna solución en un talud del 38 % con 8 direcciones (la menor pendiente alcanzable era el 14,5 % y se pedía el 10 %), pistas
   esquemáticas, de vértices puntiagudos, que la propiedad rechazó, dos criterios de pista que convivían (el 10 % y la «opción A15», hasta el
   15 %) y un informe aparte para saber a qué cota se llega y qué bermas quedan comunicadas. Con el marco de la 015 (la cadena, lo que declara cada
   entidad, lo que se le apoya), Geoblender traza ahora la pista, la rampa y su accesibilidad. Guía de uso: `docs/usuario/pistas-y-rampas.md` de la
   documentación. Menú **Diseño ▸ Pistas y entidades**, con los cinco primeros puestos **Pista…**, **Proponer el trazado…**, **Accesibilidad de las
-  pistas…**, **Perfil de pista…** y **Exportar pista…**: disponibles con un proyecto en escritura y una versión activa que se puede editar
-  (**Exportar pista…** también en solo lectura y con una versión superada) y en gris con su motivo en los demás casos. Como en las demás, hasta
+  pistas…**, **Perfil de pista…** y **Exportar pista…**: salen en gris con su motivo si el proyecto es de solo lectura o la versión activa está
+  superada (**Exportar pista…** no, que no escribe en el proyecto), y sin versión activa piden una al lanzarlas. Como en las demás, hasta
   **Crear** no se escribe nada, todo va por pasos y **Esc** cancela sin dejar nada a medias.
   - **Perfil de pista…**: un perfil con nombre y **quince valores** (el vehículo de diseño, el factor de calzada, el arcén, el caballón, la
     pendiente máxima de diseño y la media máxima, el paso de la rasante, el radio y el radio mínimo, los ángulos de desmonte y de terraplén, el
     alcance, la clase normativa, el factor de malla y la métrica), cada uno con su fuente y quién lo decidió. Se enseñan también la calzada, la
     sección, su semianchura y la longitud mínima para salvar un desnivel, que se derivan y no se editan. Un perfil incompleto o con un valor fuera
-    de rango se rechaza con el perfil, el campo y el valor, sin escribir nada.
+    de rango se rechaza con el perfil, el campo y el valor, sin escribir nada, y «Cambiar parámetro…» de un valor del perfil rechaza lo mismo.
   - **Pista…**, en **tres modos**: **Trazar**, de un origen a un destino (un punto, una plataforma o una cota dentro de una zona, que es la
     **rampa**; el origen puede ser un punto del eje de otra pista, y así sale un ramal); **Sobre un eje**, con una línea dibujada a la que se
     ajustan las curvas y se da la rasante; y **Eje 3D**, con una línea con su Z (una línea de rotura o la propuesta de «Proponer el trazado…»),
@@ -152,16 +152,20 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     hacia abajo, solo donde las máscaras lo admiten y sin pisar nunca un intocable ni una exclusión. Se traza sobre la superficie de explotación
     y **después de los rellenos**: si la partida es la superficie final restaurada, avisa de que no llega al fondo y de la cota que sí alcanza, y
     avisa del relleno que la pista no tiene en cuenta. Tiene una vista previa antes de calcular, calcula sin escribir nada y enseña la longitud, las
-    cotas, las pendientes, el radio mínimo, el corte y el relleno y cada aviso con su lugar. **Una pendiente media por encima de la del perfil no
+    cotas, las pendientes, el radio mínimo, la desviación máxima del eje, el corte y el relleno de la sección y del borde, y el neto, en líneas
+    distintas, y cada aviso con su lugar (también la afección a las zonas «preferible no afectar», de cualquier peso). **Una pendiente media por encima de la del perfil no
     se crea sin su confirmación expresa y un motivo**, que queda registrado con quién y cuándo (la «opción A15»); tampoco una calzada que no queda
-    en su rasante por lo que las máscaras o la altura máxima no dejan mover, y se confirma sin motivo. Sin ruta, dice por qué: el origen no es
+    en su rasante por lo que las máscaras o la altura máxima no dejan mover, y se confirma sin motivo. Se rechaza, antes de buscar, una cota de
+    inicio o de fin que no cabe en la altura máxima de desmonte y terraplén, un origen y un destino en el mismo nodo de la malla y un paso de cota
+    demasiado pequeño, y se avisa de la memoria de un presupuesto de estados de más del doble del de por defecto. Sin ruta, dice por qué: el origen no es
     alcanzable, el pasillo no contiene ninguna ruta o se agotó el presupuesto de estados (que **no significa que no haya ruta**: se reduce la
     holgura del pasillo o se sube el presupuesto); **el pasillo es una holgura y no un ancho**.
   - **Proponer el trazado…**: la ruta y la rasante de «Trazar» sin la sección ni el grabado, como una capa de líneas con Z que se edita en QGIS
-    y sirve luego de eje a una pista. No cambia ninguna superficie ni es una entidad, y su aviso de la pendiente media no pide confirmar.
+    y sirve luego de eje a una pista. No cambia ninguna superficie ni es una entidad, y su aviso de la pendiente media no pide confirmar. Tiene su
+    vista previa, que dibuja el eje con su rasante tras calcular.
   - **Accesibilidad de las pistas…**: a dónde llega una persona a pie desde unos puntos de entrada sobre una superficie del proyecto o de la
     versión, con una pendiente máxima transitable, un ancho mínimo y un área mínima de berma. Da las cotas mínima y máxima alcanzables (también
-    sobre la superficie final de una cantera: el error 23, con el 136,5 m de la restaurada) y qué tramos de berma, qué plataformas y qué zonas
+    sobre la superficie final de una cantera, también con la última de la cadena: el error 23, con el 136,5 m de la restaurada) y qué tramos de berma, qué plataformas y qué zonas
     «requiere acceso» quedan comunicados, con las que no, primero, con su lugar, su distancia y su diferencia de cota y un botón **Ir a**. La
     verificación de los límites (012) lee este resultado y da a cada zona «requiere acceso» tres respuestas: «cumple», «no cumple» o «sin comprobar».
   - **Exportar pista…**: la superficie de una pista y lo que alcanza una accesibilidad a GeoTIFF, y la rasante de una pista a CSV (abscisa, x, y,
@@ -176,17 +180,19 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     ADOPTADO «sin confirmar»: la propiedad aún no lo ha confirmado. Los valores del perfil son ADOPTADO, con la fuente que dé quien los declara,
     y ninguno tiene valor por defecto salvo el factor de malla (1,0) y la métrica (exacta).
   - **Lo que cambia del marco de las entidades**: una pista no declara restricciones (su zona se corta y se rellena a la vez); «Calcular…» ofrece
-    también las pistas traídas de otra versión (el ramal, después de su pista); «Cambiar parámetro…» renombra una pista sin dejarla obsoleta y
-    una cota que da la persona no se vuelve a derivar al recalcular; la accesibilidad no se trae a otra versión (se vuelve a calcular). **Las tres
+    también las pistas traídas de otra versión (el ramal, después de su pista), con el campo de nombres por defecto de su capa, y «Calcular…» lo avisa
+    cuando la capa tiene más de un campo de texto; «Cambiar parámetro…» renombra una pista sin dejarla obsoleta y
+    una cota que da la persona no se vuelve a derivar al recalcular; una pista no puede apoyarse en una que ya se apoya en ella (se rechaza, con el
+    recorrido del ciclo), y un ramal cuyo origen deja de estar en el eje de su pista deja de apoyarse en ella; la accesibilidad no se trae a otra versión (se vuelve a calcular). **Las tres
     órdenes provisionales** que había en ese grupo, la herramienta «Pista», «Ruta 3D con pendiente máxima…» y «Grabar las pistas en la
     superficie», **desaparecen** del menú: la pista graba al crearse y su ruta sale de **Pista…** y de **Proponer el trazado…**.
-  - **Lo que no hace todavía**: **no se ha visto en pantalla** (sí con las órdenes reales, sin su interfaz) ni se ha contrastado con el banco del
-    proyecto de referencia. **La rasante de «mínimo movimiento» por programación lineal no está hecha**, ni las rampas vectoriales (espiral y
-    zig-zag) ni el comprobador de pistas de la ITC. La ruta de 1,5 km tarda hasta 63 s en una ladera del 38 % con 60 m de holgura; grabar 2 km con
-    el eje en diagonal tarda 16,75 s y **no cumple los 15 s** de la spec (la cifra la decide Samuel). Al traer una pista a
-    otra versión, el perfil de la pista no viaja con ella (hay que declararlo allí), ni el campo de los nombres de su capa, y la accesibilidad no se trae. Una pista anterior a
-    un relleno no se asienta con «Recalcular lo obsoleto»: se rehace sobre la superficie del relleno o se descarta. La vista previa de «Proponer
-    el trazado…» no dibuja el eje tras calcular.
+  - **Lo que no hace todavía**: **no se ha visto en pantalla** (sí con las órdenes reales, sin su interfaz) ni se ha contrastado con los datos
+    originales del proyecto de referencia. **La rasante de «mínimo movimiento» por programación lineal no está hecha**, ni las curvas verticales, ni
+    las rampas vectoriales (espiral y zig-zag) ni el comprobador de pistas de la ITC. La ruta de 1,5 km tarda hasta 63 s en una ladera del 38 % con
+    60 m de holgura; grabar 2 km con el eje en diagonal tarda 16,75 s y **no cumple los 15 s** de la spec (la cifra la decide Samuel). Al traer una pista a
+    otra versión, el perfil de la pista no viaja con ella (hay que declararlo allí), ni el campo de los nombres de su capa, y la accesibilidad no se trae.
+    Una pista hecha antes de un relleno no lo tiene en cuenta hasta que se rehace sobre su superficie: «Recalcular lo obsoleto» la pone al día, pero
+    no le cambia la partida. En QGIS, las versiones de la 016 conservan su estilo de 18 reglas y en ellas las pistas salen como «Otra entidad».
 
 - **Acopios, contrafuerte y cuerpos apoyados** (spec 016, R-36, segunda spec; cerrada el 20/11/2026: verificada sin pantalla y vista
   en pantalla con eventos simulados, sin ratón real). En el proyecto de referencia los acopios, el contrafuerte y el escombro de una ladera se hicieron con scripts sueltos, y cada
@@ -266,7 +272,7 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     cuerpo, ni la capa de entidades en QGIS con ventana; no se contrastó con el banco del proyecto de referencia (CE-016-08: ni la
     plataforma del acopio 7 ni la transición, que queda sin ejecutar con los datos originales de la V10); un cuerpo con secciones muy separadas
     pasa de los 10 s que pedía la spec (avisa antes; la spec lo admite con el aviso); la pared no salta con la transición del plan y
-    «como plataforma» no la mide; «Calcular…» solo ofrece plataformas, así que lo traído de otra versión de los demás tipos queda sin
+    «como plataforma» no la mide; «Calcular…» solo ofrece plataformas y pistas, así que lo traído de otra versión de los demás tipos queda sin
     calcular; la retirada y el contrafuerte toleran las celdas sin dato de su huella (una excepción escrita de la spec: se dejan como
     están y no cuentan en el volumen) y las avisan con su lugar; y una verificación
     hecha con una detección obsoleta no queda obsoleta sola al recalcularla (hay que verificar otra vez). Lo que vio la pantalla y no se
