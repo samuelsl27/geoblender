@@ -825,6 +825,16 @@ def recompute_pit(request: RecomputeRequest) -> OperationHandle:
     return _recompute(request)
 
 
+def recompute_pit_expand(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.pit_expand`` (RF-018-22): véase el módulo. Sin comportamiento todavía (spec 018, T03)."""
+    return _recompute(request)
+
+
+def recompute_pit_layer(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.pit_layer`` (RF-018-29; D-19 de la 013): véase el módulo. Sin comportamiento todavía (spec 018, T03)."""
+    return _recompute(request)
+
+
 def recompute_road_layer(request: RecomputeRequest) -> OperationHandle:
     """El recálculo de ``des.road_layer`` (RF-017-27; T26-a; D-19 de la 013): véase el módulo."""
     return _recompute(request)
@@ -849,6 +859,13 @@ def reproduce_pit(request: ReproduceRequest) -> Iterator[Progress]:
     from ...design import reproduce  # al usarla: habilitar no carga la reproducción
 
     return reproduce.reproduce_pit(request)
+
+
+def reproduce_pit_expand(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.pit_expand``: la de ``design.reproduce`` (sin comportamiento todavía; spec 018, T03)."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_pit_expand(request)
 
 
 def reproduce_road_propose(request: ReproduceRequest) -> Iterator[Progress]:
@@ -936,17 +953,19 @@ ROAD_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] =
         provenance.ROAD_PROPOSE: reproduce_road_propose,
     }))
 """La función de reproducción de cada tipo de la 017 que se reproduce (la pista, la accesibilidad y la propuesta; RF-009-11): la capa de ejes de pistas no (T26-a), que incluye el estado de cada pista."""
-PIT_RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = MappingProxyType({provenance.PIT: recompute_pit})
-"""La función de recálculo de cada tipo de la 018 (se repite solo; RF-018-01): sin comportamiento todavía (spec 018, T02)."""
-PIT_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = MappingProxyType({provenance.PIT: reproduce_pit})
-"""La función de reproducción de cada tipo de la 018 (se reproduce; RF-009-11)."""
+PIT_RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = MappingProxyType({
+    provenance.PIT: recompute_pit, provenance.PIT_EXPAND: recompute_pit_expand, provenance.PIT_LAYER: recompute_pit_layer})
+"""La función de recálculo de cada tipo de la 018 (se repite solo; RF-018-01): sin comportamiento todavía (spec 018, T02 y T03)."""
+PIT_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = MappingProxyType({
+    provenance.PIT: reproduce_pit, provenance.PIT_EXPAND: reproduce_pit_expand})
+"""La función de reproducción de cada tipo de la 018 que se reproduce (la corta y el banco expandido; RF-009-11): no la capa de cortas."""
 OPERATION_DEFS: tuple[contract.OperationDef, ...] = (
     *provenance.operation_defs(RECOMPUTE, REPRODUCE), *design_profiles.OPERATIONS,
     *provenance.quarry_operation_defs(QUARRY_RECOMPUTE, QUARRY_REPRODUCE),
     *provenance.entity_operation_defs(ENTITY_RECOMPUTE, ENTITY_REPRODUCE),
     *provenance.supported_operation_defs(SUPPORTED_RECOMPUTE, SUPPORTED_REPRODUCE),
     *provenance.road_operation_defs(ROAD_RECOMPUTE, ROAD_REPRODUCE), *provenance.ROAD_PROFILE_OPERATIONS,
-    *provenance.pit_operation_defs(PIT_RECOMPUTE, PIT_REPRODUCE))
+    *provenance.pit_operation_defs(PIT_RECOMPUTE, PIT_REPRODUCE), *provenance.PIT_PROJECT_OPERATIONS)
 """Los ``OperationDef`` de los veinte tipos de ``des``: de la 013, la envolvente y el escalonado, de
 la versión y repetibles, y la edición de los perfiles de banco, del proyecto; de la 014, el recinto,
 la cantera con dos superficies, la transición, «solo relleno» y el ajuste, de la versión y
@@ -964,6 +983,8 @@ FAMILIES: tuple[core_params.ParamFamily, ...] = (*design_params.FAMILIES,
                                                 *design_params.ENTITY_FAMILIES,
                                                 *design_params.SUPPORTED_FAMILIES,
                                                 *design_params.ROAD_FAMILIES, *design_params.ACCESS_FAMILIES, *design_params.PIT_FAMILIES,
+                                                *design_params.PIT_SECTOR_FAMILIES, *design_params.ROSE_FAMILIES,
+                                                *design_params.PITRAMP_FAMILIES,
                                                 *design_params.ROAD_PROFILE_FAMILIES)
 """Las familias de parámetros de ``des`` (ADR-0027): las seis de la 013, las 20 de una plataforma
 (``des.platform.{e}.*``, T04) y las de los cuatro tipos de la 016 (``des.stockpile.{e}.*``, ``des.removal.{e}.*``,
@@ -971,7 +992,7 @@ FAMILIES: tuple[core_params.ParamFamily, ...] = (*design_params.FAMILIES,
 ``des.roadprofile.{p}.*``, T03)."""
 FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *provenance.QUARRY_FIGURES,
                                            *provenance.ENTITY_FIGURES, *provenance.SUPPORTED_FIGURES,
-                                           *provenance.ROAD_FIGURES, *provenance.ACCESS_FIGURES)
+                                           *provenance.ROAD_FIGURES, *provenance.ACCESS_FIGURES, *provenance.PIT_FIGURES)
 """Las cifras de ``des``: las de la envolvente y las del escalonado (013), las de la 014, las de las
 entidades (015), las de los cuatro tipos de la 016 (T03) y las de la pista y la accesibilidad (017, T03; las de la propuesta del
 trazado son dos de la pista)."""

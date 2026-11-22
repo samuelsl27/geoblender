@@ -118,7 +118,7 @@ class OperationTypesTest(unittest.TestCase):
         for older in (*provenance.OPERATION_TYPES, *provenance.QUARRY_OPERATION_TYPES,
                       *provenance.ENTITY_OPERATION_TYPES):
             self.assertIs(provenance.OPERATION_TYPES_BY_NAME[older.op_type], older)
-        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5 + 4 + 1)  # + los cuatro de la 017 (T03 y T26) y la corta de la 018 (T02)
+        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5 + 4 + 3)  # + los cuatro de la 017 (T03 y T26) y los tres de la corta de la 018 (T02 y T03)
 
     def test_the_support_figure_is_also_left_by_what_fills_on_a_stockpile(self) -> None:
         """RF-016-14, RF-015-15 (ADR-0031 §4): la retirada y el contrafuerte —lo que rellena sobre una huella—
@@ -184,7 +184,7 @@ class DataFamiliesTest(unittest.TestCase):
                                             *provenance.ENTITY_FAMILIES)}
         self.assertEqual(set(roles) & older, set())
         self.assertNotIn(provenance.DESIGN_SURFACE_ROLE, roles)
-        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 5 + 10 + 5 + 8 + 7)  # 013, 014, 015, 016 y 017 (T03 y T26)
+        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 5 + 10 + 5 + 8 + 7 + 8)  # 013, 014, 015, 016, 017 (T03 y T26) y 018 (T03)
 
     def test_the_roles_of_what_the_operations_consume(self) -> None:
         """RF-016-02, 11, 17, 20 (plan 016 §5.2.3): los papeles con que se consumen la capa de marcas, el acopio
@@ -504,7 +504,7 @@ class ClosedListsTest(unittest.TestCase):
         de la detección, T04) después de los de la 015, sin cambiar lo que ya llevaba."""
         for op_type in TYPES.values():
             self.assertIn(op_type, store.RECOMPUTED)
-        self.assertEqual(store.RECOMPUTED[:len(store.RECOMPUTED) - 5 - 4 - 1][-3:],  # detrás, los cinco de la 016 los cuatro de la 017 y la de la 018
+        self.assertEqual(store.RECOMPUTED[:len(store.RECOMPUTED) - 5 - 4 - 3][-3:],  # detrás, los cinco de la 016, los cuatro de la 017 y los tres de la 018
                          (provenance.PLATFORM, provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER))
         self.assertEqual(len(set(store.RECOMPUTED)), len(store.RECOMPUTED))
 

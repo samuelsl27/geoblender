@@ -3694,6 +3694,111 @@ CATALOG: tuple[Message, ...] = (
         "se descartó la corta «{name}»",
         "note",
     ),
+    # La corta por bancos (spec 018, T03; RF-018-04, 06, 07, 14, 15, 19, 20, 23, 24): los rechazos y los avisos con lo que dicen. ------
+    Message(
+        "des.pit_rose_value_missing",
+        "Slope rose «{profile}»: «{field}» has no value; a rose has no default values, give it one.",
+        "Roseta de taludes «{profile}»: «{field}» no tiene valor; una roseta no tiene valores por defecto, póngale uno.",
+    ),
+    Message(
+        "des.pit_rose_value_range",
+        "Slope rose «{profile}»: «{field}» = {value} is outside its range {range}; nothing is calculated with this rose.",
+        "Roseta de taludes «{profile}»: «{field}» = {value} está fuera de su rango {range}; no se calcula nada con esta roseta.",
+    ),
+    Message(
+        "des.pit_ramp_value_missing",
+        "Ramp «{profile}»: «{field}» has no value; a ramp definition has no default values, give it one.",
+        "Rampa «{profile}»: «{field}» no tiene valor; una definición de rampa no tiene valores por defecto, póngale uno.",
+    ),
+    Message(
+        "des.pit_ramp_value_range",
+        "Ramp «{profile}»: «{field}» = {value} is outside its range {range}; nothing is calculated with this ramp.",
+        "Rampa «{profile}»: «{field}» = {value} está fuera de su rango {range}; no se calcula nada con esta rampa.",
+    ),
+    Message(
+        "des.pit_rose_gap",
+        "Slope rose «{profile}»: there is a gap between {from_deg}° and {to_deg}°; the ranges must cover 0° to 360° without gaps.",
+        "Roseta de taludes «{profile}»: hay un hueco entre {from_deg}° y {to_deg}°; los rangos deben cubrir de 0° a 360° sin huecos.",
+    ),
+    Message(
+        "des.pit_rose_overlap",
+        "Slope rose «{profile}»: the ranges overlap between {from_deg}° and {to_deg}°; they must not overlap.",
+        "Roseta de taludes «{profile}»: los rangos se solapan entre {from_deg}° y {to_deg}°; no deben solaparse.",
+    ),
+    Message(
+        "des.pit_profiles_differ",
+        "Pit «{name}»: the bench profiles «{profile}» ({value}) and «{other}» ({other_value}) have a different height or anchor; "
+        "a pit takes profiles of the same height and anchor.",
+        "Corta «{name}»: los perfiles de banco «{profile}» ({value}) y «{other}» ({other_value}) tienen distinta altura o ancla; "
+        "una corta admite perfiles de la misma altura y ancla.",
+    ),
+    Message(
+        "des.pit_nothing_to_excavate",
+        "Pit «{name}»: the floor «{field}» = {value} m is not below the ground at any point of its outline; there is nothing to excavate.",
+        "Corta «{name}»: el fondo «{field}» = {value} m no queda por debajo del terreno en ningún punto de su contorno; no hay nada "
+        "que excavar.",
+    ),
+    Message(
+        "des.pit_too_many_benches",
+        "Pit «{name}»: more than {limit} benches or {vertices} vertices in a polyline; it is a validity limit, not a mining figure.",
+        "Corta «{name}»: más de {limit} bancos o de {vertices} vértices en una polilínea; es un límite de validez, no una cifra minera.",
+    ),
+    Message(
+        "des.pit_not_reaching_surface",
+        "Pit «{name}»: it does not reach the surface in {limit} benches (bench {bench}); nothing is registered.",
+        "Corta «{name}»: no sale a superficie en {limit} bancos (banco {bench}); no se registra nada.",
+    ),
+    Message(
+        "des.pit_floor_too_small",
+        "Pit «{name}»: at bench {bench} the floor is {width} m wide, narrower than the minimum {minimum} m; the pit stops there.",
+        "Corta «{name}»: en el banco {bench} el fondo mide {width} m de ancho, menos que el mínimo de {minimum} m; la corta para ahí.",
+        "warning",
+    ),
+    Message(
+        "des.pit_fixed_level",
+        "Fixed bench «{field}» is at {value} m, but bench {bench} is at {level} m.",
+        "El banco fijado «{field}» está a {value} m y el banco {bench} está a {level} m.",
+    ),
+    Message(
+        "des.pit_fixed_cross",
+        "The fixed benches {bench} and {other} cross or leave no room near {place}; the line of the user is not moved.",
+        "Los bancos fijados {bench} y {other} se cortan o no dejan sitio cerca de {place}; la línea del usuario no se mueve.",
+    ),
+    Message(
+        "des.pit_ramp_mean_over",
+        "Ramp «{profile}»: the mean gradient {value} % is over the mean maximum {limit} %; confirm it with a reason to create the pit.",
+        "Rampa «{profile}»: la pendiente media {value} % pasa de la media máxima {limit} %; confírmela con un motivo para crear la corta.",
+    ),
+    Message(
+        "des.pit_ramp_radius_below_min",
+        "Ramp «{profile}»: the radius that fits, {value} m, is below the minimum {limit} m; nothing is relaxed.",
+        "Rampa «{profile}»: el radio que cabe, {value} m, es menor que el mínimo de {limit} m; no se relaja nada.",
+    ),
+    Message(
+        "des.pit_no_ramp_fit",
+        "Ramp «{profile}» does not fit at bench {bench}: it needs {needed} m and {available} m are available ({reason}) near {place}; "
+        "try another type, sense or start point (nothing was changed).",
+        "La rampa «{profile}» no cabe en el banco {bench}: necesita {needed} m y hay {available} m ({reason}) cerca de {place}; pruebe "
+        "otro tipo, otro sentido u otro punto de inicio (no se ha cambiado nada).",
+    ),
+    Message(
+        "des.pit_no_search",
+        "The sector «{sector}» that the pit touches has no current search of untouchable elements; search them before calculating.",
+        "El sector «{sector}» que toca la corta no tiene la búsqueda de intocables vigente; búsquelos antes de calcular.",
+    ),
+    Message(
+        "des.pit_holes",
+        "Pit «{name}»: the offset of bench {bench} has {count} holes; each one is kept as its own polyline.",
+        "Corta «{name}»: el desfase del banco {bench} tiene {count} huecos; cada uno se guarda como su propia polilínea.",
+        "warning",
+    ),
+    Message(
+        "des.pit_offset_unreliable",
+        "Pit «{name}»: the offset of bench {bench} could not be verified (defect {value} m, over {limit} m); the result is not reliable.",
+        "Corta «{name}»: el desfase del banco {bench} no se pudo verificar (defecto de {value} m, más de {limit} m); el resultado no es "
+        "fiable.",
+        "warning",
+    ),
     Message(
         "des.access_support_removed",
         "the accessibility «{name}» was discarded",

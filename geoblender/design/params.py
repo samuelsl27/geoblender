@@ -169,7 +169,22 @@ __all__ = [
     "REMOVAL_ENTITY",
     "REMOVAL_FAMILIES",
     "REMOVAL_RANGES",
+    "PERIMETER_SEGMENT",
     "PIT_ENTITY",
+    "PIT_RANGES",
+    "PIT_SECTOR_FAMILIES",
+    "PITRAMP_FAMILIES",
+    "PITRAMP_RANGES",
+    "PitRampParam",
+    "PitSectorParam",
+    "ROSE_FAMILIES",
+    "ROSE_RANGES",
+    "RoseParam",
+    "check_pitramp_value",
+    "check_rose_value",
+    "pit_sector_key",
+    "pitramp_key",
+    "rose_key",
     "PIT_FAMILIES",
     "PitParam",
     "ROAD_ENTITY",
@@ -1332,18 +1347,69 @@ def check_entity_param(entity: str, code: str, param: str, value: object, *,
 # --- La pista, la accesibilidad y el perfil de pista (spec 017, T02; plan 017 §5.2.2; D-2, D-10, D-11, D-13, D-17) ------------
 
 class PitParam(StrEnum):
-    """Los valores de una corta (``des.pit.{e}.<valor>``; spec 018, T02; plan 018 §5.2.2), en su orden: **los comunes** y los de su origen
-    (el modo, la capa) **que registra la T02**; los demás (perfiles, rosetas, rampas, cotas y tolerancias) los pone la T03. **No tiene**
-    ``protect`` **ni** ``guard_m``: la corta no declara restricción alguna (RF-018-01, D-9)."""
+    """Los valores de una corta (``des.pit.{e}.<valor>``; spec 018, T02 y T03; plan 018 §5.2.2), en su orden: el nombre, el modo y la capa
+    de origen, las capas de bancos fijados y de zonas sin rampa, la partida y el apoyo, el perfil base, la roseta, el número de bancos
+    por berma y las rampas, los criterios de parada (cotas, número de bancos y ancho mínimo de fondo), el desfase (esquina, tolerancias,
+    cierre y ventana de azimut), la decisión de descartarla y el motivo. El perfil, la roseta y el número de bancos tienen además su valor
+    **por sector** (:class:`PitSectorParam`). **No tiene** ``protect`` **ni** ``guard_m``: la corta no declara restricción alguna
+    (RF-018-01, D-9)."""
 
     NAME = "name"
     MODE = "mode"
     LAYER = "layer"
+    FIXED_LAYER = "fixed_layer"
+    NORAMP_LAYER = "noramp_layer"
     START = "start"
     SUPPORT = "support"
     SUPPORTS = "supports"
+    PROFILE = "profile"
+    ROSE = "rose"
+    N_BERM = "n_berm"
+    RAMPS = "ramps"
+    TOP_LEVEL = "top_level_m"
+    BOTTOM_LEVEL = "bottom_level_m"
+    MAX_BENCHES = "max_benches"
+    MIN_FLOOR_WIDTH = "min_floor_width_m"
+    CORNER = "corner"
+    ARC_TOL = "arc_tol_m"
+    SIMPLIFY = "simplify_m"
+    CLOSE_RADIUS = "close_radius_m"
+    AZ_WINDOW = "az_window_m"
     DISCARDED = "discarded"
     REASON = "reason"
+
+
+class PitSectorParam(StrEnum):
+    """Los valores de una corta que también se dan **por sector** (``des.pit.{e}.<valor>.{s}``; ADR-0029; RF-018-06, 07, 08, 09)."""
+
+    PROFILE = "profile"
+    ROSE = "rose"
+    N_BERM = "n_berm"
+
+
+class RoseParam(StrEnum):
+    """Los valores de un rango de una roseta de taludes (``des.rose.{r}.{i}.<valor>``, ``{i}`` el código del rango; RF-018-07): el
+    azimut de la cara desde y hasta (° de [desde, hasta)), el ángulo de la cara y la berma."""
+
+    FROM_DEG = "from_deg"
+    TO_DEG = "to_deg"
+    FACE_DEG = "face_deg"
+    BERM = "berm_m"
+
+
+class PitRampParam(StrEnum):
+    """Los valores de una definición de rampa (``des.pitramp.{q}.<valor>``; RF-018-15): el tipo, el sentido, el punto de inicio, la
+    pendiente de diseño (``gradient``: la otra palabra inglesa es de la ley, glosario §14), el perfil de pista, la transición y, del zig-zag, el radio
+    de giro y la plataforma mínima."""
+
+    TYPE = "type"
+    SENSE = "sense"
+    START = "start"
+    GRADIENT = "gradient_pct"
+    ROAD_PROFILE = "road_profile"
+    TRANSITION = "transition_m"
+    TURN_RADIUS = "turn_radius_m"
+    MIN_PLATFORM = "min_platform_m"
 
 
 class RoadParam(StrEnum):
@@ -1564,19 +1630,99 @@ ACCESS_ENTITY = _supported_entity(
 superficie y nadie parte de su dato; la superficie de la que se pregunta es un valor más (``surface``)."""
 
 _018_PIT = ("Spec 018, RF-018-01 y RF-018-02: sin valor por defecto; lo elige una persona al crear la corta (Samuel, IMGA, 22/11/2026)")
+_018_PIT_OPTIONAL = ("Spec 018, RF-018-02 y RF-018-04: opcional y sin valor por defecto; solo lo pide lo que lo usa (Samuel, IMGA, 22/11/2026)")
+_018_PIT_BERM = ("Spec 018, RF-018-08: 1, una berma por banco; ADOPTADO «sin confirmar» (Samuel, IMGA, 22/11/2026)")
+_018_D8 = ("Spec 018, D-8 y RF-018-11, 13, 14: sin valor por defecto; el criterio de parada lo declara una persona al crear la corta, con su "
+           "origen (Samuel, IMGA, 22/11/2026)")
+_018_CORNER = ("Spec 018, RF-018-10: redondeada por defecto, o a inglete; ADOPTADO «sin confirmar» (Samuel, IMGA, 22/11/2026)")
+_018_D14 = ("Spec 018, D-14, D-15 y P-5: HIPÓTESIS sin valor por defecto; la declara una persona al crear la corta, con su origen "
+            "(0,05 m de inv. 07 §3.4 como referencia de la simplificación); cambiarla regenera la corta (Samuel, IMGA, 22/11/2026)")
+_018_PIT_REASON = ("Spec 015, RF-015-17: vacío por defecto; el motivo de la corta, que la persona puede editar (Samuel, IMGA, 22/11/2026)")
+
+PIT_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    PitParam.N_BERM.value: ValueRange(1, 1000, "-"),
+    PitParam.TOP_LEVEL.value: ValueRange(-_INF, _INF, "m"),
+    PitParam.BOTTOM_LEVEL.value: ValueRange(-_INF, _INF, "m"),
+    PitParam.MAX_BENCHES.value: ValueRange(1, 1000, "-"),
+    PitParam.MIN_FLOOR_WIDTH.value: ValueRange(0.0, 100000.0, "m", min_exclusive=True),
+    PitParam.ARC_TOL.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    PitParam.SIMPLIFY.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    PitParam.CLOSE_RADIUS.value: ValueRange(0.0, 100000.0, "m"),
+    PitParam.AZ_WINDOW.value: ValueRange(0.0, 100000.0, "m", min_exclusive=True),
+})
+"""Los rangos de los valores numéricos de la corta por último segmento de la clave (solo lectura; plan 018 §5.2.2): ``n_berm`` y
+``max_benches`` enteros ≥ 1 (RF-018-04, 08; los topes son límites de validez, no cifras mineras: RF-018-04 da 200 bancos por polilínea
+y lo comprueba el cálculo); las tolerancias, la ventana y el ancho mínimo de fondo > 0; el cierre ≥ 0 (0 = sin cierre); las cotas sin
+tope (la spec las acota por el terreno, que solo conoce el cálculo)."""
 
 PIT_ENTITY = _supported_entity(
     "pit", "PIT", "Corta", PitParam, (
         _common("name"),
         _item("mode", "text", None, ("RF-018-02",), _018_PIT, "Mode of the pit", choices=("up", "down")),
         _item("layer", "text", None, ("RF-018-01", "RF-018-02"), _018_PIT, "Layer the pit comes from"),
-        _common("start"), _common("support"), _common("supports"), _common("discarded"),
-        _item("reason", "text", None, ("RF-015-17",), _018_PIT, "Reason of the pit"),
-    ), {}, ("support", "supports", "reason"))
-"""Los parámetros de una corta (``pit``, ``PIT-001``): encadena (tiene ``start``) y no declara nada (sin ``protect`` ni ``guard_m``). La T02
-registra solo los comunes, el modo y la capa; la T03 añade los demás de plan 018 §5.2.2."""
+        _item("fixed_layer", "text", None, ("RF-018-23", "RF-018-24"), _018_PIT_OPTIONAL, "Layer of the fixed benches"),
+        _item("noramp_layer", "text", None, ("RF-018-15",), _018_PIT_OPTIONAL, "Layer of the zones without ramps"),
+        _common("start"), _common("support"), _common("supports"),
+        _item("profile", "text", None, ("RF-018-06",), _018_PIT_OPTIONAL, "Base bench profile of the pit"),
+        _item("rose", "text", None, ("RF-018-07",), _018_PIT_OPTIONAL, "Slope rose of the pit"),
+        _item("n_berm", "int", 1, ("RF-018-08",), _018_PIT_BERM, "Benches between berms"),
+        _item("ramps", "text", None, ("RF-018-15",), _018_PIT_OPTIONAL, "Ramps of the pit"),
+        _item("top_level_m", "float", None, ("RF-018-11", "RF-018-13"), _018_D8, "Top level of the pit"),
+        _item("bottom_level_m", "float", None, ("RF-018-11", "RF-018-13"), _018_D8, "Bottom level of the pit"),
+        _item("max_benches", "int", None, ("RF-018-14",), _018_D8, "Maximum number of benches"),
+        _item("min_floor_width_m", "float", None, ("RF-018-13",), _018_D8, "Minimum width of the floor"),
+        _item("corner", "text", "round", ("RF-018-10",), _018_CORNER, "Corner of the offset", choices=("round", "miter")),
+        _item("arc_tol_m", "float", None, ("RF-018-10",), _018_D14, "Tolerance of the arcs of the offset", kind="HIPÓTESIS"),
+        _item("simplify_m", "float", None, ("RF-018-10",), _018_D14, "Simplification tolerance of the polylines",
+              kind="HIPÓTESIS"),
+        _item("close_radius_m", "float", None, ("RF-018-10",), _018_D14, "Closing radius of the offset", kind="HIPÓTESIS"),
+        _item("az_window_m", "float", None, ("RF-018-07", "RF-018-10"), _018_D14, "Azimuth window of the rose", kind="HIPÓTESIS"),
+        _common("discarded"),
+        _item("reason", "text", None, ("RF-015-17",), _018_PIT_REASON, "Reason of the pit"),
+    ), PIT_RANGES, ("fixed_layer", "noramp_layer", "support", "supports", "profile", "rose", "ramps", "top_level_m",
+                    "bottom_level_m", "max_benches", "min_floor_width_m", "close_radius_m", "az_window_m", "reason"))
+"""Los parámetros de una corta (``pit``, ``PIT-001``): encadena (tiene ``start``) y no declara nada (sin ``protect`` ni ``guard_m``).
+Opcionales: lo que solo pide lo que lo usa (las capas de bancos fijados y de zonas sin rampa, el perfil, la roseta y las rampas, el
+apoyo, el cierre y la ventana de azimut) y los criterios de parada, de los que el cálculo exige al menos uno (RF-018-11, 13, 14). Sin
+valor por defecto ninguna cifra minera: solo ``n_berm`` (1), ``corner`` (``round``) y ``discarded``."""
 PIT_FAMILIES: tuple[ParamFamily, ...] = PIT_ENTITY.families
 """Las familias de la corta, de versión, en su orden (``bl`` las registra junto a las demás)."""
+
+
+def _pit_sector_family(param: PitSectorParam) -> ParamFamily:
+    """La familia ``des.pit.{e}.<valor>.{s}`` (ADR-0029): como ``des.pit.{e}.<valor>`` y sin valor por defecto (sin sector, el de la corta)."""
+    base = PIT_ENTITY.template(param.value)
+    span = PIT_RANGES.get(param.value)
+    minimum = None if span is None or span.minimum == -_INF else span.minimum
+    maximum = None if span is None or span.maximum == _INF else span.maximum
+    template = ParamDef(
+        f"des.pit.e.{param.value}.s", str(base.value_type), "-" if span is None else span.unit, None, minimum, maximum,
+        base.requirements, base.source, min_exclusive=span is not None and span.min_exclusive, allow_empty=True,
+        choices=base.choices, kind="ADOPTADO", source_kind="person", scope="version",
+        label_msgid=f"{base.label_msgid} of a sector")
+    return ParamFamily(f"des.pit.{{e}}.{param.value}.{{s}}", template)
+
+
+PIT_SECTOR_FAMILIES: tuple[ParamFamily, ...] = tuple(_pit_sector_family(item) for item in PitSectorParam)
+"""Las tres familias por sector de la corta (ADR-0029; RF-018-06 a 09): el perfil, la roseta y el número de bancos por berma, con el
+**código del sector** (``perimeter__`` para el perímetro como sector único). Sin valor por defecto: un sector sin valor usa el de la
+corta."""
+PERIMETER_SEGMENT = "perimeter__"
+"""El segmento del perímetro como sector único (ADR-0029, punto 2)."""
+
+
+def pit_sector_key(code: str, param: PitSectorParam | str, sector: str) -> str:
+    """La clave del valor ``param`` del sector ``sector`` de la corta de código ``code`` (``des.pit.pit_001.profile.talud_norte``).
+    :class:`ValueError` si el código no es el de una corta, ``param`` no es un valor por sector o el sector no es ``[a-z][a-z0-9_]*``
+    (un error del programa; ``perimeter__`` lo es)."""
+    spec = entity_params_of(code)
+    if spec.kind != "pit":
+        raise ValueError(f"el código {code!r} no es el de una corta")
+    if not isinstance(sector, str) or _KEY_SEGMENT.fullmatch(sector) is None:
+        raise ValueError(f"el sector {sector!r} no es un código [a-z][a-z0-9_]* (ADR-0029)")
+    return f"des.pit.{entity_segment(code)}.{PitSectorParam(param).value}.{sector}"
+
+
 ROAD_FAMILIES: tuple[ParamFamily, ...] = ROAD_ENTITY.families
 ACCESS_FAMILIES: tuple[ParamFamily, ...] = ACCESS_ENTITY.families
 """Las familias de la pista (26) y de la accesibilidad (8), de versión, en su orden (plan 017 §5.2.2). Van aparte de
@@ -1723,3 +1869,144 @@ def check_road_profile(profile: str, code: str, values: Mapping[str, object]) ->
         checked[param.value] = check_road_profile_value(profile, code, param, value)
     check_road_profile_radii(profile, code, checked)
     return checked
+
+
+# --- La roseta de taludes y la definición de rampa de la corta (spec 018, T03; plan 018 §5.2.2; RF-018-07, 15; D-5, D-6, D-19) -------
+
+ROSE_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    RoseParam.FROM_DEG.value: ValueRange(0.0, 360.0, "deg"),
+    RoseParam.TO_DEG.value: ValueRange(0.0, 360.0, "deg"),
+    RoseParam.FACE_DEG.value: ValueRange(0.0, 90.0, "deg", min_exclusive=True, max_exclusive=True),
+    RoseParam.BERM.value: ValueRange(0.0, 100.0, "m"),
+})
+PITRAMP_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    PitRampParam.GRADIENT.value: ValueRange(0.0, 100.0, "%", min_exclusive=True),
+    PitRampParam.TRANSITION.value: ValueRange(0.0, 1000.0, "m"),
+    PitRampParam.TURN_RADIUS.value: ValueRange(0.0, 10000.0, "m", min_exclusive=True),
+    PitRampParam.MIN_PLATFORM.value: ValueRange(0.0, 10000.0, "m", min_exclusive=True),
+})
+"""Los rangos de la roseta (azimut de 0 a 360°; la cara en (0; 90)°; la berma ≥ 0: RF-018-07) y de la rampa (``0 < g``; ``g ≤ pd`` del perfil
+de pista lo comprueba T04, que lee el perfil; la transición ≥ 0; el radio de giro y la plataforma > 0: RF-018-15), por último segmento de
+la clave (solo lectura). Los máximos son límites de validez, no cifras mineras."""
+
+_018_ROSE = ("Spec 018, RF-018-07, D-5 y D-6: sin valor por defecto; lo declara una persona al crear la roseta, con su fuente y su decisor "
+             "(ADOPTADO con fuente; los de las pruebas, CE-018-02) (Samuel, IMGA, 22/11/2026)")
+_018_RAMP = ("Spec 018, RF-018-15: sin valor por defecto; lo declara una persona al crear la definición de rampa, con su fuente y su decisor "
+             "(Samuel, IMGA, 22/11/2026)")
+_018_D19 = ("Spec 018, D-19: HIPÓTESIS sin valor por defecto; el radio de giro y la plataforma de retorno del zig-zag los declara una persona "
+            "con su origen (Samuel, IMGA, 22/11/2026)")
+_ROSE_SPECS: tuple[tuple[RoseParam, str], ...] = (
+    (RoseParam.FROM_DEG, "Start azimuth of a range of the rose"), (RoseParam.TO_DEG, "End azimuth of a range of the rose"),
+    (RoseParam.FACE_DEG, "Face angle of a range of the rose"), (RoseParam.BERM, "Berm of a range of the rose"))
+_PITRAMP_SPECS: tuple[tuple[PitRampParam, str, tuple[str, ...], str, str, str], ...] = (
+    (PitRampParam.TYPE, "text", ("spiral", "zigzag"), _018_RAMP, "ADOPTADO", "Type of the ramp"),
+    (PitRampParam.SENSE, "text", ("cw", "ccw"), _018_RAMP, "ADOPTADO", "Sense of the ramp"),
+    (PitRampParam.START, "text", (), _018_RAMP, "ADOPTADO", "Start point of the ramp"),
+    (PitRampParam.GRADIENT, "float", (), _018_RAMP, "ADOPTADO", "Design gradient of the ramp"),
+    (PitRampParam.ROAD_PROFILE, "text", (), _018_RAMP, "ADOPTADO", "Haul road profile of the ramp"),
+    (PitRampParam.TRANSITION, "float", (), _018_RAMP, "ADOPTADO", "Length of the transition of the ramp"),
+    (PitRampParam.TURN_RADIUS, "float", (), _018_D19, "HIPÓTESIS", "Turning radius of the zigzag ramp"),
+    (PitRampParam.MIN_PLATFORM, "float", (), _018_D19, "HIPÓTESIS", "Minimum length of the return platform"),
+)
+
+
+def _code_family(prefix: str, variables: str, param: str, value_type: str, choices: tuple[str, ...], rfs: tuple[str, ...],
+                 source: str, label: str, kind: str, span: ValueRange | None) -> ParamFamily:
+    """La familia ``des.<prefix>.{x}[.{i}].<param>`` de un dato del proyecto con código (la roseta, la rampa): de versión, sin valor por
+    defecto (lo declara una persona), con el rango ``span``."""
+    minimum = None if span is None or span.minimum == -_INF else span.minimum
+    maximum = None if span is None or span.maximum == _INF else span.maximum
+    names = ".".join(name.strip("{}") for name in variables.split("."))
+    template = ParamDef(
+        f"des.{prefix}.{names}.{param}", value_type, "-" if span is None else span.unit, None,
+        minimum, maximum, rfs, source, min_exclusive=span is not None and span.min_exclusive, allow_empty=True, choices=choices,
+        kind=kind, source_kind="person", scope="version", label_msgid=label)
+    return ParamFamily(f"des.{prefix}.{variables}.{param}", template)
+
+
+ROSE_FAMILIES: tuple[ParamFamily, ...] = tuple(
+    _code_family("rose", "{r}.{i}", param.value, "float", (), ("RF-018-07",), _018_ROSE, label, "ADOPTADO", ROSE_RANGES[param.value])
+    for param, label in _ROSE_SPECS)
+"""Las cuatro familias de un rango de una roseta de taludes (``des.rose.{r}.{i}.<valor>``: ``{r}`` el código inmutable de la roseta,
+``{i}`` el del rango, ``r1``…), de versión y sin valor por defecto (RF-018-07). **La forma exacta de los rangos la fija T04** (plan 018
+§5.2.2): esta es la que registra T03 para poder guardarlos."""
+PITRAMP_FAMILIES: tuple[ParamFamily, ...] = tuple(
+    _code_family("pitramp", "{q}", param.value, value_type, choices, ("RF-018-15",), source, label, kind,
+                 PITRAMP_RANGES.get(param.value))
+    for param, value_type, choices, source, kind, label in _PITRAMP_SPECS)
+"""Las ocho familias de una definición de rampa (``des.pitramp.{q}.<valor>``: ``{q}`` el código inmutable de ``des_pit_ramp``), de
+versión y sin valor por defecto (RF-018-15, D-19)."""
+_PITRAMP_TEMPLATES: Mapping[str, ParamDef] = MappingProxyType({f.pattern.rsplit(".", 1)[1]: f.template for f in PITRAMP_FAMILIES})
+_ROSE_TEMPLATES: Mapping[str, ParamDef] = MappingProxyType({f.pattern.rsplit(".", 1)[1]: f.template for f in ROSE_FAMILIES})
+
+
+def rose_key(code: str, index: str, param: RoseParam | str) -> str:
+    """La clave del valor ``param`` del rango ``index`` (``r1``) de la roseta ``code`` (``des.rose.rosa_1.r1.face_deg``);
+    :class:`ValueError` si el código o el rango no son ``[a-z][a-z0-9_]*`` o ``param`` no es de una roseta (un error del programa)."""
+    for what, segment in (("el código", code), ("el rango", index)):
+        if not is_code(segment):
+            raise ValueError(f"{what} {segment!r} no es [a-z][a-z0-9_]* (ADR-0027)")
+    if not index.startswith("r") or not index[1:].isdigit():
+        raise ValueError(f"el rango {index!r} no es de la forma r1, r2…")
+    return f"des.rose.{code}.{index}.{RoseParam(param).value}"
+
+
+def pitramp_key(code: str, param: PitRampParam | str) -> str:
+    """La clave del valor ``param`` de la definición de rampa ``code`` (``des.pitramp.rampa_1.gradient_pct``); :class:`ValueError` si
+    el código no es ``[a-z][a-z0-9_]*`` o ``param`` no es de una rampa (un error del programa)."""
+    if not is_code(code):
+        raise ValueError(f"el código {code!r} no es [a-z][a-z0-9_]* (ADR-0027)")
+    return f"des.pitramp.{code}.{PitRampParam(param).value}"
+
+
+def _check_code_value(what: str, name: str, key: str, definition: ParamDef, span: ValueRange | None, value: object,
+                      missing: str, outside: str, required: bool) -> float | str | None:
+    """El valor de un dato con código (la roseta o la rampa) ya comprobado: ``float`` o ``str``; ``None`` si no hace falta y no lo
+    tiene. :class:`~design.messages.DesignError` ``missing`` si falta, ``outside`` si está fuera de su rango o de su lista;
+    :class:`TypeError` si no es del tipo."""
+    obj = f"{what} «{name}»"
+    is_text = str(definition.value_type) == "text"
+    if value is not None:
+        if is_text:
+            if not isinstance(value, str):
+                raise TypeError(f"el valor {key} es un texto, no {value!r}")
+            value = value.strip() or None
+        else:
+            value = _real(value, f"el valor {key}")
+    if value is None:
+        if required:
+            raise DesignError(missing, obj=obj, field=key, value=None, profile=name)
+        return None
+    if is_text:
+        if definition.choices and value not in definition.choices:
+            listed = ", ".join(f"«{choice}»" for choice in definition.choices)
+            raise DesignError(outside, obj=obj, field=key, value=value, profile=name, range=listed)
+        return str(value)
+    if span is not None and not span.contains(value):
+        raise DesignError(outside, obj=obj, field=key, value=value, profile=name, range=span.text())
+    return float(value)  # type: ignore[arg-type]
+
+
+def check_rose_value(rose: str, code: str, index: str, param: RoseParam | str, value: object) -> float:
+    """El valor ``param`` del rango ``index`` de la roseta ``rose`` (su nombre) de código ``code``, ya comprobado.
+    :class:`~design.messages.DesignError` ``des.pit_rose_value_missing`` si no tiene valor o ``des.pit_rose_value_range`` si está fuera
+    de su rango (``nan`` y el infinito también), nombrando la roseta, la clave y el valor (RF-018-04, RF-018-07); :class:`TypeError`
+    si no es un número. La cobertura de 0 a 360° sin huecos ni solapes es de T04 (necesita todos los rangos)."""
+    param = RoseParam(param)
+    key = rose_key(code, index, param)
+    found = _check_code_value("Roseta de taludes", rose, key, _ROSE_TEMPLATES[param.value], ROSE_RANGES[param.value], value,
+                              "des.pit_rose_value_missing", "des.pit_rose_value_range", True)
+    return float(found)  # type: ignore[arg-type]
+
+
+def check_pitramp_value(ramp: str, code: str, param: PitRampParam | str, value: object, *,
+                        required: bool = True) -> float | str | None:
+    """El valor ``param`` de la definición de rampa ``ramp`` (su nombre) de código ``code``, ya comprobado: ``float`` un número y ``str``
+    un texto de su lista (sin los espacios de los extremos). ``required`` falso (el radio y la plataforma, que solo pide el zig-zag)
+    deja pasar un valor ausente (``None``). :class:`~design.messages.DesignError` ``des.pit_ramp_value_missing`` o
+    ``des.pit_ramp_value_range`` nombrando la rampa, la clave y el valor (RF-018-04, RF-018-15); :class:`TypeError` si no es del
+    tipo. ``g ≤ pd`` del perfil de pista es de T04."""
+    param = PitRampParam(param)
+    key = pitramp_key(code, param)
+    return _check_code_value("Rampa", ramp, key, _PITRAMP_TEMPLATES[param.value], PITRAMP_RANGES.get(param.value), value,
+                             "des.pit_ramp_value_missing", "des.pit_ramp_value_range", required)

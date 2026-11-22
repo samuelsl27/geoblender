@@ -181,7 +181,11 @@ API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
 # nuevos y lo que la 016 añade a los demás) y **desde la T35 de la 017** (``des.md`` §4.5 nombra los trece módulos nuevos
 # de las pistas y la accesibilidad y lo que la 017 añade a los demás); una spec posterior los usará con los suyos. El nombre
 # ``PENDING_015_*`` se conserva porque otras pruebas lo importan.
-PENDING_015_API: frozenset[str] = frozenset({"PitParam", "pit_operation_defs", "reproduce_pit"})  # spec 018, T02: la tarea de documentación de la 018 los cita
+PENDING_015_API: frozenset[str] = frozenset({
+    "PitParam", "pit_operation_defs", "reproduce_pit",  # T02
+    "PitRampParam", "PitSectorParam", "RoseParam", "check_pitramp_value", "check_rose_value", "pit_sector_key", "pitramp_key", "rose_key",  # T03: params
+    "RampConfirmation", "pit_expand_figures", "pit_figures", "ramp_confirmation", "ramp_confirmed",  # T03: provenance
+    "reproduce_pit_expand"})  # spec 018, T02 y T03: la tarea de documentación de la 018 los cita
 PENDING_015_MODULES: frozenset[str] = frozenset()
 
 

@@ -161,12 +161,12 @@ class EntityDatasetsTest(unittest.TestCase):
                                  (kind, store, reader, role, extension, named))
                 self.assertEqual(family.prefix, f"des_{family.code}_")
                 self.assertTrue(family.label.strip())
-        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 35)  # y las ocho de la 016 (T03) y las siete de la 017 (T03 y T26)
+        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 43)  # y las ocho de la 016 (T03), las siete de la 017 (T03 y T26) y las ocho de la 018 (T03)
         self.assertEqual(dict(provenance.FAMILIES_BY_CODE),
                          {family.code: family for family in (
                              *provenance.FAMILIES, *provenance.QUARRY_FAMILIES,
                              *provenance.ENTITY_FAMILIES, *provenance.SUPPORTED_FAMILIES,
-                             *provenance.ROAD_DATA_FAMILIES)})
+                             *provenance.ROAD_DATA_FAMILIES, *provenance.PIT_DATA_FAMILIES)})
 
     def test_the_surface_of_an_entity_is_not_a_design_surface(self) -> None:
         """RF-015-04, P-2 (plan 015 §2.1): las superficies intermedias de una cadena no pueden

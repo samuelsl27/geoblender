@@ -51,12 +51,13 @@ from tests.support.trees import temp_folder
 
 ENTRY = "013"
 ENTRY_TITLE = ("Envelopes and benching", "Envolventes y escalonado")
-COUNTS = {"parámetros": 9, "familias": 153, "operaciones": 22, "grupos": 0, "cifras": 98}
+COUNTS = {"parámetros": 9, "familias": 183, "operaciones": 26, "grupos": 0, "cifras": 119}
 """Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 + 21 + 69 + 49 familias (013, 015, 016 y 017; la 20.ª de la 015,
 ``discarded``, es de la T25 y la 21.ª, ``stockpile``, de la T21 de la 016; las 69 de la 016 son las de sus cuatro tipos: 25 + 13 + 14 + 17;
 las 49 de la 017, las de la pista, la accesibilidad y el perfil de pista: 26 + 8 + 15), 3 + 5 + 3 + 5 + 4 tipos de
 operación (013, 014, 015, 016 y 017; la 016, con el de la detección del proyecto, T04; la 017, con la edición de los perfiles de pista, de
-proyecto) y 15 + 15 + 14 + 22 + 32 cifras (T04 de la 015; T03 de la 016; T03 de la 017: 23 de la pista y 9 de la accesibilidad)."""
+proyecto) y 15 + 15 + 14 + 22 + 32 cifras (T04 de la 015; T03 de la 016; T03 de la 017: 23 de la pista y 9 de la accesibilidad).
+La 018 (T03): 183 familias = 153 menos las 8 de la corta de la T02 más 23 + 3 + 4 + 8 (la corta, sus valores por sector, la roseta y la rampa); 26 tipos con los tres de la corta, la edición de rosetas y la de rampas; 21 cifras de la corta."""
 OURS = ("des.", "des_")  # las claves de la 013 en los registros de core
 VERSION_TYPES = ("des.envelope", "des.stepped_design")
 PROFILES_TYPE = "des.edit_bench_profiles"
@@ -81,7 +82,10 @@ COMMANDS_016: dict[str, str] = {"des.stockpile_detect": "geoblender.des_detect_s
 «Unidad por espesor sobre su apoyo…» pasa a ser ``des_create_body``). **Todas están en el catálogo** desde la T35 (la entrada 016, entregada),
 cada una con su clase real."""
 ROAD_TYPES = ("des.road", "des.road_access", "des.road_propose", "des.road_layer")
-PIT_TYPES = ("des.pit",)  # la 018 (T02)
+PIT_TYPES = ("des.pit", "des.pit_expand", "des.pit_layer")  # la 018 (T02 y T03)
+PIT_PROVISIONAL = {"geoblender.des_new_pit", "geoblender.des_expand_bench", "geoblender.des_compute_daylight", "geoblender.des_add_ramp"}
+"""Las órdenes provisionales del catálogo que lanzan los tipos de la corta (018): las sustituyen las tareas de la fase G."""
+PIT_PROJECT_TYPES = ("des.edit_pit_roses", "des.edit_pit_ramps")  # la edición de las rosetas y de las rampas: de proyecto (T03)
 """Los cuatro tipos de la 017 (T03 y T26): de la versión y repetibles; los tres primeros, reproducibles (sin comportamiento todavía el último, «Proponer el trazado»); **la capa de ejes de pistas
 (``des.road_layer``, T26-a) no se reproduce**: incluye el estado de cada pista, que deduce el grafo (como la capa de entidades)."""
 ROAD_PROFILES_TYPE = "des.edit_road_profiles"
@@ -107,7 +111,8 @@ REPRODUCED = {"des.envelope": "reproduce_envelope", "des.stepped_design": "repro
               "des.stockpile_removal": "reproduce_stockpile_removal",
               "des.buttress": "reproduce_buttress", "des.body": "reproduce_body",
               "des.road": "reproduce_road", "des.road_access": "reproduce_road_access",
-              "des.road_propose": "reproduce_road_propose", "des.pit": "reproduce_pit"}
+              "des.road_propose": "reproduce_road_propose", "des.pit": "reproduce_pit",
+              "des.pit_expand": "reproduce_pit_expand"}
 """Los tipos que se reproducen y su función de ``design.reproduce`` (el ajuste de la 014 y la capa de entidades de
 la 015, T30, no se reproducen; los cinco de la 016 y los tres de la 017, sí)."""
 ENTRY_014 = "014"
@@ -330,7 +335,7 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual(ours["familias"], sorted(
             family.pattern for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES,
                                           *m.des_params.SUPPORTED_FAMILIES, *m.des_params.ROAD_FAMILIES,
-                                          *m.des_params.ACCESS_FAMILIES, *m.des_params.PIT_FAMILIES, *m.des_params.ROAD_PROFILE_FAMILIES)))
+                                          *m.des_params.ACCESS_FAMILIES, *m.des_params.PIT_FAMILIES, *m.des_params.PIT_SECTOR_FAMILIES, *m.des_params.ROSE_FAMILIES, *m.des_params.PITRAMP_FAMILIES, *m.des_params.ROAD_PROFILE_FAMILIES)))
         bare = {name: {key: item for key, item in found.items() if not key.startswith(OURS)}
                 for name, found in enabled.items()}
         others: list[tuple[str, str, Any]] = []
@@ -408,7 +413,7 @@ class DesignRegisteredTest(unittest.TestCase):
         found = {op_type: defn for op_type, defn in m.contract.OPERATIONS.items()
                  if defn.module == "des"}
         self.assertEqual(sorted(found), sorted((*VERSION_TYPES, PROFILES_TYPE, *QUARRY_TYPES,
-                                                *ENTITY_TYPES, *SUPPORTED_TYPES, *ROAD_TYPES, *PIT_TYPES, ROAD_PROFILES_TYPE)))
+                                                *ENTITY_TYPES, *SUPPORTED_TYPES, *ROAD_TYPES, *PIT_TYPES, *PIT_PROJECT_TYPES, ROAD_PROFILES_TYPE)))
         self.assertEqual(sorted(des_ops.RECOMPUTE), sorted(declared.REPRODUCIBLE))
         self.assertEqual(sorted(des_ops.REPRODUCE), sorted(declared.REPRODUCIBLE))
         self.assertEqual(sorted(des_ops.QUARRY_RECOMPUTE), sorted(QUARRY_TYPES))
@@ -420,7 +425,7 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual(sorted(des_ops.ROAD_RECOMPUTE), sorted(ROAD_TYPES))  # los cuatro de la 017 (T03 y T26)
         self.assertEqual(sorted(des_ops.ROAD_REPRODUCE), sorted(ROAD_TYPES[:3]))  # la capa de ejes no se reproduce
         self.assertEqual(sorted(des_ops.PIT_RECOMPUTE), sorted(PIT_TYPES))  # la corta de la 018 (T02)
-        self.assertEqual(sorted(des_ops.PIT_REPRODUCE), sorted(PIT_TYPES))
+        self.assertEqual(sorted(des_ops.PIT_REPRODUCE), ["des.pit", "des.pit_expand"])
         recomputed = {**des_ops.RECOMPUTE, **des_ops.QUARRY_RECOMPUTE, **des_ops.ENTITY_RECOMPUTE,
                       **des_ops.SUPPORTED_RECOMPUTE, **des_ops.ROAD_RECOMPUTE, **des_ops.PIT_RECOMPUTE}
         reproduced = {**des_ops.REPRODUCE, **des_ops.QUARRY_REPRODUCE, **des_ops.ENTITY_REPRODUCE,
@@ -456,12 +461,12 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual({op_type: defn.commands[0] for op_type, defn in found.items()
                           if op_type in (*ROAD_TYPES, ROAD_PROFILES_TYPE)}, COMMANDS_017)
         for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES, *declared.ENTITY_FIGURES,
-                       *declared.SUPPORTED_FIGURES, *declared.ROAD_FIGURES, *declared.ACCESS_FIGURES):
+                       *declared.SUPPORTED_FIGURES, *declared.ROAD_FIGURES, *declared.ACCESS_FIGURES, *declared.PIT_FIGURES):
             self.assertIs(m.contract.FIGURES[figure.key], figure)
         for definition in (*m.des_params.DEFINITIONS, *m.des_params.QUARRY_DEFINITIONS):
             self.assertIs(m.params.DEFINITIONS[definition.key], definition)
         for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES, *m.des_params.SUPPORTED_FAMILIES,
-                       *m.des_params.ROAD_FAMILIES, *m.des_params.ACCESS_FAMILIES, *m.des_params.PIT_FAMILIES, *m.des_params.ROAD_PROFILE_FAMILIES):
+                       *m.des_params.ROAD_FAMILIES, *m.des_params.ACCESS_FAMILIES, *m.des_params.PIT_FAMILIES, *m.des_params.PIT_SECTOR_FAMILIES, *m.des_params.ROSE_FAMILIES, *m.des_params.PITRAMP_FAMILIES, *m.des_params.ROAD_PROFILE_FAMILIES):
             self.assertIs(m.params.FAMILIES[family.pattern], family)
         msgids = {defn.label_msgid for defn in des_ops.OPERATION_DEFS}
         msgids |= {setting.label_msgid for defn in des_ops.OPERATION_DEFS
@@ -470,13 +475,13 @@ class DesignRegisteredTest(unittest.TestCase):
                    for _value, label in setting.choices or ()}
         msgids |= {figure.label_msgid for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES,
                                                      *declared.ENTITY_FIGURES, *declared.SUPPORTED_FIGURES,
-                                                     *declared.ROAD_FIGURES, *declared.ACCESS_FIGURES)}
+                                                     *declared.ROAD_FIGURES, *declared.ACCESS_FIGURES, *declared.PIT_FIGURES)}
         msgids |= {defn.label_msgid for defn in (*m.des_params.DEFINITIONS,
                                                  *m.des_params.QUARRY_DEFINITIONS)}
         msgids |= {family.template.label_msgid
                    for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES,
                                   *m.des_params.SUPPORTED_FAMILIES, *m.des_params.ROAD_FAMILIES,
-                                  *m.des_params.ACCESS_FAMILIES, *m.des_params.PIT_FAMILIES, *m.des_params.ROAD_PROFILE_FAMILIES)}
+                                  *m.des_params.ACCESS_FAMILIES, *m.des_params.PIT_FAMILIES, *m.des_params.PIT_SECTOR_FAMILIES, *m.des_params.ROSE_FAMILIES, *m.des_params.PITRAMP_FAMILIES, *m.des_params.ROAD_PROFILE_FAMILIES)}
         self.assertNotIn(None, msgids)
         self.assertEqual(m.i18n.untranslated(msgids), [])
         catalog = _module("design.messages").CATALOG_ES  # los mensajes con código, instalados
@@ -492,7 +497,8 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual(sorted(launched), sorted({"geoblender.des_compute_envelope",
                                                    "geoblender.des_edit_bench_profiles",
                                                    PLATFORM_COMMAND, *COMMANDS_014,
-                                                   *COMMANDS_016.values(), *COMMANDS_017.values(), "geoblender.des_new_pit"}))  # la provisional de la corta (018, T02)
+                                                   *COMMANDS_016.values(), *COMMANDS_017.values(), "geoblender.des_new_pit", "geoblender.des_expand_bench",
+                                               "geoblender.des_compute_daylight", "geoblender.des_add_ramp"}))  # las provisionales de la corta (018, T02 y T03)
         self.assertEqual(launched["geoblender.des_compute_envelope"], list(VERSION_TYPES))
         self.assertEqual(launched[PLATFORM_COMMAND], list(ENTITY_TYPES))  # RF-015-02 (T04)
         by_command: dict[str, list[str]] = {}
@@ -513,7 +519,7 @@ class DesignRegisteredTest(unittest.TestCase):
             by_road_command.setdefault(idname, []).append(op_type)
         self.assertEqual({idname: launched[idname] for idname in COMMANDS_017.values()}, by_road_command)
         for idname in sorted(set(launched) - COMMANDS_014 - {PLATFORM_COMMAND} - set(COMMANDS_016.values())
-                             - set(COMMANDS_017.values()) - {"geoblender.des_new_pit"}):  # la provisional de la corta (018, T02)
+                             - set(COMMANDS_017.values()) - PIT_PROVISIONAL):  # las provisionales de la corta (018, T02 y T03)
             with self.subTest(orden=idname):
                 self.assertIn(idname, DELIVERED)
         entry_014 = self.cat.entries[ENTRY_014]  # la T58 la entrega, antes del H3

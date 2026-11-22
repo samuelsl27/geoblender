@@ -127,7 +127,7 @@ class RouteLayerTableTest(unittest.TestCase):
         spec = provenance.dataset_spec(provenance.ROUTE_LAYER_TABLE, "Trazado A", "V01")
         self.assertEqual((spec.name, spec.locator, spec.kind, spec.role, spec.qgis_editable), ("des_rpl_trazado_a", TABLE, "vector", "route_layer", True))
         others = [family.code for family in provenance.FAMILIES_BY_CODE.values() if family.qgis_editable]
-        self.assertEqual(others, [provenance.ROUTE_LAYER_TABLE])
+        self.assertEqual(others, [provenance.ROUTE_LAYER_TABLE, provenance.PIT_EXPANDED_TABLE])  # y, desde la 018 (T03), la de «Expandir banco…» (P-12)
 
     def test_d_a_road_in_3d_axis_mode_reads_the_line_with_its_z_and_picks_it_by_name(self) -> None:
         """RF-017-02, RF-017-18, T23-a: la capa propuesta es de las que una pista «eje 3D» lee: ``read_lines_3d`` da la línea con su Z (la rasante) y se elige por su nombre o su ``fid``, sin

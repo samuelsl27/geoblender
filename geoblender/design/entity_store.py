@@ -3396,6 +3396,7 @@ LAYER_FIGURES: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType({
     EntityKind.BODY.value: (("volume_m3", "des.bdy_volume_m3"), ("thickness_max_m", "des.bdy_thickness_max_m")),
     EntityKind.ROAD.value: (("area_m2", "des.road_area_m2"), ("cut_m3", "des.road_cut_m3"), ("fill_m3", "des.road_fill_m3"),
                             ("edge_cut_m3", "des.road_edge_cut_m3"), ("edge_fill_m3", "des.road_edge_fill_m3")),
+    EntityKind.PIT.value: (("area_m2", "des.pit_area_m2"), ("cut_m3", "des.pit_cut_m3")),
 })
 """Las cifras principales de la capa **por tipo de entidad** (spec 016, T34): para cada tipo, la columna de
 ``des_enl_<vNN>`` y la cifra que la llena. La plataforma, las cinco de la 015; el acopio, su área, su volumen sobre su

@@ -132,7 +132,7 @@ class OperationTypesTest(unittest.TestCase):
         for older in (*provenance.OPERATION_TYPES, *provenance.QUARRY_OPERATION_TYPES,
                       *provenance.ENTITY_OPERATION_TYPES, *provenance.SUPPORTED_OPERATION_TYPES):
             self.assertIs(provenance.OPERATION_TYPES_BY_NAME[older.op_type], older)
-        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5 + 3 + 1 + 1)  # + la capa de ejes de pistas (T26) y la corta de la 018 (T02)
+        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5 + 3 + 1 + 3)  # + la capa de ejes de pistas (T26) y los tres de la corta de la 018 (T02 y T03)
 
     def test_the_figures_of_each_type_and_what_fills_on_a_road(self) -> None:
         """RF-017-23, 24, 28, RF-015-15 (ADR-0031 §4): las cifras de cada tipo son las de su tabla; la pista deja también
@@ -215,7 +215,7 @@ class DataFamiliesTest(unittest.TestCase):
                                             *provenance.ENTITY_FAMILIES, *provenance.SUPPORTED_FAMILIES)}
         self.assertEqual(set(roles) & older, set())
         self.assertNotIn(provenance.DESIGN_SURFACE_ROLE, roles)
-        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 5 + 10 + 5 + 8 + 7)  # 013, 014, 015, 016 y 017
+        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 5 + 10 + 5 + 8 + 7 + 8)  # 013, 014, 015, 016, 017 y 018
 
     def test_the_roles_of_what_the_operations_consume_and_leave(self) -> None:
         """RF-017-01, 24, 25, 28 (plan 017 §5.2.3): el papel del eje por estaciones de otra pista, de la capa propuesta, de
@@ -682,8 +682,8 @@ class ClosedListsTest(unittest.TestCase):
         detrás de los de la 016 y, **desde la T26**, la capa de ejes de pistas al final, sin cambiar lo que ya llevaba ni repetir ninguno."""
         for op_type in TYPES.values():
             self.assertIn(op_type, store.RECOMPUTED)
-        self.assertEqual(store.RECOMPUTED[-5:-1], (*TYPES.values(), provenance.ROAD_LAYER))  # y la corta de la 018 (T02), al final
-        self.assertEqual(store.RECOMPUTED[-5 - len(provenance.SUPPORTED_TYPES):-5], provenance.SUPPORTED_TYPES)
+        self.assertEqual(store.RECOMPUTED[-7:-3], (*TYPES.values(), provenance.ROAD_LAYER))  # y los tres de la corta de la 018 (T02 y T03), al final
+        self.assertEqual(store.RECOMPUTED[-7 - len(provenance.SUPPORTED_TYPES):-7], provenance.SUPPORTED_TYPES)
         self.assertEqual(len(set(store.RECOMPUTED)), len(store.RECOMPUTED))
 
     def test_recompute_run_has_a_branch_for_each_type_and_none_falls_to_another_design(self) -> None:

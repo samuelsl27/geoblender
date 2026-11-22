@@ -163,6 +163,7 @@ __all__ = [
     "reproduce_excavation_area",
     "reproduce_fill_only",
     "reproduce_pit",
+    "reproduce_pit_expand",
     "reproduce_platform",
     "reproduce_quarry",
     "reproduce_road",
@@ -1302,6 +1303,11 @@ def _reproduce_road_propose(request: ReproduceRequest, budget_s: float) -> Itera
 def reproduce_pit(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
     """Reproduce ``des.pit`` (spec 018, T02; RF-018-01, RF-009-11): sin comportamiento todavía (la tarea que crea la operación)."""
     return _not_yet(request, provenance.PIT, "la tarea que crea la operación", "018")
+
+
+def reproduce_pit_expand(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """Reproduce ``des.pit_expand`` (spec 018, T03; RF-018-22, RF-009-11): sin comportamiento todavía (la tarea que crea la operación)."""
+    return _not_yet(request, provenance.PIT_EXPAND, "la tarea que crea la operación", "018")
 
 
 REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({

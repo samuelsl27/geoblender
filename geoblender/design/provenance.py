@@ -381,11 +381,36 @@ __all__ = [
     "PLATFORM_COMMON_PARAMS",
     "PLATFORM_FIGURES",
     "PLATFORM_SETTINGS",
+    "EDIT_PIT_RAMPS",
+    "EDIT_PIT_ROSES",
     "PIT",
+    "PIT_BENCHES_ROLE",
+    "PIT_BENCHES_TABLE",
     "PIT_COMMAND",
+    "PIT_DATA_FAMILIES",
+    "PIT_EXPAND",
+    "PIT_EXPANDED_ROLE",
+    "PIT_EXPANDED_TABLE",
+    "PIT_FIGURES",
+    "PIT_FINDINGS_ROLE",
+    "PIT_FINDINGS_TABLE",
+    "PIT_LAYER",
+    "PIT_LAYER_ROLE",
+    "PIT_LAYER_TABLE",
     "PIT_OPERATION_TYPES",
+    "PIT_POLYLINES_ROLE",
+    "PIT_POLYLINES_TABLE",
+    "PIT_PROJECT_OPERATIONS",
+    "PIT_RAMP_CONFIRMED",
+    "PIT_RAMPS_ROLE",
+    "PIT_RAMPS_TABLE",
     "PIT_REPRODUCIBLE",
+    "PIT_SKY_LAYER_ROLE",
+    "PIT_SKY_LAYER_TABLE",
+    "PIT_SKYLINE_ROLE",
+    "PIT_SKYLINE_TABLE",
     "PIT_VERSION_TYPES",
+    "RampConfirmation",
     "PROPOSE_COMMAND",
     "PROPOSE_FIGURES",
     "CounterslopeConfirmation",
@@ -579,7 +604,11 @@ __all__ = [
     "road_params",
     "road_request",
     "road_settings",
+    "pit_expand_figures",
+    "pit_figures",
     "pit_operation_defs",
+    "ramp_confirmation",
+    "ramp_confirmed",
     "propose_figures",
     "propose_params",
     "propose_request",
@@ -771,6 +800,26 @@ QGIS deja obsoleta la accesibilidad, uno de un campo no)."""
 ACCESS_FINAL_ROLE = "surface_final"
 """El papel de la superficie final de una cantera de la 014 que consume ``des.road_access`` además de la superficie (la cota
 mínima alcanzable sobre la restaurada, RF-017-24)."""
+
+# Los papeles de la corta por bancos (spec 018, T03; plan 018 §5.2.3): los de lo que produce, por los que leen sus datos la 012, R-44 y la
+# cubicación sin importar ``design`` (ADR-0028). La corta deja además la superficie y la huella de toda entidad.
+PIT_POLYLINES_ROLE = "pit_polylines"
+"""El papel de las polilíneas de diseño de una corta (``des_pbl_``: banco, tipo, zona, sector, orden y vértices con Z)."""
+PIT_SKYLINE_ROLE = "pit_skyline"
+"""El papel de la línea de cielo de una corta (``des_psk_``: la intersección con el terreno de la partida; no es una restricción)."""
+PIT_RAMPS_ROLE = "pit_ramps"
+"""El papel del eje y la banda de cada rampa de una corta por estaciones (``des_prl_``)."""
+PIT_FINDINGS_ROLE = "pit_findings"
+"""El papel de los hallazgos de una corta (``des_pfn_``: banco, tipo, valor, límite con su unidad y lugar; los lee R-44)."""
+PIT_BENCHES_ROLE = "pit_benches"
+"""El papel de las cifras de cada banco de una corta (``des_pbk_``)."""
+PIT_EXPANDED_ROLE = "pit_expanded"
+"""El papel de la capa de líneas con Z de «Expandir banco…» (``des_pxb_``): **editable a mano** (P-12), y una corta la lee como bancos
+fijados."""
+PIT_LAYER_ROLE = "pit_layer"
+"""El papel de la capa de cortas de la versión (``des_pit_<vNN>``; no editable a mano)."""
+PIT_SKY_LAYER_ROLE = "sky_layer"
+"""El papel de la capa de líneas de cielo de la versión (``des_sky_<vNN>``; no editable a mano)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1003,12 +1052,38 @@ deja además las ``des_psf_``, ``des_epr_`` y ``des_prp_`` de la 015). Cada una 
 ninguna lleva el papel de una superficie de diseño. **Solo la capa propuesta (``des_rpl_``) es editable a mano en QGIS** (P-8: desde
 que se crea es del usuario, y una pista la lee con su hash); las demás son salidas calculadas, que se bloquean si se editan fuera
 (RF-008-56). La capa de ejes de pistas ``des_rax_<vNN>`` (T26) es **una por versión** (``named`` falso: sin el nombre de una operación, como ``des_enl_``)."""
+# Las de la corta por bancos (spec 018, T03; plan 018 §5.2.3).
+PIT_POLYLINES_TABLE = "pbl"
+PIT_SKYLINE_TABLE = "psk"
+PIT_RAMPS_TABLE = "prl"
+PIT_FINDINGS_TABLE = "pfn"
+PIT_BENCHES_TABLE = "pbk"
+PIT_EXPANDED_TABLE = "pxb"
+PIT_LAYER_TABLE = "pit"
+PIT_SKY_LAYER_TABLE = "sky"
+"""Los códigos de las familias de la corta: polilíneas, línea de cielo, rampas, hallazgos, cifras por banco, la capa editable de «Expandir
+banco…» y las dos capas de la versión (``des_pit_<vNN>`` y ``des_sky_<vNN>``)."""
+PIT_DATA_FAMILIES: tuple[DatasetFamily, ...] = (
+    DatasetFamily(PIT_POLYLINES_TABLE, "vector", Store.GPKG, GPKG_LAYER.id, PIT_POLYLINES_ROLE, "", "Polilíneas de la corta"),
+    DatasetFamily(PIT_SKYLINE_TABLE, "vector", Store.GPKG, GPKG_LAYER.id, PIT_SKYLINE_ROLE, "", "Línea de cielo de la corta"),
+    DatasetFamily(PIT_RAMPS_TABLE, "table", Store.GPKG, GPKG_LAYER.id, PIT_RAMPS_ROLE, "", "Rampas de la corta por estaciones"),
+    DatasetFamily(PIT_FINDINGS_TABLE, "table", Store.GPKG, GPKG_LAYER.id, PIT_FINDINGS_ROLE, "", "Hallazgos de la corta"),
+    DatasetFamily(PIT_BENCHES_TABLE, "table", Store.GPKG, GPKG_LAYER.id, PIT_BENCHES_ROLE, "", "Cifras de cada banco de la corta"),
+    DatasetFamily(PIT_EXPANDED_TABLE, "vector", Store.GPKG, GPKG_LAYER.id, PIT_EXPANDED_ROLE, "", "Banco expandido", qgis_editable=True),
+    DatasetFamily(PIT_LAYER_TABLE, "vector", Store.GPKG, GPKG_LAYER.id, PIT_LAYER_ROLE, "", "Capa de cortas", named=False),
+    DatasetFamily(PIT_SKY_LAYER_TABLE, "vector", Store.GPKG, GPKG_LAYER.id, PIT_SKY_LAYER_ROLE, "", "Capa de líneas de cielo", named=False),
+)
+"""Las familias de datos de la corta (plan 018 §5.2.3), aparte de las de las cuatro specs anteriores (la corta deja además las ``des_psf_``,
+``des_epr_`` y ``des_prp_`` de la 015). Cada una con su papel; ninguna lleva el de una superficie de diseño. **Solo la capa de «Expandir
+banco…» (``des_pxb_``) es editable a mano en QGIS** (P-12); las demás son salidas calculadas (RF-008-56). Las dos capas de la versión
+(``des_pit_<vNN>``, ``des_sky_<vNN>``) son una por versión (``named`` falso)."""
 FAMILIES_BY_CODE: Mapping[str, DatasetFamily] = MappingProxyType(
     {family.code: family
-     for family in (*FAMILIES, *QUARRY_FAMILIES, *ENTITY_FAMILIES, *SUPPORTED_FAMILIES, *ROAD_DATA_FAMILIES)})
+     for family in (*FAMILIES, *QUARRY_FAMILIES, *ENTITY_FAMILIES, *SUPPORTED_FAMILIES, *ROAD_DATA_FAMILIES,
+                    *PIT_DATA_FAMILIES)})
 """Las familias de las cinco specs por código (solo lectura)."""
 if len(FAMILIES_BY_CODE) != (len(FAMILIES) + len(QUARRY_FAMILIES) + len(ENTITY_FAMILIES)
-                              + len(SUPPORTED_FAMILIES) + len(ROAD_DATA_FAMILIES)):
+                              + len(SUPPORTED_FAMILIES) + len(ROAD_DATA_FAMILIES) + len(PIT_DATA_FAMILIES)):
     raise RuntimeError("dos familias de datos del diseño con el mismo código")  # pragma: no cover
 
 
@@ -1386,6 +1461,41 @@ PROPOSE_FIGURES: tuple[FigureDef, ...] = (ROAD_FIGURES[0], ROAD_FIGURES[5])
 claves de la pista** (:data:`ROAD_FIGURES`, los mismos objetos), con el ámbito del nombre de la operación (:func:`figure_scope`: la
 propuesta no es una entidad)."""
 
+# Las cifras de la corta por bancos (spec 018, T03; plan 018 §5.2.3; RF-018-29, 31). Las pendientes se llaman ``gradient`` (glosario §14: la otra
+# palabra inglesa es de la ley; los nombres del plan 018 de las pendientes de las rampas los cambia esta tarea).
+PIT_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.pit_benches", "-", "Benches of the pit"),
+    FigureDef("des.pit_z_bottom_m", "m", "Bottom level of the pit", allow_negative=True),
+    FigureDef("des.pit_z_top_m", "m", "Top level of the pit", allow_negative=True),
+    FigureDef("des.pit_len_foot_m", "m", "Length of the toes of the pit"),
+    FigureDef("des.pit_len_crest_m", "m", "Length of the crests of the pit"),
+    FigureDef("des.pit_area_berm_m2", "m2", "Area of the berms of the pit"),
+    FigureDef("des.pit_area_floor_m2", "m2", "Area of the floor of the pit"),
+    FigureDef("des.pit_cut_m3", "m3", "Cut volume of the pit"),
+    FigureDef("des.pit_area_m2", "m2", "Area moved by the pit"),
+    FigureDef("des.pit_sky_parts", "-", "Parts of the skyline of the pit"),
+    FigureDef("des.pit_sky_len_m", "m", "Length of the skyline of the pit"),
+    FigureDef("des.pit_sky_area_m2", "m2", "Area enclosed by the skyline of the pit"),
+    FigureDef("des.pit_sky_z_min_m", "m", "Lowest level of the skyline of the pit", allow_negative=True),
+    FigureDef("des.pit_sky_z_max_m", "m", "Highest level of the skyline of the pit", allow_negative=True),
+    FigureDef("des.pit_sky_dist_legal_m", "m", "Distance from the skyline to the legal limit"),
+    FigureDef("des.pit_sky_dist_perimeter_m", "m", "Distance from the skyline to the perimeter of the works"),
+    FigureDef("des.pit_ramp_len_m", "m", "Length of the ramps of the pit"),
+    FigureDef("des.pit_ramp_gradient_mean_pct", "%", "Mean gradient of the ramps of the pit"),
+    FigureDef("des.pit_ramp_gradient_max_pct", "%", "Maximum gradient of the ramps of the pit"),
+    FigureDef("des.pit_ramp_band_m3", "m3", "Volume of the band of the ramps of the pit"),
+    FigureDef("des.pit_findings", "-", "Findings of the pit"),
+)
+"""Las cifras de ``des.pit`` (RF-018-29, RF-018-31; plan 018 §5.2.3), con el ámbito de :func:`entity_figure_scope`: el número de bancos, las
+cotas de fondo y de coronación, la longitud de pies y de crestas, el área de bermas y de fondo, el corte, el área con movimiento, la línea de
+cielo (partes, longitud, área, cotas y distancias al límite legal y al perímetro: no existen sin ellos) y las rampas (longitud, pendiente
+media y máxima y volumen de la banda) y los hallazgos. Las cotas admiten negativos. Las de RF-015-13 son avisos del resumen y la de lo que se
+apoya en la corta, ``des.supported_m3`` (:data:`SUPPORT_FIGURES`). El volumen por banco es de ``des_pbk_`` (cifra con ámbito de banco: T de
+las cifras)."""
+PIT_EXPAND_FIGURES: tuple[FigureDef, ...] = (PIT_FIGURES[3], PIT_FIGURES[4])
+"""Las cifras de ``des.pit_expand``: la longitud del pie y de la cresta del banco expandido (las mismas dos claves de la corta, con el ámbito
+del nombre de la operación: no es una entidad)."""
+
 
 # --- Tipos de operación ------------------------------------------------------------------------
 
@@ -1437,6 +1547,10 @@ ROAD_ACCESS = "des.road_access"
 ROAD_PROPOSE = "des.road_propose"
 ROAD_LAYER = "des.road_layer"
 PIT = "des.pit"
+PIT_EXPAND = "des.pit_expand"
+PIT_LAYER = "des.pit_layer"
+EDIT_PIT_ROSES = "des.edit_pit_roses"
+EDIT_PIT_RAMPS = "des.edit_pit_ramps"
 """El tipo de operación de la corta por bancos (spec 018, T02; RF-018-01): una entidad **con cadena** de la versión; **sin comportamiento todavía**
 (la T03 le pone las cifras y las demás tareas, el cálculo)."""
 EDIT_ROAD_PROFILES = "des.edit_road_profiles"
@@ -1578,12 +1692,32 @@ bermas, plataformas y zonas «requiere acceso» y su informe; la propuesta, solo
 edición de los perfiles de pista no está aquí: es de proyecto y no se repite (:data:`ROAD_PROFILE_OPERATIONS`)."""
 PIT_COMMAND = "geoblender.des_new_pit"
 """La orden que lanza la corta: **la provisional del catálogo** («Nueva corta…», D-20); la sustituye la tarea de la fase G que entrega la clase real."""
+PIT_EXPAND_COMMAND = "geoblender.des_expand_bench"
+PIT_LAYER_COMMAND = "geoblender.des_compute_daylight"
+PIT_ROSE_COMMAND = PIT_COMMAND
+PIT_RAMP_COMMAND = "geoblender.des_add_ramp"
+"""Las órdenes de «Expandir banco…», «Línea de cielo…», «Roseta de taludes…» y «Rampa…» (plan 018 §5.3.3): **las provisionales que ya tiene el
+catálogo** (D-20; una orden que lanza una operación debe estar en él), a falta de las reales (``des_pit_skyline``, ``des_edit_pit_rose`` y
+``des_edit_pit_ramp``), que las sustituyen en las tareas de la fase G; la de la roseta usa la de «Nueva corta…», que aún no tiene otra."""
 PIT_OPERATION_TYPES: tuple[OperationType, ...] = (
-    OperationType(PIT, "Pit", (ENTITY_SURFACE_GRID, ENTITY_TABLE, ENTITY_REPORT_TABLE), (), (), (PIT_COMMAND,)),
+    OperationType(PIT, "Pit", (ENTITY_SURFACE_GRID, ENTITY_TABLE, PIT_POLYLINES_TABLE, PIT_SKYLINE_TABLE, PIT_RAMPS_TABLE,
+                               PIT_FINDINGS_TABLE, PIT_BENCHES_TABLE, ENTITY_REPORT_TABLE), (), (*PIT_FIGURES, *SUPPORT_FIGURES),
+                  (PIT_COMMAND,)),
+    OperationType(PIT_EXPAND, "Expand a bench", (PIT_EXPANDED_TABLE,), (), PIT_EXPAND_FIGURES, (PIT_EXPAND_COMMAND,)),
+    OperationType(PIT_LAYER, "Layers of the pits", (PIT_LAYER_TABLE, PIT_SKY_LAYER_TABLE), (), (), (PIT_LAYER_COMMAND,),
+                  reproducible=False, drops_discarded=True),
 )
+
 """Los tipos de operación de la 018 (spec 018, T02; plan 018 §5.2.3), aparte de los de las cuatro specs anteriores: de la versión, repetibles y
 reproducibles, **sin comportamiento todavía**. La corta deja la superficie entera, la tabla de su huella y su informe (como toda entidad);
 sus demás salidas, las cifras y los otros tipos (``des.pit_expand``, ``des.pit_layer``) son de la T03."""
+PIT_PROJECT_OPERATIONS: tuple[OperationDef, ...] = (
+    OperationDef(EDIT_PIT_ROSES, OP_VERSION, MODULE, "Edition of the slope roses", False, scope="project", commands=(PIT_ROSE_COMMAND,)),
+    OperationDef(EDIT_PIT_RAMPS, OP_VERSION, MODULE, "Edition of the ramp definitions", False, scope="project", commands=(PIT_RAMP_COMMAND,)),
+)
+"""La edición de las rosetas de taludes y de las definiciones de rampa (spec 018, T03; plan 018 §5.2.3): **de proyecto** y sin repetición
+(queda «revisar a mano», como ``des.edit_bench_profiles``), sin ``recompute`` ni ``reproduce``; la mecánica es de T04. ``bl`` las registra
+junto a los demás tipos."""
 
 OPERATION_TYPES_BY_NAME: Mapping[str, OperationType] = MappingProxyType(
     {declared.op_type: declared
@@ -1717,7 +1851,7 @@ def pit_operation_defs(recompute: Mapping[str, RecomputeFunction],
     (:data:`PIT_REPRODUCIBLE`). ``ValueError`` si sobra o falta alguna."""
     _check_functions("recálculo", recompute, PIT_VERSION_TYPES)
     _check_functions("reproducción", reproduce, PIT_REPRODUCIBLE)
-    return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type]) for declared in PIT_OPERATION_TYPES)
+    return tuple(declared.definition(recompute[declared.op_type], reproduce.get(declared.op_type)) for declared in PIT_OPERATION_TYPES)
 
 
 # --- Las cifras: armarlas -----------------------------------------------------------------------
@@ -4180,3 +4314,81 @@ def propose_figures(name: str, values: Mapping[str, float | None]) -> tuple[Figu
     máxima del trazado (:data:`PROPOSE_FIGURES`, las mismas dos claves de la pista), con el ámbito del nombre de la operación
     (:func:`figure_scope`: no es una entidad). Como :func:`road_figures` en lo demás."""
     return _scoped_figures(PROPOSE_FIGURES, "una propuesta de trazado", name, figure_scope(name), values)
+
+
+def pit_figures(name: str, code: str, values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de la corta ``name`` de código ``code`` (spec 018, T03; RF-018-29, RF-018-31; plan 018 §5.2.3), con el ámbito de
+    :func:`entity_figure_scope`, en el orden de :data:`PIT_FIGURES` y con su unidad: ``values`` da cada una por su clave (las veintiuna;
+    ``None`` la que no existe: sin límite legal no hay distancia a él, sin rampas no hay longitud de rampa). Las cotas admiten negativos;
+    las demás, no, ni NaN ni infinitas, y los recuentos (bancos, partes, hallazgos) son enteros (``ValueError``)."""
+    _typed_code(code, "pit", "una corta")
+    return _entity_figures(PIT_FIGURES, "una corta", name, code, values)
+
+
+def pit_expand_figures(name: str, values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de «Expandir banco» ``name`` (spec 018, T03; plan 018 §5.2.3): la longitud del pie y de la cresta del banco
+    (:data:`PIT_EXPAND_FIGURES`, las mismas dos claves de la corta), con el ámbito del nombre de la operación (:func:`figure_scope`: no es
+    una entidad). Como :func:`pit_figures` en lo demás."""
+    return _scoped_figures(PIT_EXPAND_FIGURES, "un banco expandido", name, figure_scope(name), values)
+
+
+PIT_RAMP_CONFIRMED = "ramp_confirmed"
+"""La clave de los ajustes de ``des.pit`` donde quedan las **pendientes medias de rampa que la persona confirmó** al crear la corta (RF-018-19,
+RF-017-17): una lista de :class:`RampConfirmation` (:meth:`RampConfirmation.settings`). La añade quien crea y la arrastra el recálculo."""
+
+
+@dataclass(frozen=True, slots=True)
+class RampConfirmation:
+    """La pendiente media de una rampa de una corta que pasa de la media máxima pm del perfil de pista y que la persona confirmó con su motivo
+    (RF-018-19, RF-017-17): la rampa (``ramp``, su código), la media confirmada (``mean_pct``, %), el motivo, quién la confirmó y cuándo
+    (UTC). Un recálculo la reutiliza solo si la media nueva no pasa de la confirmada más la tolerancia (:meth:`covers`); si pasa, vuelve a
+    pedirla. Es lo que ``CounterslopeConfirmation`` es a la plataforma."""
+
+    ramp: str
+    mean_pct: float
+    reason: str
+    decided_by: str
+    decided_on: str
+
+    def covers(self, mean_pct: float, tolerance_pct: float) -> bool:
+        """Si la media ``mean_pct`` (%) del recálculo entra en lo confirmado: no pasa de la confirmada más ``tolerance_pct``."""
+        return mean_pct <= self.mean_pct + tolerance_pct
+
+    def settings(self) -> dict[str, Any]:
+        """Lo que se anota en los ajustes de la operación (JSON)."""
+        return {"ramp": self.ramp, "mean_pct": self.mean_pct, "reason": self.reason, "decided_by": self.decided_by,
+                "decided_on": self.decided_on}
+
+
+def ramp_confirmation(ramp: str, mean_pct: float, reason: str, decided_by: str, decided_on: str) -> RampConfirmation:
+    """La confirmación de la pendiente media ``mean_pct`` % de la rampa ``ramp`` con su ``reason``, de ``decided_by`` en ``decided_on``.
+    ``ValueError`` si la rampa no es un código ``[a-z][a-z0-9_]*``, la media no es un número finito positivo o falta el motivo, quién o
+    cuándo (no se anota una decisión sin decisor ni motivo)."""
+    if not isinstance(ramp, str) or not ramp or not ramp[0].isalpha() or not ramp[0].islower() or not all(
+            ch.isascii() and (ch.islower() or ch.isdigit() or ch == "_") for ch in ramp):
+        raise ValueError(f"la rampa {ramp!r} no es un código [a-z][a-z0-9_]*")
+    if isinstance(mean_pct, bool) or not isinstance(mean_pct, numbers.Real) or not math.isfinite(mean_pct) or mean_pct <= 0:
+        raise ValueError(f"la pendiente media confirmada es un número finito positivo, no {mean_pct!r}")
+    for what, text in (("el motivo de", reason), ("quién", decided_by), ("cuándo", decided_on)):
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"falta {what} la confirmación de la pendiente media de la rampa")
+    return RampConfirmation(ramp, float(mean_pct), reason.strip(), decided_by, decided_on)
+
+
+def ramp_confirmed(settings: Mapping[str, Any]) -> tuple[RampConfirmation, ...]:
+    """Las pendientes medias confirmadas que guardan los ajustes ``settings`` de una operación ``des.pit`` (:data:`PIT_RAMP_CONFIRMED`), o
+    ``()`` si no las llevan. ``ValueError`` si las llevan y alguna no es una confirmación (nombrando el campo que falta)."""
+    data = _mapping(settings, "los ajustes de una corta")
+    found = data.get(PIT_RAMP_CONFIRMED)
+    if found is None:
+        return ()
+    if not isinstance(found, (list, tuple)):
+        raise ValueError(f"los ajustes de una corta: «{PIT_RAMP_CONFIRMED}» es una lista, no {found!r}")
+    made = []
+    for item in found:
+        entry = _mapping(item, f"los ajustes de una corta, «{PIT_RAMP_CONFIRMED}»,")
+        missing = [key for key in ("ramp", "mean_pct", "reason", "decided_by", "decided_on") if key not in entry]
+        if missing:
+            raise ValueError(f"la confirmación de una rampa no lleva {', '.join(missing)}")
+        made.append(ramp_confirmation(entry["ramp"], entry["mean_pct"], entry["reason"], entry["decided_by"], entry["decided_on"]))
+    return tuple(made)

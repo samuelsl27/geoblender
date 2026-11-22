@@ -11547,4 +11547,165 @@ es = "Capa de la que sale la corta"
 ["Reason of the pit"]
 es = "Motivo de la corta"
 
+# --- La corta, T03 (spec 018): etiquetas de parámetros, de cifras y de tipos de operación.
+
+["Layer of the fixed benches"]
+es = "Capa de los bancos fijados"
+
+["Layer of the zones without ramps"]
+es = "Capa de las zonas sin rampa"
+
+["Base bench profile of the pit"]
+es = "Perfil de banco base de la corta"
+
+["Slope rose of the pit"]
+es = "Roseta de taludes de la corta"
+
+["Benches between berms"]
+es = "Bancos entre bermas"
+
+["Ramps of the pit"]
+es = "Rampas de la corta"
+
+["Top level of the pit"]
+es = "Cota de coronación de la corta"
+
+["Bottom level of the pit"]
+es = "Cota de fondo de la corta"
+
+["Maximum number of benches"]
+es = "Número máximo de bancos"
+
+["Minimum width of the floor"]
+es = "Ancho mínimo del fondo"
+
+["Corner of the offset"]
+es = "Esquina del desfase"
+
+["Tolerance of the arcs of the offset"]
+es = "Tolerancia de los arcos del desfase"
+
+["Simplification tolerance of the polylines"]
+es = "Tolerancia de simplificación de las polilíneas"
+
+["Closing radius of the offset"]
+es = "Radio de cierre del desfase"
+
+["Azimuth window of the rose"]
+es = "Ventana de azimut de la roseta"
+
+["Start azimuth of a range of the rose"]
+es = "Azimut inicial de un rango de la roseta"
+
+["End azimuth of a range of the rose"]
+es = "Azimut final de un rango de la roseta"
+
+["Face angle of a range of the rose"]
+es = "Ángulo de cara de un rango de la roseta"
+
+["Berm of a range of the rose"]
+es = "Berma de un rango de la roseta"
+
+["Type of the ramp"]
+es = "Tipo de la rampa"
+
+["Sense of the ramp"]
+es = "Sentido de la rampa"
+
+["Start point of the ramp"]
+es = "Punto de inicio de la rampa"
+
+["Design gradient of the ramp"]
+es = "Pendiente de diseño de la rampa"
+
+["Haul road profile of the ramp"]
+es = "Perfil de pista de la rampa"
+
+["Length of the transition of the ramp"]
+es = "Longitud de la transición de la rampa"
+
+["Turning radius of the zigzag ramp"]
+es = "Radio de giro de la rampa en zig-zag"
+
+["Minimum length of the return platform"]
+es = "Longitud mínima de la plataforma de retorno"
+
+["Expand a bench"]
+es = "Expandir banco"
+
+["Layers of the pits"]
+es = "Capas de las cortas"
+
+["Edition of the slope roses"]
+es = "Edición de las rosetas de taludes"
+
+["Edition of the ramp definitions"]
+es = "Edición de las definiciones de rampa"
+
+["Benches of the pit"]
+es = "Bancos de la corta"
+
+["Length of the toes of the pit"]
+es = "Longitud de los pies de la corta"
+
+["Length of the crests of the pit"]
+es = "Longitud de las crestas de la corta"
+
+["Area of the berms of the pit"]
+es = "Área de las bermas de la corta"
+
+["Area of the floor of the pit"]
+es = "Área del fondo de la corta"
+
+["Cut volume of the pit"]
+es = "Volumen de corte de la corta"
+
+["Area moved by the pit"]
+es = "Área con movimiento de la corta"
+
+["Parts of the skyline of the pit"]
+es = "Partes de la línea de cielo de la corta"
+
+["Length of the skyline of the pit"]
+es = "Longitud de la línea de cielo de la corta"
+
+["Area enclosed by the skyline of the pit"]
+es = "Área que encierra la línea de cielo de la corta"
+
+["Lowest level of the skyline of the pit"]
+es = "Cota mínima de la línea de cielo de la corta"
+
+["Highest level of the skyline of the pit"]
+es = "Cota máxima de la línea de cielo de la corta"
+
+["Distance from the skyline to the legal limit"]
+es = "Distancia de la línea de cielo al límite legal"
+
+["Distance from the skyline to the perimeter of the works"]
+es = "Distancia de la línea de cielo al perímetro de actuación"
+
+["Length of the ramps of the pit"]
+es = "Longitud de las rampas de la corta"
+
+["Mean gradient of the ramps of the pit"]
+es = "Pendiente media de las rampas de la corta"
+
+["Maximum gradient of the ramps of the pit"]
+es = "Pendiente máxima de las rampas de la corta"
+
+["Volume of the band of the ramps of the pit"]
+es = "Volumen de la banda de las rampas de la corta"
+
+["Findings of the pit"]
+es = "Hallazgos de la corta"
+
+["Base bench profile of the pit of a sector"]
+es = "Perfil de banco base de la corta de un sector"
+
+["Slope rose of the pit of a sector"]
+es = "Roseta de taludes de la corta de un sector"
+
+["Benches between berms of a sector"]
+es = "Bancos entre bermas de un sector"
+
 # --- Fin del tipo corta (spec 018, T02)

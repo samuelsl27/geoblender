@@ -102,11 +102,12 @@ class PitOperationTest(unittest.TestCase):
     def test_the_operation_type_is_declared_with_the_roles_of_an_entity(self) -> None:
         """RF-018-01, RF-015-02: ``des.pit`` deja la superficie entera, la tabla de su huella y su informe (papeles ``entity_surface``
         y ``entity``), sin cifras todavía (las pone la T03), de versión, repetible y reproducible."""
-        (declared,) = provenance.PIT_OPERATION_TYPES
+        declared = provenance.PIT_OPERATION_TYPES[0]  # los otros dos tipos y las salidas de la T03: test_pit_params
         self.assertEqual((declared.op_type, declared.label_msgid), (PIT, "Pit"))
-        self.assertEqual(provenance.PIT_VERSION_TYPES, (PIT,))
-        self.assertEqual(provenance.PIT_REPRODUCIBLE, (PIT,))
-        self.assertEqual(declared.outputs, (provenance.ENTITY_SURFACE_GRID, provenance.ENTITY_TABLE, provenance.ENTITY_REPORT_TABLE))
+        self.assertEqual(provenance.PIT_VERSION_TYPES[0], PIT)
+        self.assertEqual(provenance.PIT_REPRODUCIBLE[0], PIT)
+        self.assertEqual(declared.outputs[:2], (provenance.ENTITY_SURFACE_GRID, provenance.ENTITY_TABLE))
+        self.assertEqual(declared.outputs[-1], provenance.ENTITY_REPORT_TABLE)
         self.assertEqual(provenance.OPERATION_TYPES_BY_NAME[PIT], declared)
 
     def test_the_definition_has_its_functions_and_a_missing_one_is_a_fault(self) -> None:
@@ -115,10 +116,12 @@ class PitOperationTest(unittest.TestCase):
         def one(request: Any) -> Any:
             raise AssertionError("no se llama")
 
-        (definition,) = provenance.pit_operation_defs({PIT: one}, {PIT: one})
+        every = {name: one for name in provenance.PIT_VERSION_TYPES}
+        wanted = {name: one for name in provenance.PIT_REPRODUCIBLE}
+        definition = provenance.pit_operation_defs(every, wanted)[0]
         self.assertEqual((definition.op_type, definition.scope, definition.recompute is one, definition.reproduce is one),
                          (PIT, "version", True, True))
-        for recompute, reproduce in (({}, {PIT: one}), ({PIT: one}, {}), ({PIT: one, "des.otra": one}, {PIT: one})):
+        for recompute, reproduce in (({}, wanted), (every, {}), ({**every, "des.otra": one}, wanted)):
             with self.subTest(recompute=list(recompute), reproduce=list(reproduce)), self.assertRaises(ValueError):
                 provenance.pit_operation_defs(recompute, reproduce)
 
@@ -159,7 +162,7 @@ class PitOperationTest(unittest.TestCase):
         self.assertEqual(messages.render("des.pit_support_removed", name="Corta 1"), "se descartó la corta «Corta 1»")
         self.assertIn("Corta 1", messages.render("des.pit_declared_reason", language="en", name="Corta 1"))
         self.assertEqual(entities.declared_reason("pit", "Corta 1"), "declarada por la corta Corta 1")
-        (declared,) = provenance.PIT_OPERATION_TYPES
+        declared = provenance.PIT_OPERATION_TYPES[0]
         self.assertIsInstance(declared.definition(lambda request: None, lambda request: None), contract.OperationDef)
 
 
@@ -198,12 +201,12 @@ class PitLayerTest(unittest.TestCase):
         (found,) = entity_layer.read_entity_layer(self.conn, "des_enl_v01")
         self.assertEqual(len(found.parts), 2)
 
-    def test_the_layer_has_its_style_and_its_figures_are_the_common_ones_for_now(self) -> None:
+    def test_the_layer_has_its_style_and_its_figures(self) -> None:
         """RF-018-01, RF-015-27: el estilo de la capa lleva una regla por tipo (el de la corta, el suyo) y las cifras por tipo de
-        la capa no incluyen a la corta hasta que la T03 le dé las suyas (un tipo registrado que no está no lleva cifras)."""
+        la capa incluyen a la corta desde la T03 (el área y el corte)."""
         self.assertIn("pit", cstyles.ENTITY_KINDS)
         self.assertEqual(cstyles.ENTITY_KINDS["pit"][0], "Corta")
-        self.assertNotIn("pit", entity_store.LAYER_FIGURES)
+        self.assertIn("pit", entity_store.LAYER_FIGURES)
 
 
 if __name__ == "__main__":
