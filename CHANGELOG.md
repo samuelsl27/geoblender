@@ -41,7 +41,7 @@ apoyaba a la vista, hace el contrafuerte con el pie libre en lo que se admite y 
 la verificación de los límites distingue el corte de terreno del de acopios (spec 016, cerrada el 20/11/2026 y vista
 en pantalla con eventos simulados, sin ratón real). Y traza pistas y rampas con su perfil, su ruta de mínimo coste con 16 rumbos, su eje con
 curvas, su rasante acotada y su sección grabada, y dice a dónde se llega a pie y qué bermas, plataformas y zonas «requiere acceso» quedan
-comunicadas, que la verificación de los límites ya comprueba (spec 017, hecha en `main`, sin publicar, a falta de verla en pantalla). Lo de
+comunicadas, que la verificación de los límites ya comprueba (spec 017, cerrada el 22/11/2026 y vista en pantalla con eventos simulados, sin ratón real). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -127,7 +127,7 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
 
-- **Pistas y rampas** (spec 017, R-40; hecha en `main`, sin publicar: probada con Blender sin su interfaz, a falta de verla en pantalla y de
+- **Pistas y rampas** (spec 017, R-40; cerrada el 22/11/2026: verificada y vista en pantalla con eventos simulados, sin ratón real, a falta de
   contrastarla con el proyecto de referencia). En el proyecto de referencia las pistas se resolvieron con cinco métodos sucesivos repartidos en varios
   scripts, y cada uno dejó su lección: pistas trazadas sobre la superficie final restaurada que no llegaban al fondo (se quedaban en la cota
   152,6), ninguna solución en un talud del 38 % con 8 direcciones (la menor pendiente alcanzable era el 14,5 % y se pedía el 10 %), pistas
@@ -186,10 +186,14 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     recorrido del ciclo, también si lo declara a mano en «Cambiar parámetro…»), y un ramal cuyo origen deja de estar en el eje de su pista deja de apoyarse en ella; la accesibilidad no se trae a otra versión (se vuelve a calcular). **Las tres
     órdenes provisionales** que había en ese grupo, la herramienta «Pista», «Ruta 3D con pendiente máxima…» y «Grabar las pistas en la
     superficie», **desaparecen** del menú: la pista graba al crearse y su ruta sale de **Pista…** y de **Proponer el trazado…**.
-  - **Lo que no hace todavía**: **no se ha visto en pantalla** (sí con las órdenes reales, sin su interfaz) ni se ha contrastado con los datos
-    originales del proyecto de referencia. **La rasante de «mínimo movimiento» por programación lineal no está hecha**, ni las curvas verticales, ni
-    las rampas vectoriales (espiral y zig-zag) ni el comprobador de pistas de la ITC. La ruta de 1,5 km tarda hasta 63 s en una ladera del 38 % con
-    60 m de holgura; grabar 2 km con el eje en diagonal tarda 16,75 s y **no cumple los 15 s** de la spec (la cifra la decide Samuel). Al traer una pista a
+  - **Lo que no hace todavía**: **se vio en pantalla** (22/11/2026, con eventos simulados y sin ratón real), pero no la verificación de los
+    límites con una accesibilidad, la edición de la propuesta del trazado en QGIS, las listas de tramos de berma de uno de los escenarios, el aviso
+    de que una pista no llega al fondo, el objeto de la accesibilidad en la barra N ni el texto de progreso de Esc, y el ensayo de los 20 minutos con
+    las manos de una persona queda sin medir; no se contrastó con los datos originales del proyecto de referencia (la «opción A15», las pistas del
+    molino y del taller y la cota de 136,5 m quedan sin ejecutar con ellos). **La rasante de «mínimo movimiento» por programación lineal no está
+    hecha**, ni las curvas verticales, ni las rampas vectoriales (espiral y zig-zag) ni el comprobador de pistas de la ITC. La ruta de 1,5 km tarda
+    hasta 63 s en una ladera del 38 % con 60 m de holgura; grabar 2 km con el eje en diagonal tarda 16,75 s, que cumple el límite de la spec de 15 s
+    por cada 2 millones de celdas de la ventana (unos 18 s ahí). Al traer una pista a
     otra versión, el perfil de la pista no viaja con ella (hay que declararlo allí), ni el campo de los nombres de su capa, y la accesibilidad no se trae.
     Una pista hecha antes de un relleno no lo tiene en cuenta hasta que se rehace sobre su superficie: «Recalcular lo obsoleto» la pone al día, pero
     no le cambia la partida. En QGIS, las versiones de la 016 conservan su estilo de 18 reglas y en ellas las pistas salen como «Otra entidad».
