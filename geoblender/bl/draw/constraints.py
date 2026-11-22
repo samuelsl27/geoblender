@@ -72,6 +72,7 @@ from ...core.constraints.styles import COLORS, ELSE_COLOR
 from ...core.errors import GeoblenderError
 from ...core.georef import world_to_local
 from ...core.i18n import language, tr
+from ...design.label_layout import place_labels
 from ...gis.grid import Grid
 from ...gis.masks import access as mask_access
 from ...gis.masks import store as mask_store
@@ -93,8 +94,8 @@ __all__ = [
     "build_steps", "building", "built", "color_of", "disable", "draw_lines", "drape_points_steps",
     "drape_segments_steps", "drawing", "enable", "enabled", "ground_steps", "hatch_segments",
     "mask_hatch_steps", "on_project_changed", "on_project_read", "on_surface_changed",
-    "on_version_changed", "pulled", "rebuild", "register", "screen_items", "stamp", "tick",
-    "unregister",
+    "on_version_changed", "pulled", "rebuild", "register", "screen_items", "stamp", "surface_rows",
+    "tick", "unregister",
 ]
 
 LOGGER = logging.getLogger("geoblender.bl.draw")
@@ -216,11 +217,13 @@ class Batch:
 
 @dataclass(frozen=True)
 class Label:
-    """El nombre de una restricción: su texto, su sitio (local, float) y su color."""
+    """El nombre de una restricción: su texto, su sitio (local, float) y su color. ``rank`` (spec 017, T50; H3-3): ``None``, el nombre se dibuja siempre (los de la 012, la 013 y las plataformas, los
+    acopios y los contrafuertes); un entero, **puede saltarse** si cae sobre otro ya puesto (:func:`screen_items`), y se ponen antes los de más rango (``design.label_layout.place_labels``)."""
 
     text: str
     xyz: tuple[float, float, float]
     color: Color
+    rank: int | None = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -248,10 +251,12 @@ class Built:
 
 @dataclass(frozen=True, eq=False)
 class Surface:
-    """La superficie sobre la que se dibuja: el nombre de su dato y su rejilla de cotas."""
+    """La superficie sobre la que se dibuja: el nombre de su dato y su rejilla de cotas. ``asked`` (spec 017, T50; H3-1): el nombre de la superficie **elegida** que no se pudo leer y que ``name`` (la
+    rejilla más reciente del proyecto) sustituye; ``""``: es la elegida, o no se eligió ninguna. La leyenda lo dice (:func:`surface_rows`)."""
 
     name: str
     raster: Raster
+    asked: str = ""
 
     def elevations(self, xy: np.ndarray, fallback: float) -> np.ndarray:
         """Las cotas de los puntos ``xy`` (``(n, 2)`` absolutos): la interpolación bilineal entre
@@ -458,41 +463,77 @@ def _latest(project: Any, choices: Sequence[Any]) -> Any:
     return next((choice for choice in choices if found and choice.uid == found[0]), choices[-1])
 
 
-def _surface_steps(project: Any, chosen: str, version_uid: str | None,
-                   pace: _Pace) -> Generator[None, None, Surface | None]:
-    """La superficie sobre la que se dibuja: la rejilla del proyecto ``chosen`` o, si no hay o no
-    está, la más reciente; ``None`` si el proyecto no tiene ninguna o no se puede leer (se dibuja
-    a la cota del GeoOrigin). La lee por bandas de filas."""
+_UNREADABLE = (GeoblenderError, sqlite3.Error, OSError, ValueError)
+"""Lo que hace que una superficie no se pueda leer: se dibuja sobre otra (o a la cota del GeoOrigin) y se registra una vez."""
+
+
+def _read_surface_steps(project: Any, name: str, ref: Any, version_uid: str | None, pace: _Pace,
+                        asked: str = "") -> Generator[None, None, Surface]:
+    """La superficie ``ref`` (``res_surfaces.SurfaceRef``) de nombre ``name``, leída por bandas de filas con la versión activa ``version_uid``, como la lee el cálculo
+    (``res_surfaces.surface_source``): de la versión o del proyecto. ``asked``: la elegida a la que sustituye. Los errores de la lectura salen tal cual (:data:`_UNREADABLE`)."""
+    yield
+    source = res_surfaces.surface_source(project, ref, version_uid=version_uid or "")
+    grid = source.grid
+    if grid is None:
+        raise ValueError(f"«{name}» no es una rejilla: no es una superficie sobre la que dibujar")
+    values = np.full(grid.shape, np.nan, dtype=np.float64)
+    for top, band in res_surfaces.band_reader(source, grid):
+        values[top:top + np.shape(band)[0]] = band
+        if pace.due():
+            yield
+    return Surface(name, Raster(grid, values, source.header.crs, source.header.vertical), asked)
+
+
+def _surface_steps(project: Any, chosen: str, version_uid: str | None, pace: _Pace, *,
+                   exact: bool = False) -> Generator[None, None, Surface | None]:
+    """La superficie sobre la que se dibuja: la rejilla del proyecto ``chosen`` o, si no hay o no está, la más reciente; ``None`` si el proyecto no tiene ninguna o no se puede leer (se dibuja a la
+    cota del GeoOrigin). La lee por bandas de filas.
+
+    Con ``exact`` (spec 017, T50; H3-1: lo que dibujan las vistas previas, cuya superficie de partida es la que lee el cálculo), ``chosen`` es **la superficie de partida**: una rejilla del proyecto
+    o **cualquier superficie que lea el cálculo** (la que deja otra entidad, ``des_psf_…``, o un dato de la versión), por su nombre y con la versión activa (``res_surfaces.surface_source``). Si no se
+    puede leer, cae en la rejilla más reciente **y lo dice** (``Surface.asked``: la leyenda lo escribe); sin superficie elegida (``""``), la más reciente sin más."""
     try:
         choices = terrain_choices(project, version_uid)
-        if not choices:
-            return None
         pick = next((choice for choice in choices if choice.name == chosen), None)
-        if pick is None:
-            pick = _latest(project, choices)
-        yield
-        source = res_surfaces.surface_source(project, pick.ref, version_uid=version_uid or "")
-        grid = source.grid
-        if grid is None:
+        asked = ""
+        if pick is not None or (exact and chosen):
+            name, ref = (pick.name, pick.ref) if pick is not None else (chosen, res_surfaces.SurfaceRef(dataset=chosen))
+            try:
+                return (yield from _read_surface_steps(project, name, ref, version_uid, pace))
+            except _UNREADABLE:
+                LOGGER.warning("No se pudo leer la superficie «%s»: se dibuja sobre %s", name,
+                               "la rejilla más reciente" if exact else "la cota del GeoOrigin", exc_info=True)
+                if not exact:
+                    return None
+                asked = name
+        left = [choice for choice in choices if choice.name != asked]
+        if not left:
             return None
-        values = np.full(grid.shape, np.nan, dtype=np.float64)
-        for top, band in res_surfaces.band_reader(source, grid):
-            values[top:top + np.shape(band)[0]] = band
-            if pace.due():
-                yield
-    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
-        LOGGER.warning("No se pudo leer la superficie de las restricciones: se dibujan a la "
-                       "cota del GeoOrigin", exc_info=True)
+        latest = _latest(project, left)
+        return (yield from _read_surface_steps(project, latest.name, latest.ref, version_uid, pace, asked))
+    except _UNREADABLE:
+        LOGGER.warning("No se pudo leer la superficie de las restricciones: se dibujan a la cota del GeoOrigin", exc_info=True)
         return None
-    return Surface(pick.name, Raster(grid, values, source.header.crs, source.header.vertical))
 
 
 def ground_steps(project: Any, chosen: str, version_uid: str | None, *,
                  budget_s: float = STEP_BUDGET_S) -> Generator[None, None, Surface | None]:
-    """La superficie sobre la que se dibuja (la rejilla ``chosen`` o, si no hay o no está, la más
-    reciente; ``None`` si no hay ninguna), leída por bandas de filas. La comparte la vista previa
-    del diseño (``bl.draw.design``) para dibujar sobre la misma superficie que las restricciones."""
-    return (yield from _surface_steps(project, chosen, version_uid, _Pace(budget_s)))
+    """La superficie de partida sobre la que dibujan las vistas previas (spec 017, T50; H3-1): ``chosen``, el nombre de su dato, sea una rejilla del proyecto o **cualquier superficie que lea el
+    cálculo** (la que deja otra entidad, una de la versión: :func:`_surface_steps` con ``exact``); si no se puede leer, la rejilla más reciente **y ``Surface.asked`` lo dice** (``None`` si no hay
+    ninguna), leída por bandas de filas. La comparten la vista previa del diseño (``bl.draw.design``) y las de las entidades (``bl.draw.entity``) para dibujar sobre la misma superficie que lee
+    «Calcular»."""
+    return (yield from _surface_steps(project, chosen, version_uid, _Pace(budget_s), exact=True))
+
+
+def surface_rows(ground: Surface | None) -> tuple[LegendRow, ...]:
+    """La fila (o las dos) de la leyenda que dice sobre qué se dibuja ``ground``: la cota del GeoOrigin, sin superficie; «Sobre la superficie «x»» con ella, y si la elegida no se pudo leer
+    (``Surface.asked``), una segunda fila que lo dice (spec 017, T50; H3-1: no en silencio)."""
+    if ground is None:
+        return (LegendRow(tr("At the elevation of the GeoOrigin")),)
+    rows = (LegendRow(tr("On the surface «{name}»", name=ground.name)),)
+    if ground.asked:
+        rows += (LegendRow(tr("The start surface «{asked}» could not be read: the latest grid is used", asked=ground.asked)),)
+    return rows
 
 
 def drape_segments_steps(segments: np.ndarray, ground: Surface | None, origin: Any, *,
@@ -664,8 +705,7 @@ def _legend(request: Request, state: str, counts: dict[str, int], switched_off: 
         rows.append(LegendRow(tr("Masks out of date: compile them to see the zones")))
     elif state != "current":
         rows.append(LegendRow(tr("Masks not compiled: outlines only")))
-    rows.append(LegendRow(tr("At the elevation of the GeoOrigin") if surface is None
-                          else tr("On the surface «{name}»", name=surface.name)))
+    rows.extend(surface_rows(surface))
     return tuple(rows)
 
 
@@ -698,9 +738,11 @@ def stamp(project: Any, version_uid: str | None) -> tuple[Any, ...]:
 
 
 def _label_items(labels: Sequence[Label], matrix: Any, size: tuple[float, float],
-                 scale: float) -> list[Any]:
+                 scale: float, measure: Callable[[str], float] | None = None) -> list[Any]:
     """Los nombres que caben en la región (``size``), cada uno junto a su sitio: como mucho
-    :data:`MAX_LABELS`, los más cercanos al centro."""
+    :data:`MAX_LABELS`, los más cercanos al centro. Los que tienen rango (:attr:`Label.rank`;
+    ``measure`` da el ancho en px de un texto) **no se solapan**: se saltan los que caen sobre otro
+    ya puesto (``design.label_layout.place_labels``; spec 017, T50, H3-3)."""
     if not labels:
         return []
     shown = dh_overlay.to_screen([label.xyz for label in labels], matrix, size)
@@ -713,8 +755,14 @@ def _label_items(labels: Sequence[Label], matrix: Any, size: tuple[float, float]
         distance = np.hypot(shown[index, 0] - centre[0], shown[index, 1] - centre[1])
         index = np.sort(index[np.argsort(distance, kind="stable")[:MAX_LABELS]])
     dx, dy = LABEL_OFFSET[0] * scale, LABEL_OFFSET[1] * scale
-    return [Text(float(shown[i, 0]) + dx, float(shown[i, 1]) + dy, labels[i].text,
-                 labels[i].color) for i in index.tolist()]
+    found = [Text(float(shown[i, 0]) + dx, float(shown[i, 1]) + dy, labels[i].text,
+                  labels[i].color) for i in index.tolist()]
+    ranks = [labels[i].rank for i in index.tolist()]
+    if measure is None or all(rank is None for rank in ranks):
+        return found
+    keep = place_labels([(item.x, item.y) for item in found],
+                        [float(measure(item.text)) for item in found], FONT_PX * scale, ranks)
+    return [found[i] for i in keep]
 
 
 def _rgba(color: str) -> Color:
@@ -756,7 +804,7 @@ def screen_items(built: Built, matrix: Any, size: tuple[float, float], *,
     vista ``matrix``: los nombres que caben y la leyenda (``bl.draw.dh_overlay.Text`` y ``Box``,
     que :func:`bl.draw.dh_overlay.paint` pinta). ``measure`` da el ancho en px de un texto;
     ``scale``, la escala de la interfaz."""
-    items = _label_items(built.labels, matrix, size, scale)
+    items = _label_items(built.labels, matrix, size, scale, measure)
     items.extend(_legend_items(built.legend, measure, scale, size))
     return items
 

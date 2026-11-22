@@ -6988,6 +6988,9 @@ es = "A la cota del GeoOrigin"
 ["On the surface «{name}»"]
 es = "Sobre la superficie «{name}»"
 
+["The start surface «{asked}» could not be read: the latest grid is used"]
+es = "No se pudo leer la superficie de partida «{asked}»: se usa la rejilla más reciente"
+
 ["The constraints and limits could not be prepared: {detail}"]
 es = "No se pudieron preparar las restricciones y los límites: {detail}"
 

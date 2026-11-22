@@ -21,6 +21,8 @@ plataforma y las funciones de la pista (las órdenes de la pista son de la fase 
   Python de Geoblender); **medido sin la lectura del proyecto**, que la prepara ``design`` con la 013 y la 016 (la T34 lo mide entero con la orden de la fase G).
 - **h** (RF-017-26, RF-017-28, RNF-017-08; T44, D-1): la vista previa de **«Proponer el trazado…»** (``RoadAsk(propose=True)``) con la partida que **ya ocupa otra entidad** no rechaza y dibuja
   el origen, el destino y el pasillo, y tras calcular **el eje con su rasante** (sin la sección); se quita con su control y al conmutar a la interfaz de Blender; activarla ≤ 1 s y cada redibujo ≤ 5 ms.
+- **i** (RF-015-26, RF-017-26; T50, H3-1): lo que parte de **la superficie que deja otra entidad** (``PLT-002`` de la de «Ramal»; «Ramal» de la de «Pista a P1»; y, en **b**, «Pista a P1» de la de P1) se dibuja
+  sobre ella, no sobre la última rejilla del proyecto, y la leyenda lo dice.
 - **z** (principio 8): desactivar Geoblender con la vista previa activa lo quita todo.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
@@ -139,6 +141,9 @@ class RoadPreviewMilestone(road_ce.RoadCETest):
         np.testing.assert_array_equal(found.levels, levels)
         np.testing.assert_array_equal(found.axis, points)
         self.assertTrue(found.calculated and found.drawable)
+        start = self.psf(road_ce.PLATFORM)  # T50, H3-1: parte de la superficie que deja la plataforma P1, no de una rejilla del proyecto: se dibuja sobre ella y la leyenda lo dice
+        self.assertEqual((found.start_surface, built.lines.surface), (start, start))
+        self.assertEqual([row.text for row in built.lines.legend][-1], f"Sobre la superficie «{start}»")
         self.assertEqual((found.code, found.mode, found.max_gradient_pct, found.max_mean_gradient_pct, found.section_m, found.carriageway_m),
                          ("RDW-001", "trace", rd.PROFILE.max_gradient_pct, rd.PROFILE.max_mean_gradient_pct, rd.PROFILE.section_m, rd.PROFILE.carriageway_m))
         self.assertTrue(all(item.status is self.dpreview.GradientStatus.WITHIN for item in found.stretches))
@@ -459,6 +464,23 @@ class RoadPreviewMilestone(road_ce.RoadCETest):
             self.assertEqual(switcher.toggle(window, "GEOBLENDER").workspace, other_space)
         self.assertFalse(entity.enabled(), "volver no la pone sola")
         self.assertEqual(self.untouched(), before, "ni escribe ni deja nada en la escena")
+
+    # --- i: sobre la superficie de partida de una entidad (T50, H3-1) ------------------------------------
+
+    def test_i_what_starts_from_the_surface_of_another_entity_is_previewed_on_it_and_the_legend_says_so(self) -> None:
+        """RF-015-26, RF-017-26 (T50, H3-1; M5): la vista previa de la **plataforma de relleno** (``PLT-002``, que parte de la superficie de la pista «Ramal») y la de la pista «Ramal» (``RDW-002``,
+        que parte de la de «Pista a P1») se dibujan **sobre esa superficie** (``des_psf_…``: la que lee «Calcular»), no sobre la última rejilla del proyecto, y su leyenda dice cuál; **no escribe nada**."""
+        entity = self.entity
+        before = self.untouched()
+        for code, start in (("PLT-002", self.psf(road_ce.SECOND)), ("RDW-002", self.psf(road_ce.FIRST))):
+            with self.subTest(code=code):
+                self.assertEqual(bpy.ops.geoblender.des_entity_preview("EXEC_DEFAULT", entity=code), {"FINISHED"})
+                built = self.pump()
+                self.assertEqual((entity.preview().start_surface, built.lines.surface), (start, start))
+                self.assertEqual([row.text for row in built.lines.legend][-1], f"Sobre la superficie «{start}»")
+                self.assertFalse([row for row in built.lines.legend if "No se pudo leer" in row.text])
+                entity.disable()
+        self.assertEqual(self.untouched(), before, "la vista previa no escribe")
 
     # --- z: Geoblender se desactiva ----------------------------------------------------------------------
 

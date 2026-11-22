@@ -1805,6 +1805,15 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Corregido
 
+- La vista previa de una pista, de una plataforma, de las marcas de una detección de acopios y de un contrafuerte **dibuja sobre su superficie de
+  partida**, también cuando es la que deja otra entidad (la de una plataforma, la de otra pista…), y su leyenda dice cuál es («Sobre la superficie
+  «des_psf_p1»»); si no se puede leer, dibuja sobre la rejilla más reciente del proyecto y **la leyenda lo dice** («No se pudo leer la superficie
+  de partida «…»: se usa la rejilla más reciente»). Antes, con una partida de ese tipo dibujaba sobre la última rejilla del proyecto y la leyenda
+  nombraba otra superficie que el texto de arriba; lo mismo valía para las vistas previas de las envolventes y de la cantera, que ahora dibujan sobre
+  la superficie que se elige aunque no sea una rejilla del proyecto. Y los nombres de la rasante de una pista (el origen, el destino y cada tramo,
+  con su cota y su pendiente) **ya no se escriben unos sobre otros** al alejar la vista: se escriben primero el origen, el destino y el tramo más
+  empinado, y los demás aparecen al acercarse. Solo cambia lo que se ve: ninguna cifra ni ningún cálculo cambian (spec 017; lo vio el H3, hallazgos
+  H3-1 y H3-3).
 - En la vista, el objeto de una entidad de diseño (la plataforma de la 015, la pista de la 017 y, por prudencia, la detección de acopios de la 016)
   cuya cota cambia sin cambiar su huella ya se marca «no al día», y **Refrescar** lo regenera con la cota nueva. Antes, si solo cambiaba la cota
   de una plataforma o de una pista y se recalculaba, la vista no lo marcaba «no al día» ni Refrescar lo regeneraba: había que volver a cargarlo con

@@ -74,9 +74,9 @@ from .dh_overlay import LegendRow
 
 __all__ = [
     "ARROW", "ARROW_COLOR", "AXIS", "AXIS_COLOR", "CORRIDOR", "CORRIDOR_COLOR", "CROWN", "CROWN_COLOR", "DESTINATION",
-    "DESTINATION_COLOR", "EntityPlan", "FOOTPRINT", "FOOTPRINT_COLOR", "GRADIENT_COLORS", "GRADIENT_DESIGN",
+    "DESTINATION_COLOR", "END_RANK", "EntityPlan", "FOOTPRINT", "FOOTPRINT_COLOR", "GRADIENT_COLORS", "GRADIENT_DESIGN",
     "GRADIENT_MEAN", "GRADIENT_WITHIN", "LINE", "LINE_COLOR", "MARGIN", "MARGIN_COLOR", "MARKS", "MARK_COLOR", "ORIGIN",
-    "ORIGIN_COLOR", "RESTING", "RESTING_COLOR", "Request", "SECTION", "SECTION_COLOR", "TARGET", "ZONE", "arrow_segments",
+    "ORIGIN_COLOR", "RESTING", "RESTING_COLOR", "Request", "SECTION", "SECTION_COLOR", "STEEPEST_RANK", "STRETCH_RANK", "TARGET", "ZONE", "arrow_segments",
     "build_steps", "building", "built", "cross_segments", "disable", "drawing", "enable", "enabled", "on_project_changed",
     "on_project_read", "on_version_changed", "plan", "preview", "rebuild", "register", "replace", "stamp", "tick",
     "unregister",
@@ -309,8 +309,7 @@ def _legend(request: Request, found: EntityPreview, ground: Any, drawn: set[str]
                guard=format_number(found.guard_m, 1), area=format_number(found.zone_area_m2, 0)),
             _hex(constraints.color_of(found.declares.value))))
     if found.drawable:
-        rows.append(LegendRow(tr("At the elevation of the GeoOrigin") if ground is None
-                              else tr("On the surface «{name}»", name=ground.name)))
+        rows.extend(constraints.surface_rows(ground))
     return tuple(rows)
 
 
@@ -460,8 +459,7 @@ def _stockpile_legend(request: Request, found: Any, ground: Any, drawn: set[str]
         margins = [item.margin_m for item in found.marks if item.enlarged]
         rows.append(LegendRow(tr("Marks enlarged by their margin ({margins})", margins=_span(margins)), _hex(MARGIN_COLOR)))
     if found.drawable:
-        rows.append(LegendRow(tr("At the elevation of the GeoOrigin") if ground is None
-                              else tr("On the surface «{name}»", name=ground.name)))
+        rows.extend(constraints.surface_rows(ground))
     return tuple(rows)
 
 
@@ -513,8 +511,7 @@ def _buttress_legend(request: Request, found: Any, ground: Any, drawn: set[str])
                guard=format_number(found.guard_m, 1), area=format_number(found.zone_area_m2, 0)),
             _hex(constraints.color_of(found.declares.value))))
     if found.drawable:
-        rows.append(LegendRow(tr("At the elevation of the GeoOrigin") if ground is None
-                              else tr("On the surface «{name}»", name=ground.name)))
+        rows.extend(constraints.surface_rows(ground))
     return tuple(rows)
 
 
@@ -585,6 +582,11 @@ _GRADIENT_KEYS: dict[GradientStatus, str] = {
 """El lote de cada estado de un tramo de la rasante (:class:`design.preview.GradientStatus`)."""
 ROAD_AXIS_PX = 1.5
 """El trazo del eje de una pista: una línea fina blanca sobre los tramos coloreados (:data:`GRADIENT_PX`)."""
+END_RANK = 2
+STEEPEST_RANK = 1
+STRETCH_RANK = 0
+"""El rango de los nombres de una pista (spec 017, T50; H3-3; ``bl.draw.constraints.Label.rank``): cuando se solapan, se escriben primero el origen y el destino, después el tramo más empinado y por
+último los demás tramos; lo que se apoya en la pista no tiene rango (se dibuja siempre). Es de presentación: no cambia ninguna cifra."""
 
 
 def cross_segments(points: Sequence[tuple[float, float]], arm_m: float) -> np.ndarray:
@@ -649,7 +651,7 @@ def _road_legend(request: Request, found: Any, ground: Any, drawn: set[str]) -> 
     elif found.resting:
         rows.append(LegendRow(tr("Rests on it or starts from it ({count}), without a footprint of its own", count=len(found.resting))))
     if found.drawable:
-        rows.append(LegendRow(tr("At the elevation of the GeoOrigin") if ground is None else tr("On the surface «{name}»", name=ground.name)))
+        rows.extend(constraints.surface_rows(ground))
     return tuple(rows)
 
 
@@ -693,21 +695,22 @@ def _build_road(request: Request, budget_s: float) -> Generator[None, None, tupl
             if batch is not None:
                 batches.append(batch)
                 drawn.add(key)
-        named: list[tuple[str, tuple[float, float], constraints.Color]] = [
-            (_point_text(point), (point.x, point.y), ORIGIN_COLOR if point.which == "origin" else DESTINATION_COLOR) for point in found.points]
-        for item in found.stretches:
+        named: list[tuple[str, tuple[float, float], constraints.Color, int | None]] = [
+            (_point_text(point), (point.x, point.y), ORIGIN_COLOR if point.which == "origin" else DESTINATION_COLOR, END_RANK) for point in found.points]
+        steepest = max(range(len(found.stretches)), key=lambda index: found.stretches[index].gradient_pct, default=None)
+        for number, item in enumerate(found.stretches):
             middle = axis[(item.first + item.last) // 2]
             named.append((tr("{gradient} % · level {start} → {end} m", gradient=format_number(item.gradient_pct, 1), start=_level(item.start_level_m), end=_level(item.end_level_m)),
-                          (float(middle[0]), float(middle[1])), GRADIENT_COLORS[_GRADIENT_KEYS[item.status]]))
+                          (float(middle[0]), float(middle[1])), GRADIENT_COLORS[_GRADIENT_KEYS[item.status]], STEEPEST_RANK if number == steepest else STRETCH_RANK))
         for item in found.resting:
             place = design_draw.ring_center(item.rings)
             if place is not None:
                 text = (tr("«{name}» · {volume} m³ rest on it", name=item.name, volume=format_number(item.volume_m3, 0)) if item.volume_m3 is not None
                         else tr("«{name}» starts from its surface", name=item.name))
-                named.append((text, place, RESTING_COLOR))
-        places = np.array([place for _text, place, _color in named], dtype=np.float64).reshape(-1, 2)
+                named.append((text, place, RESTING_COLOR, None))
+        places = np.array([place for _text, place, _color, _rank in named], dtype=np.float64).reshape(-1, 2)
         spots = yield from constraints.drape_points_steps(places, ground, origin, budget_s=budget_s)
-        labels.extend(Label(text, (float(x), float(y), float(z)), color) for (text, _place, color), (x, y, z) in zip(named, spots.tolist(), strict=True))
+        labels.extend(Label(text, (float(x), float(y), float(z)), color, rank) for (text, _place, color, rank), (x, y, z) in zip(named, spots.tolist(), strict=True))
     lines = constraints.Built(version_uid, request.version_code, found.masks.value, "" if ground is None else ground.name, tuple(batches), tuple(labels),
                               _road_legend(request, found, ground, drawn), request.stamp)
     return design_draw.Built(lines, None, (), found.lines(shown)), found

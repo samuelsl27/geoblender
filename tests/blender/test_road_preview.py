@@ -13,6 +13,10 @@ Las pruebas, en el orden de sus letras:
 - RF-015-26 (d): la orden ``geoblender.des_entity_preview`` ofrece una pista de la versión por su código, y lo que no tiene vista previa lo dice.
 - RF-015-26, RF-017-26 (e): activarla pone los manejadores de dibujo y el temporizador, la construye por pasos y **se quita** con su mismo control, al cambiar de proyecto y **al conmutar a la interfaz de
   Blender** (``switcher.add_blender_hook``): ida y vuelta deja Blender como estaba; nada se crea en la escena.
+- RF-017-26, RF-015-26 (i): **sobre la superficie de partida elegida** (T50, H3-1): si la partida es la superficie que deja otra entidad (``des_psf_…``) se dibuja sobre ella y la leyenda lo dice; si no se
+  puede leer, se dibuja sobre la rejilla más reciente **y la leyenda lo dice**; una rejilla del proyecto, la suya, no la más reciente.
+- RF-017-26, RF-015-26 (j): **los nombres no se solapan** (T50, H3-3): el origen, el destino y el tramo más empinado van primero, el resto se salta si cae sobre otro ya puesto y los de lo que se apoya
+  en la pista no se saltan; con la vista cerca se dibujan todos.
 - Principio 8 (z): desactivar Geoblender con la vista previa de una pista activa lo quita todo.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
@@ -21,7 +25,8 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 import importlib
 import unittest
 from collections.abc import Generator
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
@@ -40,6 +45,8 @@ PD, PM = 10.0, 8.0
 """Los límites del perfil de la prueba (%): la pendiente de diseño y la media máxima."""
 HALF_M = 5.75
 MAX_PUMPS = 2_000
+REGION_PX = (1920.0, 1080.0)
+"""La región de la Vista 3D de la prueba de los nombres (px)."""
 VERSION = SimpleNamespace(uid="uid-v01", code="V01")
 
 
@@ -67,7 +74,8 @@ class RoadPreviewTest(unittest.TestCase):
         cls.addClassCleanup(blender_ext.release)
         for name, module in (("entity", "bl.draw.entity"), ("design_draw", "bl.draw.design"), ("constraints", "bl.draw.constraints"), ("dpreview", "design.preview"),
                              ("switcher", "bl.ui.switcher"), ("ps", "bl.scene.project_session"), ("scene_versions", "bl.scene.versions"), ("i18n", "core.i18n"),
-                             ("des_ops", "bl.ops.des"), ("entities", "design.entities"), ("access", "gis.masks.access"), ("model", "core.project.model")):
+                             ("des_ops", "bl.ops.des"), ("entities", "design.entities"), ("access", "gis.masks.access"), ("model", "core.project.model"),
+                             ("res_surfaces", "reserves.surfaces"), ("gis_messages", "gis.messages"), ("dh_overlay", "bl.draw.dh_overlay")):
             setattr(cls, name, _module(module))
         cls.addClassCleanup(cls.entity.disable)
 
@@ -385,6 +393,169 @@ class RoadPreviewTest(unittest.TestCase):
                     break
         self.assertFalse(entity.enabled() or entity.drawing() or entity.building())
         self.assertIn("RDW-009", told.call_args.args[0])
+
+    # --- RF-017-26, RF-015-26 (i): la superficie de partida elegida (T50, H3-1) ---------------------------
+
+    @contextmanager
+    def on_surfaces(self, *, readable: tuple[str, ...]) -> Generator[list[tuple[str, str]], None, None]:
+        """Lo que hace falta para leer la superficie de partida sin proyecto: las rejillas del proyecto (``gis_dtm_a14`` y ``gis_dtm_a15``, la más reciente), la lectura de las superficies de
+        ``readable`` (cada una, un plano a 130 m; las demás, ``gis.dataset_unknown``) y la interpolación (el plano). Da la lista de lo que se lee: ``(dato, versión)``."""
+        read: list[tuple[str, str]] = []
+        choices = tuple(SimpleNamespace(name=name, uid=f"uid-{name}", ref=self.res_surfaces.SurfaceRef(dataset=name)) for name in ("gis_dtm_a14", "gis_dtm_a15"))
+
+        def source_of(_project: Any, ref: Any, *, version_uid: str = "") -> Any:
+            read.append((ref.dataset, version_uid))
+            if ref.dataset not in readable:
+                raise self.gis_messages.GisError("gis.dataset_unknown", obj="Superficie", field="superficie", value=ref.dataset)
+            return SimpleNamespace(grid=SimpleNamespace(shape=(2, 2), dx=2.0, dy=2.0), header=SimpleNamespace(crs=None, vertical=None))
+
+        def bands_of(_source: Any, grid: Any) -> Any:
+            yield 0, np.full(grid.shape, 130.0)
+
+        def raster_of(grid: Any, values: Any, crs: Any, vertical: Any) -> Any:
+            return SimpleNamespace(grid=grid, values=values, crs=crs, vertical=vertical)
+
+        with ExitStack() as stack:
+            for target, name, replacement in ((self.constraints, "terrain_choices", mock.Mock(return_value=choices)),
+                                              (self.constraints, "_latest", mock.Mock(side_effect=lambda _project, found: found[-1])),
+                                              (self.res_surfaces, "surface_source", mock.Mock(side_effect=source_of)),
+                                              (self.res_surfaces, "band_reader", mock.Mock(side_effect=bands_of)),
+                                              (self.constraints, "Raster", mock.Mock(side_effect=raster_of)),
+                                              (self.constraints, "sample", mock.Mock(side_effect=lambda _raster, xy, method="bilinear": np.full(len(xy), 130.0)))):
+                stack.enter_context(mock.patch.object(target, name, replacement))
+            yield read
+
+    def build_from(self, start: str, *, readable: tuple[str, ...]) -> tuple[Any, list[tuple[str, str]]]:
+        """Lo construido para una pista calculada que parte de la superficie ``start`` (el nombre de su dato), con la superficie de verdad: ``ground_steps`` sin sustituir, y lo que se leyó."""
+        found = replace(self.calculated(), start_surface=start)
+        with self.on_surfaces(readable=readable) as read, mock.patch.object(self.dpreview, "road_preview_steps", side_effect=self.steps_of(found)):
+            work = self.entity.build_steps(self.request(found))
+            while True:
+                try:
+                    next(work)
+                except StopIteration as done:
+                    return done.value, read
+
+    def test_i_it_draws_on_the_chosen_start_surface_even_if_it_is_the_one_an_entity_leaves_and_says_so_when_it_cannot_read_it(self) -> None:
+        """RF-017-26, RF-015-26 (T50, H3-1): una pista que parte de **la superficie que deja otra entidad** (``des_psf_p1``, la de una plataforma: no es una rejilla del proyecto) se dibuja **sobre ella**
+        —se lee ``des_psf_p1`` con la versión activa, como la lee el cálculo, y los lotes siguen su cota— y la leyenda lo dice; si **no se puede leer** se dibuja sobre la rejilla más reciente **y la
+        leyenda lo dice** (en los dos idiomas), no en silencio; una rejilla del proyecto es la suya, no la más reciente; y sin partida elegida, la más reciente sin más."""
+        entity, constraints = self.entity, self.constraints
+        built, read = self.build_from("des_psf_p1", readable=("des_psf_p1", "gis_dtm_a14", "gis_dtm_a15"))
+        self.assertEqual((built.lines.surface, read), ("des_psf_p1", [("des_psf_p1", VERSION.uid)]))
+        self.assertEqual([row.text for row in built.lines.legend][-1], "Sobre la superficie «des_psf_p1»")
+        self.assertFalse([row for row in built.lines.legend if "No se pudo leer" in row.text])
+        np.testing.assert_allclose(self.batch(built, entity.AXIS).positions[:, 2], 130.0 - GROUND_M, atol=1e-4)  # los lotes siguen la cota de esa superficie
+        with self.assertLogs("geoblender.bl.draw", level="WARNING"):
+            built, read = self.build_from("des_psf_p9", readable=("gis_dtm_a14", "gis_dtm_a15"))
+        self.assertEqual((built.lines.surface, read), ("gis_dtm_a15", [("des_psf_p9", VERSION.uid), ("gis_dtm_a15", VERSION.uid)]))
+        self.assertEqual([row.text for row in built.lines.legend][-2:], ["Sobre la superficie «gis_dtm_a15»",
+                                                                       "No se pudo leer la superficie de partida «des_psf_p9»: se usa la rejilla más reciente"])
+        self.i18n.set_language("en")
+        with self.assertLogs("geoblender.bl.draw", level="WARNING"):
+            english, _read = self.build_from("des_psf_p9", readable=("gis_dtm_a14", "gis_dtm_a15"))
+        self.assertEqual([row.text for row in english.lines.legend][-2:], ["On the surface «gis_dtm_a15»", "The start surface «des_psf_p9» could not be read: the latest grid is used"])
+        self.i18n.set_language("es")
+        built, read = self.build_from("gis_dtm_a14", readable=("gis_dtm_a14", "gis_dtm_a15"))
+        self.assertEqual((built.lines.surface, read), ("gis_dtm_a14", [("gis_dtm_a14", VERSION.uid)]), "una rejilla del proyecto es la suya, no la más reciente")
+        built, read = self.build_from("", readable=("gis_dtm_a14", "gis_dtm_a15"))
+        self.assertEqual((built.lines.surface, read, len([row for row in built.lines.legend if row.text.startswith(("Sobre", "No se pudo"))])), ("gis_dtm_a15", [("gis_dtm_a15", VERSION.uid)], 1))
+        with self.assertLogs("geoblender.bl.draw", level="WARNING"):  # la elegida es una rejilla del proyecto que no se lee (y es la más reciente): la otra, y lo dice
+            built, read = self.build_from("gis_dtm_a15", readable=("gis_dtm_a14",))
+        self.assertEqual((built.lines.surface, read), ("gis_dtm_a14", [("gis_dtm_a15", VERSION.uid), ("gis_dtm_a14", VERSION.uid)]))
+        self.assertEqual([row.text for row in built.lines.legend][-1], "No se pudo leer la superficie de partida «gis_dtm_a15»: se usa la rejilla más reciente")
+        with self.assertLogs("geoblender.bl.draw", level="WARNING"):  # y sin ninguna que se lea: a la cota del GeoOrigin
+            built, _read = self.build_from("des_psf_p1", readable=())
+        self.assertEqual((built.lines.surface, [row.text for row in built.lines.legend][-1]), ("", "A la cota del GeoOrigin"))
+        # la superposición de las restricciones (``_surface_steps`` sin ``exact``) sigue como era: una rejilla elegida que no se lee no se sustituye (a la cota del GeoOrigin) y un nombre que no es de una
+        # rejilla del proyecto se olvida (la más reciente, sin intentar leerlo ni decir nada)
+        project = SimpleNamespace(origin=ORIGIN)
+        with self.on_surfaces(readable=("gis_dtm_a14",)) as read, self.assertLogs("geoblender.bl.draw", level="WARNING"):
+            self.assertIsNone(self.finish(constraints._surface_steps(project, "gis_dtm_a15", VERSION.uid, constraints.Pace(0.015))))
+        self.assertEqual(read, [("gis_dtm_a15", VERSION.uid)])
+        with self.on_surfaces(readable=("des_psf_p1", "gis_dtm_a14", "gis_dtm_a15")) as read:
+            forgotten = self.finish(constraints._surface_steps(project, "des_psf_p1", VERSION.uid, constraints.Pace(0.015)))
+        self.assertEqual((forgotten.name, forgotten.asked, read), ("gis_dtm_a15", "", [("gis_dtm_a15", VERSION.uid)]))
+
+    @staticmethod
+    def finish(work: Any) -> Any:
+        """Un generador de pasos llevado hasta el final: su valor."""
+        while True:
+            try:
+                next(work)
+            except StopIteration as done:
+                return done.value
+        rows = constraints.surface_rows
+        self.assertEqual([row.text for row in rows(None)], ["A la cota del GeoOrigin"])
+        self.assertEqual([row.text for row in rows(constraints.Surface("x", None, asked="y"))][1:], ["No se pudo leer la superficie de partida «y»: se usa la rejilla más reciente"])
+
+    # --- RF-017-26, RF-015-26 (j): los nombres no se solapan (T50, H3-3) -----------------------------------
+
+    def view(self, pixels_per_m: float) -> np.ndarray:
+        """La matriz de una vista ortogonal de la región de 1920 × 1080 px que enseña ``pixels_per_m`` px por metro con el sitio local (170, 50) —el medio del eje de la prueba— en el centro."""
+        sx, sy = pixels_per_m / (REGION_PX[0] / 2.0), pixels_per_m / (REGION_PX[1] / 2.0)
+        return np.array([[sx, 0.0, 0.0, -170.0 * sx], [0.0, sy, 0.0, -50.0 * sy], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
+
+    def drawn_labels(self, built: Any, pixels_per_m: float, *, char_px: float) -> list[Any]:
+        """Los nombres (``bl.draw.dh_overlay.Text``) que dibuja ``screen_items`` con la vista de ``pixels_per_m`` px por metro y letras de ``char_px`` px de ancho."""
+        names = {label.text for label in built.lines.labels}
+        items = self.constraints.screen_items(built.lines, self.view(pixels_per_m), REGION_PX, measure=lambda text: char_px * len(text), scale=1.0)
+        return [item for item in items if isinstance(item, self.dh_overlay.Text) and item.text in names]
+
+    def test_j_the_names_do_not_overlap_the_origin_the_destination_and_the_steepest_stretch_go_first(self) -> None:
+        """RF-017-26, RF-015-26 (T50, H3-3; M5): los nombres de una pista llevan su rango —el origen y el destino 2, el tramo más empinado 1, los demás 0, y los de lo que se apoya en ella ninguno—
+        y ``screen_items`` **no dibuja dos nombres que se solapen** (a menos de una altura de texto uno de otro y con sus cajas encima): con la vista cerca (6 px/m, letras de 2 px) se dibujan **los ocho**;
+        con la vista a 0,5 px/m, el origen y el destino y solo los tramos que no caen sobre ellos ni sobre otro ya puesto; con la vista lejos (0,05 px/m: toda la pista en 15 px) queda el origen, el
+        primero. Los nombres de lo que se apoya no se saltan (y los demás los esquivan)."""
+        dp = self.dpreview
+        plain = self.build(self.calculated())
+        labels = plain.lines.labels
+        self.assertEqual([label.rank for label in labels[:2]], [2, 2], "el origen y el destino")
+        self.assertEqual(sorted(label.rank for label in labels[2:]), [0, 0, 0, 0, 0, 1])
+        self.assertTrue(next(label for label in labels[2:] if label.rank == 1).text.startswith("12,0 %"), "el más empinado")
+        ring = np.array([self.absolute(*point) for point in ((100.0, 52.0), (160.0, 52.0), (160.0, 90.0), (100.0, 90.0), (100.0, 52.0))])
+        held = self.build(self.calculated(resting=(dp.RestingItem("Ramal", "RDW-002", "des.road", "current", 1500.0, (ring,)),)))
+        self.assertIsNone(held.lines.labels[-1].rank, "lo que se apoya en la pista no se salta")
+        self.assertEqual(len(self.drawn_labels(plain, 6.0, char_px=2.0)), 8, "con la vista cerca, todos")
+        middle = [item.text for item in self.drawn_labels(plain, 0.5, char_px=2.0)]
+        self.assertTrue(any(text.startswith("Origen") for text in middle) and any(text.startswith("Destino") for text in middle) and len(middle) < 8, middle)
+        for pixels in (6.0, 0.5, 0.05):
+            shown = self.drawn_labels(plain, pixels, char_px=2.0)
+            with self.subTest(pixels_per_m=pixels):
+                self.assertTrue(shown)
+                for index, one in enumerate(shown):
+                    for other in shown[index + 1:]:
+                        overlap = abs(one.y - other.y) < self.constraints.FONT_PX and one.x < other.x + 2.0 * len(other.text) and other.x < one.x + 2.0 * len(one.text)
+                        self.assertFalse(overlap, (one.text, other.text))
+        self.assertEqual([item.text for item in self.drawn_labels(plain, 0.05, char_px=2.0)], ["Origen · rasante 100,00 m"], "toda la pista en 15 px: queda el origen")
+        self.assertIn("Ramal", " ".join(item.text for item in self.drawn_labels(held, 0.05, char_px=2.0)), "lo que no tiene rango se dibuja siempre")
+        # la altura de un texto es la de la letra por la escala de la interfaz: dos nombres 15 px uno sobre otro caben a escala 1 (12 px) y no a escala 2 (24 px)
+        two = self.constraints.Built(None, "", "", "", (), (self.constraints.Label("uno", (170.0, 50.0, 0.0), (1.0, 1.0, 1.0, 1.0), 0), self.constraints.Label("dos", (170.0, 65.0, 0.0), (1.0, 1.0, 1.0, 1.0), 0)), (), ())
+        for scale, wanted in ((1.0, ["uno", "dos"]), (2.0, ["uno"])):
+            items = self.constraints.screen_items(two, self.view(1.0), REGION_PX, measure=lambda text: 20.0, scale=scale)
+            self.assertEqual([item.text for item in items if isinstance(item, self.dh_overlay.Text)], wanted, scale)
+        plain_labels = tuple(self.constraints.Label(name, (170.0, 50.0, 0.0), (1.0, 1.0, 1.0, 1.0)) for name in ("uno", "dos"))  # sin rango (lo de las demás vistas previas): se dibujan siempre
+        items = self.constraints.screen_items(self.constraints.Built(None, "", "", "", (), plain_labels, (), ()), self.view(1.0), REGION_PX, measure=lambda text: 20.0, scale=1.0)
+        self.assertEqual([item.text for item in items if isinstance(item, self.dh_overlay.Text)], ["uno", "dos"], "los nombres sin rango no se tocan")
+
+    def test_k_every_preview_legend_says_the_surface_it_is_drawn_on_and_when_it_could_not_read_the_start(self) -> None:
+        """RF-015-26, RF-017-26 (T50, H3-1): la leyenda de la plataforma, de las marcas de una detección de acopios, de la zona de un contrafuerte y de la pista (**las cuatro vistas previas de
+        ``bl.draw.entity``**) y la de las restricciones dicen sobre qué superficie se dibuja y, si no se pudo leer la de partida, **lo dicen** (la fila de ``constraints.surface_rows``); sin superficie,
+        la cota del GeoOrigin."""
+        entity, constraints = self.entity, self.constraints
+        request = SimpleNamespace(language="es", version_code="V01", version_uid="uid-v01")
+        found = SimpleNamespace(name="Pieza", code="X-001", version="V01", area_m2=1.0, resting=(), declares=None, guard_m=None, zone_area_m2=0.0, marks=(), drawable=True, max_mean_gradient_pct=1.0,
+                                max_gradient_pct=1.0, section_m=1.0, carriageway_m=1.0, length_m=1.0, corridor_nodes=0, margin_m=1.0, target_level_m=None, target_tolerance_m=None)
+        legends = {"platform": entity._legend, "stockpile": entity._stockpile_legend, "buttress": entity._buttress_legend, "road": entity._road_legend}
+        asked = constraints.Surface("gis_dtm_a15", None, asked="des_psf_p1")
+        for kind, legend in legends.items():
+            with self.subTest(kind=kind):
+                self.assertEqual([row.text for row in legend(request, found, constraints.Surface("des_psf_p1", None), set())][-1], "Sobre la superficie «des_psf_p1»")
+                self.assertEqual([row.text for row in legend(request, found, asked, set())][-2:], ["Sobre la superficie «gis_dtm_a15»",
+                                                                                                  "No se pudo leer la superficie de partida «des_psf_p1»: se usa la rejilla más reciente"])
+                self.assertEqual([row.text for row in legend(request, found, None, set())][-1], "A la cota del GeoOrigin")
+        rows = constraints._legend(constraints.Request(object(), None, "", "", "es", ()), "", {}, 0, False, False, asked)
+        self.assertEqual([row.text for row in rows][-2:], ["Sobre la superficie «gis_dtm_a15»", "No se pudo leer la superficie de partida «des_psf_p1»: se usa la rejilla más reciente"])
 
     def test_z_disabling_geoblender_with_the_preview_of_a_road_on_leaves_nothing(self) -> None:
         """Principio 8: con la vista previa de una pista activa (a medio construir), desactivar Geoblender quita los manejadores de dibujo, los ganchos, el temporizador y los lotes, y la huella de Blender
