@@ -2902,8 +2902,9 @@ class _CalculateAndCreate:
         hold_calculation(opened)
         des_panels.show_summary(opened)
         shown = des_panels.view()
-        for line in () if shown is None else shown.summary:
-            self._report({"WARNING" if line.alert else "INFO"}, line.name)
+        # El informe de la orden lleva el resumen **entero** (T51, H3-4): el del diálogo (``shown.summary``) se recorta en las pistas para que «Crear» quepa en la ventana.
+        for text, alert in () if shown is None else des_panels.summary_lines(opened):
+            self._report({"WARNING" if alert else "INFO"}, text)
         if self.in_steps and getattr(context, "window", None) is not None:
             _ask_confirmation(context, idname=self.COMMAND)
         return {"FINISHED"}

@@ -11074,8 +11074,14 @@ es = "Neto de la sección y el borde: {net} m³ (desmonte {cut} m³ − relleno 
 ["No curves: the axis is a straight line"]
 es = "Sin curvas: el eje es una recta"
 
-["The mean gradient, {mean} %, passes the {limit} % of the profile: the road is not created without your express confirmation and a reason, which stays recorded with who and when; the button that creates it confirms it"]
-es = "La pendiente media, del {mean} %, pasa del {limit} % del perfil: la pista no se crea sin su confirmación expresa y un motivo, que queda registrado con quién y cuándo; el botón que la crea lo confirma"
+["The mean gradient, {mean} %, passes the {limit} % of the profile; the steepest stretches are: {stretches}; the road is not created without your express confirmation and a reason, which stays recorded with who and when; the button that creates it confirms it"]
+es = "La pendiente media, del {mean} %, pasa del {limit} % del perfil; los tramos más empinados son: {stretches}; la pista no se crea sin su confirmación expresa y un motivo, que queda registrado con quién y cuándo; el botón que la crea lo confirma"
+
+["… and 1 more line of the summary (the report of the order has it)"]
+es = "… y 1 línea más del resumen (el informe de la orden la lleva)"
+
+["… and {count} more lines of the summary (the report of the order has them all)"]
+es = "… y {count} líneas más del resumen (el informe de la orden las lleva todas)"
 
 ["{area} m² of the carriageway do not end up on the level profile of the road (see the warnings): the road is not created without your express confirmation; the button that creates it confirms it"]
 es = "{area} m² de la calzada no quedan en su rasante (véanse los avisos): la pista no se crea sin su confirmación expresa; el botón que la crea la confirma"
@@ -11412,9 +11418,6 @@ es = "Comunicado · tramos de berma: {berms} de {berms_total} · plataformas: {p
 
 ["Proposed route «{name}» · profile «{profile}»: length {length} m · elevation {start} m at the start and {end} m at the end"]
 es = "Trazado propuesto «{name}» · perfil «{profile}»: longitud de {length} m · cota de {start} m al inicio y de {end} m al final"
-
-["The mean gradient, {mean} %, passes the {limit} % of the profile: it is only a warning, the route is created without confirmation because it changes no surface"]
-es = "La pendiente media, del {mean} %, pasa del {limit} % del perfil: es solo un aviso, el trazado se crea sin confirmación porque no cambia ninguna superficie"
 
 ["It is created as a layer of 3D lines that you can edit in QGIS: it changes no surface and is not an entity"]
 es = "Se crea como una capa de líneas 3D que puede editar en QGIS: no cambia ninguna superficie y no es una entidad"

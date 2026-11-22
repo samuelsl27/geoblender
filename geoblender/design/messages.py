@@ -1037,6 +1037,18 @@ CATALOG: tuple[Message, ...] = (
         one_msgid="… and {stretches} more stretch (in the report).",
         one_es="… y {stretches} tramo más (en el informe).",
     ),
+    # Los avisos de un código que el diálogo de «Calcular» una pista, una propuesta o una accesibilidad no enseña (T51, el H3: un aviso de radio por vértice, más de veinte, dejaban «Crear» fuera
+    # de la ventana); los guarda el informe de la operación y los dice el informe de la orden. Va en ámbar (``warning``) detrás de los avisos que recorta, no cuenta en «Crear con N avisos»
+    # (solo está en lo que se enseña) y, si el resumen se corta por filas, se queda con ellos.
+    Message(
+        "des.summary_more",
+        "… and {count} more warnings like this one (in the report).",
+        "… y {count} avisos como éste (en el informe).",
+        "warning",
+        count="count",
+        one_msgid="… and {count} more warning like this one (in the report).",
+        one_es="… y {count} aviso como éste (en el informe).",
+    ),
     Message(
         "des.edge_not_design_surface",
         "«{value}» is not a design surface of the active version: choose a surface of the "

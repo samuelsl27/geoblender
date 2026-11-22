@@ -1306,6 +1306,21 @@ class RoadRowsTest(unittest.TestCase):
         self.assertEqual(json.loads(note), {"vertex": curve.vertex, "design_radius_m": curve.design_radius_m, "deflection_rad": curve.deflection, "tangent_m": curve.tangent_m,
                                             "length_m": curve.length_m, "station_m": curve.station_m, "x": curve.x, "y": curve.y})
 
+    def test_f_b_the_report_keeps_every_radius_notice_with_its_vertex_its_radius_and_its_place_whatever_the_dialog_shows(self) -> None:
+        """RF-017-14, RF-017-23 (T51, hallazgo H3-4): el informe guardado (``des_prp_``) lleva **todos** los avisos del resultado, también los 25 de radio (uno por vértice) de una rampa de muchas curvas,
+        cada uno con su vértice, su radio de diseño, el que cabe y su lugar; el diálogo de «Calcular» enseña tres de cada código (``design.preview.limit_notices``) y no toca lo que se guarda."""
+        radii = tuple(preview.Notice("des.road_radius_reduced", {"entity": "RDW-001", "vertex": vertex, "radius": 20.0, "fitted": 13.2, "x": 700_000.0 + vertex, "y": 4_400_000.0})
+                      for vertex in range(1, 26))
+        outcome = dataclasses.replace(self.corner, notices=(*self.corner.notices, *radii))
+        warned = [json.loads(note) for kind, _value, _unit, note in road_store.road_report_rows(outcome) if kind == "warning"]
+        saved = [item["values"] for item in warned if item["code"] == "des.road_radius_reduced"]
+        self.assertEqual([item["vertex"] for item in saved], list(range(1, 26)))
+        self.assertEqual([item["x"] for item in saved], [700_000.0 + vertex for vertex in range(1, 26)])
+        self.assertEqual({(item["radius"], item["fitted"], item["y"]) for item in saved}, {(20.0, 13.2, 4_400_000.0)})
+        shown = preview.limit_notices(outcome.notices)
+        self.assertEqual(sum(1 for notice in shown if notice.code == "des.road_radius_reduced"), 3, "el diálogo, tres")
+        self.assertEqual(len(outcome.notices), len(self.corner.notices) + 25, "el resultado, entero")
+
     def test_g_the_operation_adds_the_other_designs_that_differ_as_inputs_and_what_was_confirmed_to_its_settings(self) -> None:
         """RF-017-05 (b), RF-017-17, RF-017-22, CE-017-05: lo que anota la operación de la pista además de lo que preparó: los **otros diseños que difieren** (``RoadOutcome.other_designs``) como
         entradas con su papel y **el hash que tenían al prepararla** (``seen`` no cambia: lo midió la preparación), sin repetir una que ya lo era; y **lo confirmado** (quién, cuándo, el motivo) en sus

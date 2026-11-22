@@ -65,7 +65,7 @@ espacio fino de miles del español o el punto y la coma del inglés.
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable, Iterator, Mapping
+from collections.abc import Callable, Collection, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
@@ -128,8 +128,10 @@ __all__ = [
     "buttress_preview_steps",
     "entity_preview_steps",
     "gradient_stretches",
+    "fit_summary",
     "guard_zone_units",
     "held_notices",
+    "limit_notices",
     "obsolete_names",
     "obsolete_notices",
     "quarry_summarize_steps",
@@ -621,6 +623,76 @@ SUMMARY_ITEMS = 10
 """Los nombres de lo que quedará obsoleto que enseña cada nota del resumen; el resto, un «…» (la
 lista entera va en :attr:`PlatformSummary.obsolete`). No es una cifra minera: es lo que cabe en la
 ventana."""
+
+SUMMARY_PER_CODE = 3
+"""Los avisos de cada código que enseña el diálogo de «Calcular» una pista, una propuesta del trazado o una accesibilidad (spec 017, T51; hallazgo H3-4 del H3: una rampa de 13 curvas daba un aviso de
+radio por vértice y «Crear» quedaba debajo de lo visible); los demás, una línea con cuántos son (``des.summary_more``). No es una cifra minera: es lo que cabe en la ventana; el informe de la operación
+los lleva todos."""
+SUMMARY_ROWS = 32
+"""Las filas de etiqueta, ya partidas al ancho del diálogo, que enseña como mucho el resumen de «Calcular» una pista, una propuesta o una accesibilidad (T51; H3-4). Sale de la ventana del H3, de
+1001 px, con la fuente del diálogo a escala 1,0: una fila de etiqueta mide 20 px; entre una línea del resumen y la siguiente hay 5 px (``templatespace``, unas 14 líneas, 70 px); el título, los botones
+y los márgenes del diálogo, unos 100 px; y se dejan **unos 190 px de holgura** para el título del resumen (que el diálogo dibuja también dentro, de una o dos filas), el campo del motivo de la media y lo
+que un diálogo mide distinto de lo calculado: (1001 − 100 − 70 − 190) / 20 = 32 filas. Medidas con la fuente del diálogo, una línea de un aviso de radio ocupa 3 filas, la de un grupo de calzada fuera de su
+rasante 5 y la de la pendiente media con cinco tramos 7. No es una cifra minera. **No se midió en pantalla** (el H3 se repite con ella: ``tasks.md``, T51)."""
+
+
+def limit_notices(notices: Iterable[Notice], *, per_code: int = SUMMARY_PER_CODE, exempt: Collection[str] = ()) -> tuple[Notice, ...]:
+    """Los avisos ``notices`` como los enseña el diálogo de «Calcular» (spec 017, T51; hallazgo H3-4; RF-017-14, RF-017-22): **hasta** ``per_code`` **avisos de cada código** y, **detrás del último que
+    se enseña de cada uno**, ``des.summary_more`` con cuántos faltan («… y 22 avisos como éste (en el informe)»). Solo se recortan los avisos (``warning``): una nota no, ni lo que lleve un código de
+    ``exempt`` (lo que el informe guardado no lleva y no se puede recortar sin perderlo). Lo demás, tal cual y en su orden; con ``per_code`` o menos de cada código, la misma lista. **No toca** lo que
+    recibe: lo que va al informe de la operación son los ``notices`` enteros. ``ValueError`` (error del programa) si ``per_code`` es negativo."""
+    if per_code < 0:
+        raise ValueError(f"los avisos de cada código que se enseñan son 0 o más, no {per_code!r}")
+    found: list[Notice] = []
+    seen: dict[str, int] = {}
+    hidden: dict[str, int] = {}
+    last: dict[str, int] = {}
+    for notice in notices:
+        if notice.code in exempt or notice.severity != "warning":
+            found.append(notice)
+            continue
+        last.setdefault(notice.code, len(found) - 1)  # donde irá su línea si no se enseña ninguno: tras lo que hubiera antes
+        seen[notice.code] = seen.get(notice.code, 0) + 1
+        if seen[notice.code] <= per_code:
+            found.append(notice)
+            last[notice.code] = len(found) - 1
+        else:
+            hidden[notice.code] = hidden.get(notice.code, 0) + 1
+    for code in sorted(hidden, key=lambda code: last[code], reverse=True):  # de atrás adelante: lo que se inserta no mueve lo que falta por insertar
+        found.insert(last[code] + 1, Notice("des.summary_more", {"count": hidden[code]}))
+    return tuple(found)
+
+
+def fit_summary(lines: Sequence[tuple[str, bool]], rows_of: Callable[[str, bool], int], budget: int, *, protect: int = 0, more: Callable[[int], str],
+                weights: Sequence[int] | None = None) -> list[tuple[str, bool]]:
+    """Las ``lines`` (``(texto, alerta)``) del resumen de «Calcular» como las enseña el diálogo con un tope de ``budget`` **filas** (T51; hallazgo H3-4): ``rows_of(texto, alerta)`` dice las filas de
+    etiqueta que ocupa cada una (ya partida al ancho del diálogo: quien llama la mide). Dentro del tope, las mismas. Sobre él, **las ``protect`` primeras** (las cifras: se enseñan aunque ellas solas
+    pasen del tope), después **las alertas, y solo entonces las notas**, cada grupo en su orden y mientras quepan **sin saltarse ninguna** (una alerta que no cabe corta también las notas: nunca se
+    esconde un aviso para enseñar una nota), **en el orden de siempre**, y al final ``more(n)`` —que dice cuántas líneas faltan— como línea sin alerta, que también cuenta en el tope. ``weights``: cuántas
+    líneas del resumen entero cuenta cada una al decir cuántas faltan (1 por defecto; la línea «… y 22 avisos como éste» cuenta 22, que son las que resume: si el tope la esconde, faltan 22 y no una).
+    ``ValueError`` (error del programa) si ``budget`` no es positivo, ``protect`` es negativo o ``weights`` no es del largo de ``lines``."""
+    if budget <= 0 or protect < 0 or (weights is not None and len(weights) != len(lines)):
+        raise ValueError(f"el tope es de 1 fila o más, lo protegido, de 0 o más y los pesos, uno por línea, no {budget!r}, {protect!r} y {weights!r}")
+    counted = [1] * len(lines) if weights is None else list(weights)
+    rows = [rows_of(text, alert) for text, alert in lines]
+    if sum(rows) <= budget:
+        return list(lines)
+    room = budget - sum(rows[:protect]) - rows_of(more(sum(counted)), False)
+    keep = set(range(min(protect, len(lines))))
+    fits = True
+    for wanted in (True, False):
+        for index in range(protect, len(lines)):
+            if bool(lines[index][1]) is not wanted or not fits:
+                continue
+            if rows[index] > room:
+                fits = False
+                continue
+            keep.add(index)
+            room -= rows[index]
+    found = [lines[index] for index in sorted(keep)]
+    if len(keep) < len(lines):
+        found.append((more(sum(counted[index] for index in range(len(lines)) if index not in keep)), False))
+    return found
 
 
 @dataclass(frozen=True, slots=True)

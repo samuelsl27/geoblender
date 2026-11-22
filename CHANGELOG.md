@@ -1805,6 +1805,17 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Corregido
 
+- El diálogo de «Calcular» de «Pista…», de «Proponer el trazado…» y de «Accesibilidad de las pistas…» **cabe en la ventana y «Crear» (o «Confirmar y
+  crear») se ve sin bajar el diálogo**, también con muchos avisos: de cada tipo de aviso enseña **hasta 3** y una línea en ámbar «… y 22 avisos como éste
+  (en el informe)» con los que faltan (una rampa de 13 curvas daba un aviso de radio por vértice, y con los de la calzada y los de las restricciones el
+  resumen pasaba de la ventana de 1001 px), y el resumen no pasa de **32 filas**: quedan las cifras, la confirmación, las alertas y, si hay sitio, las
+  notas, y una línea dice cuántas líneas faltan; en la accesibilidad se descuentan las filas de sus tres listas. El informe de la operación que se guarda
+  al crear lleva **todos** los avisos (de cada curva, su vértice, su radio y su lugar) y el informe de la orden lleva el resumen entero; el botón sigue
+  diciendo cuántos avisos hay de verdad. Y con la **pendiente media por encima de pm** el diálogo tiene **un solo aviso** —la media, el límite, los
+  tramos más empinados con su abscisa y su lugar y que el botón que crea la pista la confirma—, no el de la confirmación y, aparte, el de los tramos;
+  lo mismo en «Proponer el trazado…» (que solo avisa) y con la calzada fuera de su rasante cuando es un solo grupo de celdas. La plataforma, los
+  acopios y el contrafuerte no cambian. Solo cambia lo que se enseña: ninguna cifra ni ningún cálculo cambian (spec 017; lo vio el H3, hallazgos H3-4 y
+  H3-6; sin verlo todavía en pantalla).
 - La vista previa de una pista, de una plataforma, de las marcas de una detección de acopios y de un contrafuerte **dibuja sobre su superficie de
   partida**, también cuando es la que deja otra entidad (la de una plataforma, la de otra pista…), y su leyenda dice cuál es («Sobre la superficie
   «des_psf_p1»»); si no se puede leer, dibuja sobre la rejilla más reciente del proyecto y **la leyenda lo dice** («No se pudo leer la superficie

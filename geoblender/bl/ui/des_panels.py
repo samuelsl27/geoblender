@@ -31,7 +31,8 @@ las capas de puntos de entrada y la superficie que propone (:func:`refresh_acces
 explotación de la cantera) y, tras calcular, **las listas** de tramos de berma, plataformas y zonas «requiere acceso» **comunicados o no**, con su lugar y su «Ir a»
 (:func:`show_access` las lee del cálculo abierto con ``show_summary``, :func:`access_sections` las da y :func:`draw_access_lists` las dibuja en la ventana de crear). El resumen que se enseña
 (:func:`summary_lines`) lleva la cabecera, las cotas, el área y los avisos y **no repite lo que no se comunica**, que dicen las listas (y, en el informe de la orden,
-:func:`access_report_lines`).
+:func:`access_report_lines`). **El resumen del diálogo de las pistas** (la pista, la propuesta y la accesibilidad) **no crece más que la ventana** (spec 017, T51; H3-4): hasta tres avisos de cada código, un tope de filas
+(``design.preview.SUMMARY_ROWS``) y, en la accesibilidad, lo que ocupan sus listas descontado; el informe de la orden y el de la operación llevan todo (:func:`summary_lines`, ``dialog``).
 
 **Proponer el trazado…** (spec 017, T33 (a); HU-017-1; RF-017-28, RF-017-17, RF-017-29; comprobación manual M6): el resumen de «Calcular» de ``geoblender.des_propose_road`` (:func:`_propose_lines`, que
 llama :func:`summary_lines`) lleva el perfil, la longitud, las cotas de inicio y de fin, las pendientes con su abscisa y su lugar, el radio mínimo y que es una capa de líneas 3D editable en QGIS que no
@@ -241,6 +242,7 @@ import sqlite3
 import time
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import takewhile
 from typing import TYPE_CHECKING, Any
 
 import bpy
@@ -2056,9 +2058,10 @@ def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de una pista calculada (``design.preview.RoadSummary``; spec 017, T29b; RF-017-23, RF-017-17, RF-017-22; M1): su modo, su perfil, su longitud y las
     cotas de inicio y de fin, la pendiente media y la máxima con su abscisa y su lugar, el radio mínimo y las curvas, la desviación máxima del eje, el corte y el relleno **de la sección y del
     borde en líneas distintas** (y el neto) y, **en ámbar, lo que pide su confirmación expresa**: la pendiente media por encima de la del perfil (con un motivo, que queda registrado: no
-    bloquea) y la calzada que no queda en su rasante. Los avisos con su lugar (la holgura del pasillo de la ruta, los del eje, la huella recortada, los otros
+    bloquea) y la calzada que no queda en su rasante. **La de la media es un solo aviso** (:func:`_mean_confirmation_text`: la media, el límite, los tramos más empinados, la confirmación y el
+    botón; T51, H3-6) y la de la calzada, con un solo grupo de celdas, no repite el área de su aviso. Los avisos con su lugar (la holgura del pasillo de la ruta, los del eje, la huella recortada, los otros
     diseños, el salto creado, la calzada y la restricción que impide moverla, lo que no se mueve y lo que quedará obsoleto) los añade :func:`summary_lines`
-    (son los ``notices`` del cálculo)."""
+    (son los ``notices`` del cálculo, :func:`_road_notices`)."""
     summary = calculation.summary
     prepared = calculation.entity
     mode = _road_mode_text(summary.mode)  # type: ignore[union-attr]
@@ -2078,20 +2081,50 @@ def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     lines.append((tr("Net of the section and the edge: {net} m³ (cut {cut} m³ − fill {fill} m³)", net=_number(summary.net_m3), cut=_number(summary.cut_m3),  # type: ignore[union-attr]
                      fill=_number(summary.fill_m3)), False))  # type: ignore[union-attr]
     if calculation.needs_mean_confirmation:
-        lines.append((tr("The mean gradient, {mean} %, passes the {limit} % of the profile: the road is not created without your express confirmation and a "
-                         "reason, which stays recorded with who and when; the button that creates it confirms it",
-                         mean=_number(summary.gradient_mean_pct, 2), limit=_number(summary.mean_limit_pct, 2)), True))  # type: ignore[union-attr]
-    if calculation.needs_carriageway_confirmation:
+        lines.append((_mean_confirmation_text(calculation), True))
+    if calculation.needs_carriageway_confirmation and sum(1 for notice in calculation.notices if notice.code in _CARRIAGEWAY_CODES) != 1:
         lines.append((tr("{area} m² of the carriageway do not end up on the level profile of the road (see the warnings): the road is not created without your "
                          "express confirmation; the button that creates it confirms it", area=_number(summary.carriageway_area_m2)), True))  # type: ignore[union-attr]
     return lines
 
 
+_MEAN_CODE = "des.road_mean_gradient"
+_CARRIAGEWAY_CODES = frozenset({"des.road_carriageway_masks", "des.road_carriageway_entity", "des.road_carriageway_height"})
+_HELD_CODES = frozenset({"des.entity_held", "des.entity_held_constraint", "des.entity_held_masks"})
+"""Lo que no se recorta por código en el diálogo (:func:`summary_lines`): lo que una pista no mueve por una restricción, con la restricción que lo impide y su lugar, que **el informe guardado solo lleva
+en sus cuentas** (``cut_denied_cells``, ``fill_denied_cells``, ``edge_held_cells``): recortarlo lo dejaría sin decir en ningún sitio."""
+
+
+def _mean_confirmation_text(calculation: Calculation) -> str:
+    """**El único aviso de la pendiente media por encima de pm** de la ventana de crear una pista (spec 017, T51; H3-6; RF-017-17): la media y el límite, **los tramos más empinados con su abscisa y su
+    lugar** (los del aviso ``des.road_mean_gradient`` del cálculo), que no se crea sin la confirmación expresa y un motivo, que queda registrado con quién y cuándo, y que el botón que la crea la
+    confirma. Antes eran dos textos, el de la confirmación y el aviso de los tramos, que decían lo mismo y se leían dos veces. ``ValueError`` (error del programa) si el cálculo pide confirmar la
+    media y no lleva el aviso."""
+    from ...design.preview import Named  # al usarlo: habilitar no carga el cálculo
+
+    notice = next((item for item in calculation.notices if item.code == _MEAN_CODE), None)
+    if notice is None:
+        raise ValueError("el cálculo pide confirmar la pendiente media y no lleva su aviso (des.road_mean_gradient)")
+    shown, summary = language(), calculation.summary
+    stretches = ", ".join(item.text(shown) if isinstance(item, Named) else str(item) for item in notice.values["stretches"])  # type: ignore[union-attr]
+    return tr("The mean gradient, {mean} %, passes the {limit} % of the profile; the steepest stretches are: {stretches}; the road is not created without your express confirmation and a "
+              "reason, which stays recorded with who and when; the button that creates it confirms it",
+              mean=_number(summary.gradient_mean_pct, 2), limit=_number(summary.mean_limit_pct, 2), stretches=stretches)  # type: ignore[union-attr]
+
+
+def _road_notices(calculation: Calculation) -> tuple[Any, ...]:
+    """Los avisos del cálculo de una pista que siguen a su resumen en el diálogo: **sin el de los tramos más empinados de la media por encima de pm cuando pide confirmarla** (lo dice, con los
+    tramos, :func:`_mean_confirmation_text`: T51, H3-6). Lo demás, tal cual y en su orden."""
+    if not calculation.needs_mean_confirmation:
+        return calculation.notices
+    return tuple(notice for notice in calculation.notices if notice.code != _MEAN_CODE)
+
+
 def _propose_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de una propuesta del trazado calculada (``design.road_store.ProposalSummary``; spec 017, T33; RF-017-28, RF-017-17): su perfil, la longitud y las cotas de inicio y de fin, la pendiente media y la
     máxima con su abscisa y su lugar, el radio mínimo y las curvas, la desviación máxima del eje frente a la ruta (T44, S-3) y que es **una capa de líneas con Z editable en QGIS que no toca ninguna superficie**. **La pendiente media por encima de la del perfil solo avisa**
-    (en ámbar y sin pedir confirmación: no graba ninguna superficie). Los avisos con su lugar (la holgura del pasillo, los radios que bajaron del de diseño y los tramos de mayor pendiente) los añade
-    :func:`summary_lines` (son los ``notices`` del cálculo)."""
+    (en ámbar y sin pedir confirmación: no graba ninguna superficie) y lo dice **un solo aviso**, el de los tramos de mayor pendiente (``des.propose_mean_gradient``: T51, H3-6), no una línea de aquí además. Los avisos con su lugar (la holgura del
+    pasillo, los radios que bajaron del de diseño y esos tramos) los añade :func:`summary_lines` (son los ``notices`` del cálculo)."""
     summary = calculation.summary
     lines = [(tr("Proposed route «{name}» · profile «{profile}»: length {length} m · elevation {start} m at the start and {end} m at the end",
                  name=calculation.name, profile=summary.profile,  # type: ignore[union-attr]
@@ -2103,9 +2136,6 @@ def _propose_lines(calculation: Calculation) -> list[tuple[str, bool]]:
                  y=_number(summary.gradient_max_y, 1)), False),  # type: ignore[union-attr]
              _curves_line(summary.radius_min_m, summary.curves),  # type: ignore[union-attr]
              _deviation_line(summary.axis_deviation_m, False)]  # type: ignore[union-attr]
-    if summary.mean_exceeded:  # type: ignore[union-attr]
-        lines.append((tr("The mean gradient, {mean} %, passes the {limit} % of the profile: it is only a warning, the route is created without confirmation because it changes no surface",
-                         mean=_number(summary.gradient_mean_pct, 2), limit=_number(summary.mean_limit_pct, 2)), True))  # type: ignore[union-attr]
     lines.append((tr("It is created as a layer of 3D lines that you can edit in QGIS: it changes no surface and is not an entity"), False))
     return lines
 
@@ -2114,14 +2144,6 @@ ACCESS_ROWS = 10
 """Cuántas filas enseña cada lista de la accesibilidad en la ventana de crear (como los ``SUMMARY_ITEMS`` de ``design.preview``): las demás, con una nota; el resultado entero se registra al crear."""
 _ACCESS_ITEM_NOTICES = frozenset({"des.access_berm_missing", "des.access_platform_missing", "des.access_zone_missing", "des.access_zone_missing_unplaced", "des.access_more"})
 """Los avisos del resumen de una accesibilidad que dicen **qué no se comunica**: los dicen las listas, con su lugar y su «Ir a»; el resumen que se enseña no los repite."""
-
-
-def _access_lines(calculation: Calculation) -> list[tuple[str, bool]]:
-    """El resumen de una accesibilidad calculada (``design.access_store.AccessSummary``; spec 017, T30; RF-017-24, RF-017-25, M3): la cabecera (cuántos tramos de berma, plataformas y zonas «requiere acceso» quedan
-    comunicados), las cotas mínima y máxima alcanzables y el área, la cota mínima sobre la final de una cantera, los avisos del cálculo (un punto de entrada que no está en terreno transitable, nada
-    alcanzado) y lo que quedará obsoleto. **Lo que no se comunica** no sale aquí: lo dicen las listas (:func:`access_sections`), cada cosa con su lugar y su «Ir a»."""
-    shown = language()
-    return [(notice.text(shown), notice.severity == "warning") for notice in calculation.notices if notice.code not in _ACCESS_ITEM_NOTICES]
 
 
 def _cut_rows(rows: list[AccessRow], limit: int = ACCESS_ROWS) -> tuple[tuple[AccessRow, ...], int]:
@@ -2226,7 +2248,40 @@ def draw_access_lists(layout: Any, width_px: int) -> None:
             box.label(text=tr("… and {more} more (the whole list is recorded when the accessibility is created)", more=section.more), translate=False)
 
 
-def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+SUMMARY_WIDTH_PX = 520
+"""El ancho de los diálogos de «Calcular» (px a escala 1,0): con el que se cuentan las filas que ocupa el resumen (:func:`summary_lines`); es el de ``bl.ops.des.DIALOG_WIDTH`` (una prueba lo comprueba:
+``bl.ops`` importa esta ventana y no al revés)."""
+_DIALOG_CAPPED = frozenset({design_provenance.ROAD, design_provenance.ROAD_PROPOSE, design_provenance.ROAD_ACCESS})
+"""Los tipos de operación cuyo resumen, en el diálogo, se recorta (T51; H3-4): los de las pistas, que dieron más de veinte avisos en el H3. Los demás (la plataforma, los acopios, el contrafuerte…) no se
+tocan: ya tienen sus propios topes de tramos, grupos y candidatos (``SUMMARY_STRETCHES``, ``SUMMARY_GROUPS``, ``SUMMARY_ITEMS``) y en el H3 no pasaron de la ventana (``tasks.md``, T51)."""
+_ACCESS_HEAD_NOTICES = frozenset({"des.access_summary", "des.access_levels", "des.access_final"})
+"""La cabecera del resumen de una accesibilidad (cuántas quedan comunicadas, las cotas y la cota sobre la final): lo que el diálogo no recorta."""
+
+
+def _dialog_rows(text: str, alert: bool) -> int:
+    """Las filas de etiqueta que ocupa una línea del resumen en el diálogo: partida al ancho de su diálogo (:func:`draw_summary`), con icono si va en alerta."""
+    return max(1, len(labels.wrapped(text, labels.dialog_width(SUMMARY_WIDTH_PX), icon=alert)))
+
+
+def _lines_more_text(count: int) -> str:
+    """La línea que dice cuántas líneas del resumen no caben en el diálogo (T51): las dice el informe de la orden."""
+    if _one(count):
+        return tr("… and 1 more line of the summary (the report of the order has it)")
+    return tr("… and {count} more lines of the summary (the report of the order has them all)", count=_number(count))
+
+
+def _access_list_rows() -> int:
+    """Las filas de etiqueta que ocupan, debajo del resumen, las tres listas de la accesibilidad (:func:`draw_access_lists`: su título, cada fila partida al ancho que le deja su «Ir a», la nota de
+    las que faltan y el margen de su caja): el resumen que se enseña las descuenta de su tope."""
+    width = labels.dialog_width(SUMMARY_WIDTH_PX - 90)
+    found = 0
+    for section in _ACCESS.sections:
+        found += 2 + (0 if section.rows else 1) + (1 if section.more else 0)
+        found += sum(max(1, len(labels.wrapped(row.text, width, icon=row.alert))) for row in section.rows)
+    return found
+
+
+def summary_lines(calculation: Calculation, *, dialog: bool = False) -> list[tuple[str, bool]]:
     """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
     cotas y el desmonte y el terraplén frente a la superficie de partida (las cifras que se
@@ -2235,8 +2290,15 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     excavable (spec 014, T20; RF-014-01), sus celdas y su área; de una cantera con dos superficies
     (spec 014, T21; RF-014-12), lo de :func:`_quarry_lines`; de una transición (T28), lo de
     :func:`_transition_lines`; de un diseño «solo relleno» (T30), lo de :func:`_fill_only_lines`;
-    de un ajuste a un límite nuevo (T33), lo de :func:`_refit_lines`. Aquí solo se escriben."""
+    de un ajuste a un límite nuevo (T33), lo de :func:`_refit_lines`. Aquí solo se escriben.
+
+    **Sin ``dialog``**, el resumen entero: es lo que dice el informe de la orden. **Con ``dialog``**, el que se dibuja (:func:`show_summary`) y, **solo el de las pistas** (la pista, la propuesta
+    del trazado y la accesibilidad: spec 017, T51; H3-4), recortado para que «Crear» quepa en la ventana: hasta tres avisos de cada código (``design.preview.limit_notices``: «… y 22 avisos como
+    éste (en el informe)»; lo que la pista no mueve por una restricción, no) y un tope de ``design.preview.SUMMARY_ROWS`` filas (``fit_summary``: las cifras, las alertas y después las notas, y una
+    línea con cuántas líneas faltan), con **las filas de las listas descontadas** en la accesibilidad. El cálculo, y lo que se guarda en el informe de la operación, no se tocan."""
     lines: list[tuple[str, bool]] = []
+    notices: Iterable[Any] = calculation.notices
+    protect = 0
     if calculation.op_type == design_provenance.PLATFORM:
         lines.extend(_platform_lines(calculation))
     elif calculation.op_type == design_provenance.STOCKPILE_REMOVAL:
@@ -2247,10 +2309,12 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
         lines.extend(_buttress_lines(calculation))
     elif calculation.op_type == design_provenance.ROAD:
         lines.extend(_road_lines(calculation))
+        notices = _road_notices(calculation)
     elif calculation.op_type == design_provenance.ROAD_PROPOSE:
         lines.extend(_propose_lines(calculation))
-    elif calculation.op_type == design_provenance.ROAD_ACCESS:
-        return _access_lines(calculation)  # sus avisos ya son su resumen (sin lo que no se comunica, que dicen las listas): no se añaden otra vez
+    elif calculation.op_type == design_provenance.ROAD_ACCESS:  # sus avisos ya son su resumen (sin lo que no se comunica, que dicen las listas): la cabecera no se recorta
+        notices = [notice for notice in calculation.notices if notice.code not in _ACCESS_ITEM_NOTICES]
+        protect = len(list(takewhile(lambda notice: notice.code in _ACCESS_HEAD_NOTICES, notices)))
     elif calculation.op_type in design_provenance.STOCKPILE_DETECT_TYPES:
         pass  # la detección lo dice todo en sus avisos (``StockpileSummary.notices``: la cabecera, los acopios, los candidatos): spec 016, T35
     elif calculation.op_type == design_provenance.QUARRY:
@@ -2289,8 +2353,19 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
                          fill=_number(report.fill_m3), area=_number(report.moved_area_m2)),
                       False))
         lines.extend(_bench_lines(report, berms))
-    lines.extend((notice.text(language()), notice.severity == "warning")
-                 for notice in calculation.notices)
+    capped = dialog and calculation.op_type in _DIALOG_CAPPED
+    if capped:
+        from ...design import preview  # al usarlo: habilitar no carga el cálculo
+
+        notices = preview.limit_notices(notices, exempt=_HELD_CODES)
+    head = len(lines)
+    weights = [1] * head
+    for notice in notices:
+        lines.append((notice.text(language()), notice.severity == "warning"))
+        weights.append(int(notice.values["count"]) if notice.code == "des.summary_more" else 1)  # «… y 22 avisos como éste» resume 22 líneas del resumen entero
+    if capped:
+        budget = preview.SUMMARY_ROWS - (_access_list_rows() if calculation.op_type == design_provenance.ROAD_ACCESS else 0)
+        lines = preview.fit_summary(lines, _dialog_rows, max(1, budget), protect=head + protect, more=_lines_more_text, weights=weights)
     return lines
 
 
@@ -2411,7 +2486,7 @@ def show_summary(calculation: Calculation | None) -> None:
         title = tr("Benching «{name}» in {version}", name=calculation.name,
                    version=calculation.version)
     shown.summary_title = title
-    for text, alert in summary_lines(calculation):
+    for text, alert in summary_lines(calculation, dialog=True):
         line = shown.summary.add()
         line.name, line.alert = text, alert
 

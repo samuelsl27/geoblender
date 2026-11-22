@@ -350,11 +350,10 @@ class RoadExtraOpsTest(road_ops.RoadOpsTest):
         self.assertTrue(held.outcome.mean_exceeded)
         self.assertFalse(held.needs_mean_confirmation or held.needs_carriageway_confirmation)
         self.assertGreater(held.summary.gradient_mean_pct, held.summary.mean_limit_pct)
-        alerts = [text for text, alert in self.summary() if alert and text.startswith("La pendiente media, del ")]
-        self.assertTrue(alerts, self.summary())
-        self.assertIn("pasa del 1,00 % del perfil: es solo un aviso", alerts[0])
-        warned = [text for text, alert in self.summary()[len(self.summary()) - len(held.notices):] if alert and "pendiente media" in text and "perfil" in text]
-        self.assertEqual(len(warned), 1, "también como aviso del trazado, con sus tramos")
+        warned = [text for text, alert in self.summary() if alert and "pendiente media" in text.lower() and "perfil" in text]
+        self.assertEqual(len(warned), 1, "un solo aviso en el diálogo (H3-6): el del trazado, con la media, el límite y sus tramos más empinados, sin una línea aparte que diga lo mismo")
+        self.assertTrue(warned[0].startswith("Trazado propuesto «"), warned)
+        self.assertIn("los tramos más empinados son: ", warned[0])
         self.assertIn("es solo un aviso: la propuesta no cambia ninguna superficie y se crea sin confirmación", warned[0])
         self.assertNotIn("no se crea sin su confirmación", warned[0], "el aviso de la pista pide confirmar; el de la propuesta, no")
         dialog = mock.Mock(return_value={"RUNNING_MODAL"})

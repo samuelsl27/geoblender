@@ -21,6 +21,7 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
 import importlib
+import re
 import unittest
 from types import ModuleType, SimpleNamespace
 from unittest import mock
@@ -66,6 +67,8 @@ class SidebarTextsTest(unittest.TestCase):
         cls.access_store = _module("design.access_store")
         cls.i18n = _module("core.i18n")
         cls.constraint_panels = _module("bl.ui.constraint_panels")
+        cls.labels = _module("bl.ui.labels")
+        cls.dprov = _module("design.provenance")
 
     def setUp(self) -> None:
         self.addCleanup(self.i18n.set_language, self.i18n.language())
@@ -332,6 +335,202 @@ class SidebarTextsTest(unittest.TestCase):
         self.assertIn("Una con el lugar roto", shown)
         alerts = {item.text for item in layout.of_kind("label") if item.alert}
         self.assertTrue(any("no comunicada" in text for text in alerts), "las que no se comunican, en alerta")
+
+    # --- e: el diálogo de «Calcular» con muchos avisos (T51; hallazgos H3-4 y H3-6) -------------------
+
+    ROW_PX, GAP_PX, CHROME_PX, WINDOW_PX = 20, 5, 100, 1001
+    """El modelo del diálogo (escala 1,0): 20 px por fila de etiqueta, 5 px entre una línea del resumen y la siguiente (``templatespace``), 100 px de título, botones y márgenes, y la ventana del H3."""
+
+    def notice(self, kind: str, /, **values: object) -> object:
+        return self.preview.Notice(kind, values)
+
+    def radii(self, count: int) -> tuple:
+        """Un aviso de radio reducido por vértice: ``count`` avisos, cada uno con su vértice, su radio y su lugar."""
+        return tuple(self.notice("des.road_radius_reduced", entity="RDW-004", vertex=vertex, radius=20.0, fitted=13.2, x=WEST + vertex, y=NORTH) for vertex in range(1, count + 1))
+
+    def masks(self, count: int) -> tuple:
+        return tuple(self.notice("des.road_carriageway_masks", entity="RDW-004", area=100.0 * group, difference=0.4, blocker="Concesión (concesion)", x=WEST, y=NORTH + group)
+                     for group in range(1, count + 1))
+
+    def calculation(self, notices: tuple, *, op_type: str | None = None, mean: bool = False, carriageway: bool = False, exceeded: bool = False) -> SimpleNamespace:
+        """El cálculo abierto de una pista (o la propuesta o la accesibilidad de ``op_type``) con lo que lee el resumen puesto a mano: ``notices`` y, de la pista, sus dos confirmaciones."""
+        summary = SimpleNamespace(mode="trace", code="RDW-004", profile="Pista principal", length_m=387.0, start_level_m=140.0, end_level_m=115.0, gradient_mean_pct=10.5, gradient_max_pct=12.0,
+                                  gradient_max_station_m=64.0, gradient_max_x=700064.5, gradient_max_y=4400030.5, radius_min_m=13.2, curves=13, cut_m3=530.0, fill_m3=135.0, net_m3=395.0,
+                                  section_cut_m3=410.0, section_fill_m3=95.0, edge_cut_m3=120.0, edge_fill_m3=40.0, axis_deviation_m=1.25, mean_exceeded=exceeded, mean_limit_pct=10.0,
+                                  carriageway_area_m2=804.0 if carriageway else 0.0)
+        return SimpleNamespace(summary=summary, name="Pista D", version="V01", op_type=op_type or self.dprov.ROAD, entity=SimpleNamespace(profile=SimpleNamespace(name="Pista principal")),
+                               notices=notices, needs_mean_confirmation=mean, needs_carriageway_confirmation=carriageway)
+
+    def rows(self, lines: list) -> int:
+        """Las filas de etiqueta que ocupan ``lines`` en el diálogo (cada una partida al ancho de su diálogo, con icono si va en alerta), como las dibuja ``draw_summary``."""
+        width = self.labels.dialog_width(self.panels.SUMMARY_WIDTH_PX)
+        return sum(len(self.labels.wrapped(text, width, icon=alert)) for text, alert in lines)
+
+    def missing(self, full: list, shown: list, said: str) -> int:
+        """Las líneas del resumen entero (``full``) que el del diálogo (``shown``) no enseña ni resumen sus líneas «… y 22 avisos ``said``»: las que dice su última línea."""
+        kept = shown[:-1]
+        summarised = sum(int(re.search(r"\d+", text).group()) for text, _alert in kept if said in text)
+        return len(full) - len([text for text, _alert in kept if said not in text]) - summarised
+
+    def about(self, lines: list, *words: str) -> list:
+        """Las líneas (texto) que dicen todas las ``words``."""
+        return [text for text, _alert in lines if all(word in text for word in words)]
+
+    def test_e_a_the_dialog_shows_three_warnings_of_each_code_and_the_report_of_the_order_has_them_all(self) -> None:
+        """RF-017-14, RF-017-23, H3-4: con 25 avisos de radio (uno por vértice) el resumen del diálogo tiene **tres** de ellos y «… y 22 avisos como éste (en el informe)» justo detrás, **cabe en el
+        tope de filas** y «Crear» queda dentro de la ventana de 1001 px; el cálculo conserva los 25 y lo que se dice en el informe de la orden (``summary_lines`` sin recortar) lleva **los 25, cada uno
+        con su vértice, su radio y su lugar**; la cabecera del resumen es la misma; en los dos idiomas."""
+        calculation = self.calculation(self.radii(25))
+        self.assertEqual(self.panels.SUMMARY_WIDTH_PX, _module("bl.ops.des").DIALOG_WIDTH, "el ancho con que se cuentan las filas es el del diálogo")
+        for language, word, more in (("es", "vértice", "… y 22 avisos como éste (en el informe)."), ("en", "vertex", "… and 22 more warnings like this one (in the report).")):
+            with self.subTest(language=language):
+                self.i18n.set_language(language)
+                full, shown = self.panels.summary_lines(calculation), self.panels.summary_lines(calculation, dialog=True)
+                self.assertEqual(len(self.about(full, word)), 25, "el informe de la orden lleva los 25")
+                self.assertEqual(len(self.about(shown, word)), 3)
+                self.assertEqual(shown[:7], full[:7], "las cifras son las mismas")
+                self.assertEqual(shown[10], (more, True), "justo tras el tercero, en ámbar como los avisos que recorta")
+                self.assertEqual(len(shown), 11)
+                rows = self.rows(shown)
+                self.assertLessEqual(rows, self.preview.SUMMARY_ROWS)
+                self.assertLessEqual(rows * self.ROW_PX + len(shown) * self.GAP_PX + self.CHROME_PX, self.WINDOW_PX, "«Crear» queda dentro de la ventana")
+        self.assertEqual(len(calculation.notices), 25, "lo calculado no se toca: lo que se guarda en el informe es todo")
+        self.i18n.set_language("es")
+        proposed = self.panels.summary_lines(self.calculation(self.radii(25), op_type=self.dprov.ROAD_PROPOSE), dialog=True)
+        self.assertEqual((len(self.about(proposed, "vértice")), proposed[-1][0]), (3, "… y 22 avisos como éste (en el informe)."), "la propuesta del trazado también")
+        held = tuple(self.notice("des.entity_held_constraint", entity="RDW-004", area=420.0, constraint=f"restriccion_{index}", x=WEST, y=NORTH + index) for index in range(1, 5))
+        small = self.calculation(held)
+        self.assertEqual(self.panels.summary_lines(small, dialog=True), self.panels.summary_lines(small), "lo que la pista no mueve por una restricción, si cabe, se enseña entero y sin «como éste»")
+        self.assertEqual(len(self.about(self.panels.summary_lines(small, dialog=True), "restricción «restriccion_")), 4)
+        view = self.panels.view()
+        self.addCleanup(self.panels.show_summary, None)
+        self.panels.show_summary(calculation)
+        self.assertEqual([(line.name, bool(line.alert)) for line in view.summary], self.panels.summary_lines(calculation, dialog=True), "la vista guarda lo que se dibuja: el resumen del diálogo")
+        self.assertEqual(len(view.summary), 11)
+        self.assertEqual(view.summary_title, "Pista «Pista D» en V01")
+        for vertex in (1, 13, 25):
+            place = f"(x = {self.n(WEST + vertex, 1)} m, y = {self.n(NORTH, 1)} m)"
+            self.assertTrue(self.about(self.panels.summary_lines(calculation), f"en el vértice {vertex} el radio baja de 20,0 m a 13,2 m", place), vertex)
+
+    def test_e_a_b_the_report_of_the_order_says_the_whole_summary_and_the_dialog_the_cut_one(self) -> None:
+        """RF-017-14, H3-4: al terminar «Calcular» (``_CalculateAndCreate._finished``) la orden dice en su informe **el resumen entero**, con los 25 avisos de radio, cada uno con su vértice, su radio y su
+        lugar, en ámbar los avisos y sin ámbar lo demás; y la vista deja el que se dibuja, el recortado: el informe de la orden es donde queda lo que el diálogo no enseña."""
+        calculation, reports = self.calculation(self.radii(25)), []
+        des_ops = _module("bl.ops.des")
+        self.addCleanup(des_ops._HELD.clear)
+        self.addCleanup(self.panels.show_summary, None)
+        self.i18n.set_language("es")
+        fake = SimpleNamespace(in_steps=False, _report=lambda level, text: reports.append((next(iter(level)), text)))
+        self.assertEqual(des_ops._CalculateAndCreate._finished(fake, SimpleNamespace(window=None), calculation), {"FINISHED"})
+        self.assertEqual(reports, [("WARNING" if alert else "INFO", text) for text, alert in self.panels.summary_lines(calculation)])
+        self.assertEqual(len([text for _level, text in reports if "en el vértice" in text]), 25)
+        self.assertEqual(len(self.panels.view().summary), 11, "la vista, la del diálogo")
+
+    def test_e_b_over_the_rows_of_the_cap_the_alerts_stay_the_notes_go_and_it_says_how_many_lines_are_missing(self) -> None:
+        """RF-017-14, RF-017-22, H3-4: el peor caso de la rampa —25 radios, cinco grupos de calzada que no queda en su rasante, cuatro restricciones que no deja mover, la nota de la ruta y seis notas
+        de tramos— pasa del tope de filas aun recortado por códigos: se enseñan **la cabecera, las alertas y, si caben, las notas** (nunca una nota mientras falta una alerta), en su orden, **sin pasar
+        del tope** y con la línea «… y N líneas más del resumen (el informe de la orden las lleva todas)»; las restricciones que no deja mover (de las que el informe guardado solo tiene las cuentas)
+        no se recortan por código; el resumen de siempre (sin ``dialog``) las lleva todas."""
+        held = tuple(self.notice("des.entity_held_constraint", entity="RDW-004", area=420.0, constraint=f"restriccion_{index}", name=f"Restricción {index}", x=WEST, y=NORTH + index)
+                     for index in range(1, 5))
+        notes = tuple(self.notice("des.edge_stretch", stretch=index, pairs=12, maximum=1.25, x=WEST, y=NORTH) for index in range(1, 7))
+        route = self.notice("des.road_route_margin", entity="RDW-004", mesh=2.0, margin=60.0, expanded=70, budget=5_000_000)
+        calculation = self.calculation((route, *self.radii(25), *self.masks(5), *held, *notes), carriageway=True)
+        self.i18n.set_language("es")
+        full, shown = self.panels.summary_lines(calculation), self.panels.summary_lines(calculation, dialog=True)
+        self.assertEqual(len(full), 7 + 1 + 1 + 25 + 5 + 4 + 6)
+        self.assertEqual(shown[:8], full[:8], "la cabecera, con la línea de la calzada que pide confirmar, entera")
+        self.assertLessEqual(self.rows(shown), self.preview.SUMMARY_ROWS)
+        self.assertLessEqual(self.rows(shown) * self.ROW_PX + len(shown) * self.GAP_PX + self.CHROME_PX, self.WINDOW_PX)
+        kept = shown[:-1]
+        self.assertEqual(shown[-1], (f"… y {self.missing(full, shown, 'como éste')} líneas más del resumen (el informe de la orden las lleva todas)", False))
+        self.assertEqual([line for line in kept if "como éste" not in line[0]], [line for line in full if line in kept], "en el orden de siempre")
+        hidden_alert = any(alert and line not in kept for line, alert in full)
+        self.assertTrue(hidden_alert, "el caso pasa del tope: falta alguna alerta")
+        self.assertFalse([text for text, alert in kept[8:] if not alert], "ninguna nota se enseña mientras falta una alerta")
+        self.assertEqual(len(self.about(full, "diferencia máxima")), 5)
+        self.assertEqual(len(self.about(kept, "diferencia máxima")), 2, "los grupos de calzada que caben, con su causa y su lugar: el resto, en la línea de lo que falta")
+        self.assertEqual(len(self.about(full, "restricción «restriccion_")), 4, "el informe de la orden lleva lo que no se mueve, entero (el guardado solo tiene sus cuentas)")
+        self.assertEqual(len(self.about(kept, "como éste")), 1, "la de los radios; la de los grupos de calzada va tras el tercero, que no cabe, y cuenta en lo que falta; lo que no se mueve no tiene")
+        self.i18n.set_language("en")
+        english = self.panels.summary_lines(calculation, dialog=True)  # en inglés las líneas miden otras filas: el corte puede ser otro
+        self.assertEqual(english[-1][0], f"… and {self.missing(self.panels.summary_lines(calculation), english, 'like this one')} more lines of the summary (the report of the order has them all)")
+        self.assertLessEqual(self.rows(english), self.preview.SUMMARY_ROWS)
+
+    def test_e_c_the_mean_gradient_above_pm_is_said_once_with_its_stretches_and_the_carriageway_once_per_group(self) -> None:
+        """RF-017-17, RF-017-22, RF-017-28, H3-6: con la pendiente media por encima de pm el diálogo tiene **un solo aviso**, el que pide la confirmación y lleva los tramos más empinados con su
+        abscisa y su lugar, quién y cuándo y que el botón la confirma, y no el texto de la confirmación y el aviso de los tramos por separado; ya confirmada (no pide nada), el aviso de los tramos; la
+        propuesta del trazado, que solo avisa, también uno; la calzada fuera de su rasante con **un solo grupo** da una línea (la del aviso con su causa y su lugar) y con varios, la suma y cada grupo."""
+        stretches = tuple(self.preview.Named("des.road_stretch", {"station": 40.0 * index, "x": WEST + index, "y": NORTH, "gradient": 11.5}) for index in range(1, 4))
+        mean = self.notice("des.road_mean_gradient", entity="RDW-004", mean=10.5, limit=10.0, stretches=stretches)
+        for language, word, button in (("es", "pendiente media", "el botón que la crea lo confirma"), ("en", "mean gradient", "the button that creates it confirms it")):
+            with self.subTest(language=language):
+                self.i18n.set_language(language)
+                asked = self.panels.summary_lines(self.calculation((mean,), mean=True, exceeded=True))
+                (single,) = [(text, alert) for text, alert in asked if word in text and "Gradient: " not in text and "Pendiente: " not in text]
+                self.assertTrue(single[1], "en ámbar")
+                self.assertIn(button, single[0])
+                for item in stretches:
+                    self.assertIn(item.text(language), single[0], "los tramos más empinados, con su abscisa y su lugar")
+                self.assertEqual(len(asked), 8, "la cabecera de siempre y un solo aviso, sin el de los tramos aparte")
+                confirmed = self.panels.summary_lines(self.calculation((mean,), mean=False, exceeded=True))
+                self.assertEqual(len([text for text, _alert in confirmed if word in text and "Gradient: " not in text and "Pendiente: " not in text]), 1)
+        self.i18n.set_language("es")
+        plain = self.panels.summary_lines(self.calculation((mean,), mean=True, exceeded=True))
+        self.assertTrue(plain[7][0].startswith("La pendiente media, del 10,50 %, pasa del 10,00 % del perfil"), "empieza como la línea de siempre")
+        proposed = self.panels.summary_lines(self.calculation((self.notice("des.propose_mean_gradient", entity="Trazado", mean=10.5, limit=10.0, stretches=stretches),), op_type=self.dprov.ROAD_PROPOSE,
+                                                               exceeded=True))
+        self.assertEqual(len(self.about(proposed, "pendiente media")), 1, "la propuesta: un solo aviso, con sus tramos")
+        self.assertIn("es solo un aviso", self.about(proposed, "pendiente media")[0])
+        one = self.panels.summary_lines(self.calculation(self.masks(1), carriageway=True))
+        self.assertEqual(len(self.about(one, "no quedan en su rasante")), 1, "un solo grupo: la línea de la causa y el lugar, sin repetir el área y la confirmación")
+        self.assertEqual(len(self.about(one, "Concesión")), 1)
+        two = self.panels.summary_lines(self.calculation(self.masks(2), carriageway=True))
+        self.assertEqual(len(self.about(two, "no quedan en su rasante")), 3, "con varios: la suma (véanse los avisos) y cada grupo")
+        self.assertEqual(len(self.about(two, "(véanse los avisos)")), 1)
+
+    def test_e_d_the_accessibility_summary_keeps_its_header_and_leaves_room_for_its_lists(self) -> None:
+        """RF-017-24, RF-017-25, H3-4: el resumen de una accesibilidad (la cabecera, las cotas y los avisos de sus puntos de entrada) enseña **tres avisos de cada código** y deja lo que ocupan sus tres
+        listas (con su «Ir a») del tope de filas: con listas largas se queda con la cabecera, las alertas que quepan y la línea de lo que falta; sin listas, con las suyas de siempre; el informe de
+        la orden (sin ``dialog``) lleva los siete avisos."""
+        self.i18n.set_language("es")
+        head = (self.notice("des.access_summary", entity="Acc", code="ACC-003", berms=4, berms_reached=3, platforms=2, platforms_reached=1, zones=1, zones_reached=1),
+                self.notice("des.access_levels", entity="Acc", z_min=115.0, z_max=140.0, area=28384.0))
+        entries = tuple(self.notice("des.access_entry_not_walkable", layer="Entradas", entity="Acc", value=f"E{index}", x=WEST + index, y=NORTH) for index in range(1, 8))
+        calculation = self.calculation((*head, *entries), op_type=self.dprov.ROAD_ACCESS)
+        sections = self.panels._ACCESS.sections
+        self.addCleanup(setattr, self.panels._ACCESS, "sections", sections)
+        self.panels._ACCESS.sections = []
+        full, shown = self.panels.summary_lines(calculation), self.panels.summary_lines(calculation, dialog=True)
+        self.assertEqual((len(full), len(shown)), (9, 6), "los dos de la cabecera, tres avisos y la línea de los otros cuatro")
+        self.assertEqual(shown[:2], full[:2])
+        self.assertEqual(shown[5], ("… y 4 avisos como éste (en el informe).", True))
+        rows = tuple(self.panels.AccessRow(f"Tramo de berma {number} de «des_brm_cantera»: cota 100,00 m, 400 m² · no comunicado", True, ("1", "2", "3")) for number in range(10))
+        self.panels._ACCESS.sections = [self.panels.AccessSection("Tramos de berma", rows, 3)] * 3
+        crowded = self.panels.summary_lines(calculation, dialog=True)
+        self.assertEqual(crowded[:2], full[:2], "la cabecera se enseña aunque las listas llenen el tope")
+        self.assertEqual(len(crowded), 3)
+        self.assertEqual(crowded[2], ("… y 7 líneas más del resumen (el informe de la orden las lleva todas)", False))
+        self.assertEqual(len(self.panels.access_report_lines()), 30, "lo que no se comunica sigue entero en el informe de la orden")
+        short = (self.panels.AccessRow("Plataforma «Taller» (PLT-002): no comunicada", True, ("1", "2", "3")),)
+        self.panels._ACCESS.sections = [self.panels.AccessSection("Plataformas", short, 0)]
+        self.assertEqual(self.panels._access_list_rows(), 3, "el título, su fila y el margen de su caja")
+        self.assertEqual(len(self.panels.summary_lines(calculation, dialog=True)), 6, "con una lista corta caben los mismos avisos")
+        self.panels._ACCESS.sections = [self.panels.AccessSection("Plataformas", short * 6, 2)] * 2
+        self.assertEqual(self.panels._access_list_rows(), 2 * (2 + 6 + 1))
+        listed = self.panels.summary_lines(calculation, dialog=True)
+        self.assertEqual(len(listed), 5, "la cabecera, dos avisos y la línea de los demás: el resumen deja a las listas lo que ocupan")
+        self.assertEqual(listed[-1], ("… y 5 líneas más del resumen (el informe de la orden las lleva todas)", False), "el aviso que no cabe, los otros 4 que resumía la línea de «como éste» y nada más")
+        self.assertLessEqual(self.rows(listed), self.preview.SUMMARY_ROWS - self.panels._access_list_rows())
+        long = self.panels.AccessRow("Tramo de berma 3 de «des_brm_cantera»: cota 100,00 m, 400 m² · no comunicado", True, ("1", "2", "3"))
+        self.panels._ACCESS.sections = [self.panels.AccessSection("Zonas", (), 0), self.panels.AccessSection("Bermas", (long,), 0)]
+        self.assertEqual(self.panels._access_list_rows(), 3 + 4, "una lista vacía dice «Nada que listar»; una fila a la que su «Ir a» deja menos ancho se parte en dos")
+        width, text = self.labels.dialog_width(self.panels.SUMMARY_WIDTH_PX), "m"
+        while self.labels.label_px(f"{text} m", icon=False) <= width:
+            text += " m"
+        self.assertEqual((self.panels._dialog_rows(text, False), self.panels._dialog_rows(text, True)), (1, 2), "la línea que cabe justo sin el icono de la alerta, con él, pasa a dos filas")
+        self.assertEqual(self.panels._lines_more_text(1), "… y 1 línea más del resumen (el informe de la orden la lleva)")
+        self.assertEqual(self.panels._lines_more_text(5), "… y 5 líneas más del resumen (el informe de la orden las lleva todas)")
 
     # --- z: el registro --------------------------------------------------------------------------------
 

@@ -481,6 +481,10 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
         self.assertEqual(len(alerts), 1, self.summary())
         self.assertIn("pasa del 10,00 % del perfil", alerts[0])
         self.assertIn("el botón que la crea lo confirma", alerts[0])
+        mean = [text for text, alert in self.summary() if alert and "pendiente media" in text.lower()]
+        self.assertEqual(mean, alerts, "un solo aviso de la media en el diálogo (H3-6): la confirmación y los tramos más empinados, juntos, no dos textos")
+        self.assertIn("los tramos más empinados son: ", alerts[0])
+        self.assertIn("abscisa", alerts[0])
         dialog = mock.Mock(return_value={"RUNNING_MODAL"})
         context = SimpleNamespace(window=platform_ops.window(), selected_objects=(), window_manager=SimpleNamespace(invoke_props_dialog=dialog))
         window = self.fake(confirm=True)
@@ -519,7 +523,7 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
 
     def test_d_b_a_carriageway_off_its_level_is_not_created_without_the_confirmation(self) -> None:
         """RF-017-22, RF-017-17 (M1): «sobre un eje» pegado al límite legal de la ladera —la banda de 2 m hacia dentro no admite corte y el terreno sube hacia ella— deja **calzada que no
-        queda en su rasante**: el resumen lo dice en ámbar con su área, la ventana de crear pone «Confirmar y crear» **sin** campo de motivo (no hay media que confirmar), sin la
+        queda en su rasante**: el resumen lo dice en ámbar con su área (en **una sola línea**: un solo grupo de celdas), la ventana de crear pone «Confirmar y crear» **sin** campo de motivo (no hay media que confirmar), sin la
         confirmación no se crea (``des.road_carriageway_unconfirmed``, y el cálculo sigue abierto) y con ella se crea y la confirmación queda en los ajustes con su área, quién y
         cuándo."""
         self.refresh()
@@ -527,10 +531,13 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
                                     "in_steps": False})
         self.assertTrue(held.needs_carriageway_confirmation)
         self.assertFalse(held.needs_mean_confirmation)
-        alerts = [text for text, alert in self.summary() if alert and " de la calzada no quedan en su rasante (véanse los avisos)" in text]
-        self.assertEqual(len(alerts), 1, self.summary())
-        self.assertTrue(alerts[0].startswith(f"{self.i18n.format_number(held.summary.carriageway_area_m2, 0)} m² de la calzada"), alerts)
-        self.assertTrue(any(alert and "no quedan en su rasante" in text and "Concesión" in text for text, alert in self.summary()), "el aviso con la restricción que lo impide y su lugar")
+        self.assertEqual(len(held.outcome.off_level), 1, "un solo grupo de celdas")
+        alerts = [text for text, alert in self.summary() if alert and "no quedan en su rasante" in text]
+        self.assertEqual(len(alerts), 1, "un solo grupo: una sola línea (H3-6), la del aviso con su área, la restricción que lo impide y su lugar, sin la suma que diría lo mismo")
+        self.assertIn("Concesión", alerts[0])
+        self.assertIn(" m² de la calzada no quedan en su rasante", alerts[0])
+        self.assertIn("no se crea sin su confirmación expresa", alerts[0])
+        self.assertFalse([text for text, _alert in self.summary() if "(véanse los avisos)" in text])
         dialog = mock.Mock(return_value={"RUNNING_MODAL"})
         context = SimpleNamespace(window=platform_ops.window(), selected_objects=(), window_manager=SimpleNamespace(invoke_props_dialog=dialog))
         window = self.fake(confirm=True)
