@@ -211,18 +211,21 @@ class PolygonsPublicNamesTest(unittest.TestCase):
 
 
 class OffsetModuleRulesTest(unittest.TestCase):
-    """P-2: ``gis/offset.py`` solo importa numpy, la biblioteca estándar y ``polygons``."""
+    """P-2: ``gis/offset.py`` solo importa numpy, la biblioteca estándar, ``polygons`` y el
+    ``Progress`` de ``core.project.model``."""
 
     def test_imports(self) -> None:
         source = Path(offset.__file__).read_text(encoding="utf-8")
-        allowed_top = {"__future__", "math", "collections", "dataclasses", "numpy"}
+        allowed_top = {"__future__", "math", "collections", "contextlib", "dataclasses", "numpy"}
         for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     self.assertIn(alias.name.split(".")[0], allowed_top)
             elif isinstance(node, ast.ImportFrom):
                 if node.level:
-                    self.assertEqual((node.level, node.module), (1, "polygons"))
+                    # T07: ``polygons`` y el ``Progress`` de los pasos (como ``gis.search``).
+                    self.assertIn((node.level, node.module),
+                                  {(1, "polygons"), (2, "core.project.model")})
                 else:
                     self.assertIn((node.module or "").split(".")[0], allowed_top)
 

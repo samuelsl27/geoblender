@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Desfase de una polilínea cerrada con distancia por arista: simplificar y curva cruda (spec 018,
-RF-018-10; plan 018 §5.4 A1 y A3, P-2 y P-3).
+"""Desfase de una polilínea cerrada con distancia por arista: simplificar, curva cruda y
+desfase completo (spec 018, RF-018-10; plan 018 §5.4 A1, A3 y A4, P-2 y P-3).
 
 Geometría plana genérica (la usarán la corta, R-49 y R-61), solo numpy. Los anillos son arrays
 ``(k, 2)`` float64 **abiertos** (sin repetir el primer vértice) en coordenadas locales, cerca del
@@ -21,26 +21,40 @@ origen: restar un origen cercano es exacto (lema de Sterbenz) y el float64 solo 
 - :func:`closing`: cierre morfológico (D-15, dilatar y erosionar): **solo ensancha**, nunca
   abre. Compone dos desfases con el que se le pase (por defecto, la curva cruda).
 
-La curva cruda **no** es el desfase: puede cruzarse a sí misma. Quitarle los cruces, clasificar
-sus trozos y verificarla es de ``offset_ring_steps`` (spec 018, T07).
+- :func:`offset_ring_steps`: el **desfase completo** (T07, plan §5.4 A4), por pasos. La curva cruda
+  puede cruzarse a sí misma: se le calculan los cruces propios una vez (``crossings``, insertados
+  en las dos aristas con ``splice``), a cada trozo se le da la **vuelta a su izquierda y a su
+  derecha** (número de vueltas con signo, por rayos) y se queda con los de ``(1, 0)``, que se
+  encadenan por la salida más a la izquierda (``chain``) en anillos; los de menos de 1 mm² se
+  descartan y uno de área negativa es un hueco. Se **verifica** (:func:`check_offset`): simple y
+  cada vértice a ``≥ d − tol − simplify`` de la fuente; si no, ``verified = False`` con el lugar
+  y el defecto: nunca un resultado dudoso en silencio.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Iterator, Sequence
+from contextlib import closing as closing_generator
 from dataclasses import dataclass
 
 import numpy as np
 
-from .polygons import expand
+from ..core.project.model import Progress
+from .polygons import box_pairs, chain, crossings, drain, expand, ray_counts, splice
 
 __all__ = [
     "CORNERS",
+    "EDGES_PER_STEP",
     "MITER_LIMIT",
+    "OffsetResult",
     "RawCurve",
     "arc_step",
+    "check_offset",
+    "check_offset_steps",
     "closing",
+    "offset_ring",
+    "offset_ring_steps",
     "raw_offset",
     "simplify_ring",
 ]
@@ -56,6 +70,28 @@ _PARALLEL = 1e-9
 
 _SAME_M = 1e-12
 """Diferencia (m) de dos distancias que se toma por cero."""
+
+EDGES_PER_STEP = 2000
+"""Aristas que se tratan entre dos cesiones (un ``Progress``) de :func:`offset_ring_steps`."""
+
+MIN_AREA_M2 = 1e-6
+"""Área (m²) por debajo de la cual un anillo del resultado se descarta (D-14: 1 mm²)."""
+
+MERGE_M = 1e-9
+"""Distancia (m) a la que dos vértices seguidos de la curva cruda se funden: un arco que colapsa
+(un desfase hacia dentro del mismo radio que un arco) deja decenas de trozos de 1e-17 m cuya
+vuelta no tiene sentido."""
+
+TOUCH_M = 1e-9
+"""Distancia (m) a la que un vértice de la curva cruda se toma por sobre una arista que no es suya."""
+
+PROBE_M = 1e-6
+"""Separación (m) del punto de prueba de la vuelta a cada lado de un trozo."""
+
+_VERIFY_SLACK_M = 1e-9
+"""Holgura numérica (m) de la verificación de distancias."""
+
+_PHASE = "gis.offset"
 
 Offset = Callable[[np.ndarray, float, int], np.ndarray]
 """Un desfase de un anillo: ``(anillo, distancia, lado) -> anillo`` (lado ``+1`` fuera, ``-1`` dentro)."""
@@ -214,6 +250,264 @@ def raw_offset(ring: object, distance: object, *, tol: float, side: int = 1,
         out[middle] = base[middle] + radius[:, None] * np.column_stack([np.cos(theta), np.sin(theta)])
         source[middle] = np.where(early, (v - 1) % count, v)
     return RawCurve(out, source)
+
+
+# Desfase completo -------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class OffsetResult:
+    """El desfase completo de :func:`offset_ring_steps`.
+
+    ``rings`` son los contornos (antihorarios) y ``holes`` los huecos (horarios), arrays
+    ``(k, 2)`` abiertos. ``source_edge_of_vertex`` tiene un array por cada anillo y después uno
+    por cada hueco: la arista de la fuente (el índice de su vértice inicial) de la que sale cada
+    vértice. ``verified`` es verdadero si el resultado es simple y está a la distancia que toca
+    de la fuente (:func:`check_offset`); si no, ``defect_at`` es el lugar, ``defect`` el qué
+    (``"crossing"`` o ``"distance"``) y ``max_defect_m`` lo que le falta de distancia (m)."""
+
+    rings: tuple[np.ndarray, ...]
+    holes: tuple[np.ndarray, ...]
+    source_edge_of_vertex: tuple[np.ndarray, ...]
+    verified: bool
+    max_defect_m: float
+    defect_at: tuple[float, float] | None = None
+    defect: str = ""
+
+
+def _signed_area(ring: np.ndarray) -> float:
+    x, y = ring[:, 0], ring[:, 1]
+    return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+def _blocks(count: int, size: int) -> range:
+    return range(0, count, size)
+
+
+def offset_ring_steps(ring: object, distance: object, side: int = 1, *, tol: float,
+                      corner: str = "round", simplify_m: float = 0.0,
+                      edges_per_step: int = EDGES_PER_STEP) -> Iterator[Progress]:
+    """Los pasos del desfase completo de un anillo antihorario abierto ``ring`` (``(k, 2)``,
+    sin aristas de longitud 0: simplifícalo antes), con la distancia ``distance`` (escalar o
+    ``(k,)``, por arista) hacia el ``side`` ``+1`` (fuera) o ``-1`` (dentro). Cede un
+    ``Progress`` cada ≈ ``edges_per_step`` aristas tratadas; el último lleva el
+    :class:`OffsetResult` en ``result``. Cerrar el iterador cancela sin dejar nada.
+    ``simplify_m`` es lo que el anillo pudo moverse al simplificarlo (holgura de la
+    verificación). ``ValueError`` si un argumento no vale."""
+    points = _ring(ring)
+    if not _signed_area(points) > 0.0:
+        raise ValueError("El anillo del desfase debe ser antihorario y con área")
+    if edges_per_step < 1:
+        raise ValueError(f"Las aristas por paso deben ser al menos 1: {edges_per_step}")
+    dist = np.broadcast_to(np.asarray(distance, dtype=np.float64), (len(points),)).copy()
+    curve = raw_offset(points, dist, tol=tol, side=side, corner=corner)
+    return _paced(_offset_work(points, dist, curve, tol, simplify_m, edges_per_step))
+
+
+def offset_ring(ring: object, distance: object, side: int = 1, *, tol: float,
+                corner: str = "round", simplify_m: float = 0.0) -> OffsetResult:
+    """:func:`offset_ring_steps` de una vez."""
+    result: object = None
+    for step in offset_ring_steps(ring, distance, side, tol=tol, corner=corner,
+                                  simplify_m=simplify_m):
+        result = step.result
+    assert isinstance(result, OffsetResult)
+    return result
+
+
+def _paced(work: Generator[int, None, OffsetResult]) -> Iterator[Progress]:
+    done = 0
+    with closing_generator(work):  # cerrar los pasos cierra el trabajo
+        while True:
+            try:
+                done += next(work)
+            except StopIteration as stop:
+                result = stop.value
+                break
+            yield Progress(_PHASE, done, done + 1, "Desfasando…")
+    yield Progress(_PHASE, max(done, 1), max(done, 1), "Desfase hecho", result=result)
+
+
+def _distinct(points: np.ndarray, extra: np.ndarray,
+              merge_m: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    """Sin vértices seguidos a ``merge_m`` o menos (el último de cada serie), y su ``extra``."""
+    step = np.roll(points, -1, axis=0) - points
+    keep = np.hypot(step[:, 0], step[:, 1]) > merge_m
+    return points[keep], extra[keep]
+
+
+def _offset_work(points: np.ndarray, dist: np.ndarray, curve: RawCurve, tol: float,
+                 simplify_m: float, block: int) -> Generator[int, None, OffsetResult]:
+    """El trabajo de :func:`offset_ring_steps`: cede el número de bloques tratados."""
+    raw, source = _distinct(curve.points, curve.source_edge, MERGE_M)
+    count = len(raw)
+    if count < 3:
+        return OffsetResult((), (), (), True, 0.0)
+    a, b = raw, np.roll(raw, -1, axis=0)
+    edge_boxes = np.concatenate([np.minimum(a, b), np.maximum(a, b)], axis=1)
+    cut_edge: list[np.ndarray] = []
+    cut_at: list[np.ndarray] = []
+    cut_point: list[np.ndarray] = []
+    marked = np.zeros(count, dtype=bool)
+    for low in _blocks(count, block):
+        part = slice(low, min(low + block, count))
+        i, j, t, u, cut = crossings(a[part], b[part], a, b)
+        i = i + low
+        keep = i < j
+        cut_edge += [i[keep], j[keep]]
+        cut_at += [t[keep], u[keep]]
+        cut_point += [cut[keep], cut[keep]]
+        # Un vértice sobre una arista que no es suya (un pico que vuelve sobre sí mismo): se
+        # inserta en ella, o el trozo que sigue no empieza donde acaba el anterior.
+        vertex_boxes = np.concatenate([a[part] - TOUCH_M, a[part] + TOUCH_M], axis=1)
+        v, e = box_pairs(vertex_boxes, edge_boxes)
+        v = v + low
+        own = (e != v) & (e != (v - 1) % count)
+        v, e = v[own], e[own]
+        if v.size:
+            along = b[e] - a[e]
+            length2 = np.einsum("ij,ij->i", along, along)
+            t = np.einsum("ij,ij->i", a[v] - a[e], along) / length2
+            off = a[v] - (a[e] + t[:, None] * along)
+            inside = ((np.hypot(off[:, 0], off[:, 1]) < TOUCH_M)
+                      & (np.hypot(*(a[v] - a[e]).T) > TOUCH_M)
+                      & (np.hypot(*(a[v] - b[e]).T) > TOUCH_M))
+            cut_edge.append(e[inside])
+            cut_at.append(t[inside])
+            cut_point.append(a[v][inside])
+            marked[v[inside]] = True
+        yield 1
+    # Cada punto lleva un tercer número: 1 si es un cruce (o un vértice que toca otra arista),
+    # donde puede cambiar la vuelta; entre dos así, todos los trozos tienen la misma.
+    cuts = np.concatenate(cut_point) if cut_point else np.zeros((0, 2))
+    tagged = np.column_stack([raw, marked.astype(np.float64)])
+    new = np.column_stack([cuts, np.ones(len(cuts))])
+    joined, vertex = splice(tagged, np.arange(count, dtype=np.int64), np.concatenate(cut_edge),
+                            np.concatenate(cut_at), new)
+    joined, vertex = _distinct(joined, vertex)
+    spliced, flag = joined[:, :2], joined[:, 2] > 0.0
+    origin = source[vertex]
+
+    start, end = spliced, np.roll(spliced, -1, axis=0)
+    along = end - start
+    length = np.hypot(along[:, 0], along[:, 1])
+    run = np.cumsum(flag) - 1
+    runs = int(flag.sum())
+    run = run % runs if runs else np.zeros(len(spliced), dtype=np.int64)
+    runs = max(runs, 1)
+    # El trozo más largo de cada tramo es el que se prueba.
+    order = np.lexsort((-length, run))
+    first = order[np.searchsorted(run[order], np.arange(runs))]
+    left = np.column_stack([-along[:, 1], along[:, 0]]) / length[:, None]
+    eps = np.minimum(PROBE_M, 0.25 * length)[:, None]
+    mid = 0.5 * (start + end)
+    group = (end[:, 1] <= start[:, 1]).astype(np.int64)  # 0: sube, 1: baja
+    run_border = np.zeros(runs, dtype=bool)
+    for low in _blocks(runs, block):
+        pick = first[low:low + block]
+        probes = np.concatenate([mid[pick] + eps[pick] * left[pick],
+                                 mid[pick] - eps[pick] * left[pick]])
+        turns = ray_counts(probes, start, end, group, 2)
+        winding = turns[:, 0] - turns[:, 1]
+        size = len(pick)
+        run_border[low:low + size] = (winding[:size] == 1) & (winding[size:] == 0)
+        yield 1
+    border = run_border[run]
+
+    kept = np.flatnonzero(border)
+    edges = np.stack([start[kept], end[kept]], axis=1)
+    from_edge = {(x + 0.0, y + 0.0): int(o)
+                 for (x, y), o in zip(start[kept].tolist(), origin[kept].tolist(), strict=True)}
+    rings: list[np.ndarray] = []
+    holes: list[np.ndarray] = []
+    ring_sources: list[np.ndarray] = []
+    hole_sources: list[np.ndarray] = []
+    for loop in chain(edges):
+        area = _signed_area(loop)
+        if abs(area) < MIN_AREA_M2:
+            continue
+        sources = np.array([from_edge[(x + 0.0, y + 0.0)] for x, y in loop.tolist()],
+                           dtype=np.int64)
+        if area > 0.0:
+            rings.append(loop)
+            ring_sources.append(sources)
+        else:
+            holes.append(loop)
+            hole_sources.append(sources)
+    loops, sources_all = rings + holes, ring_sources + hole_sources
+    ok, defect_at, defect, worst = yield from check_offset_steps(
+        points, dist, loops, sources_all, tol=tol, simplify_m=simplify_m, block=block)
+    return OffsetResult(tuple(rings), tuple(holes), tuple(sources_all), ok, worst, defect_at,
+                        defect)
+
+
+def check_offset(source: object, distance: object, loops: Sequence[np.ndarray],
+                 sources: Sequence[np.ndarray], *, tol: float, simplify_m: float = 0.0
+                 ) -> tuple[bool, tuple[float, float] | None, str, float]:
+    """:func:`check_offset_steps` de una vez."""
+    return drain(check_offset_steps(source, distance, loops, sources, tol=tol,
+                                    simplify_m=simplify_m))
+
+
+def check_offset_steps(source: object, distance: object, loops: Sequence[np.ndarray],
+                       sources: Sequence[np.ndarray], *, tol: float, simplify_m: float = 0.0,
+                       block: int = EDGES_PER_STEP
+                       ) -> Generator[int, None, tuple[bool, tuple[float, float] | None, str,
+                                                       float]]:
+    """Comprueba un desfase (plan §5.4 A4): que ``loops`` (anillos y huecos, con la arista de
+    ``source`` de la que sale cada vértice en ``sources``) son **simples** (ningún par de aristas
+    se cruza, dentro de un anillo ni entre ellos) y que cada vértice está a ``≥ d − tol −
+    simplify_m`` de **todas** las aristas de ``source``, con ``d`` la menor distancia de las
+    aristas de origen del vértice y de sus dos vecinos (en un salto de distancia entre dos
+    aristas el tramo de unión queda entre las dos). Da ``(verificado, lugar, defecto, falta)``;
+    ``falta`` es la mayor distancia (m) que le falta a un vértice. Cede el número de bloques
+    tratados."""
+    src = _ring(source)
+    dist = np.broadcast_to(np.asarray(distance, dtype=np.float64), (len(src),))
+    if not loops:
+        return True, None, "", 0.0
+    a = np.concatenate(loops)
+    b = np.concatenate([np.roll(loop, -1, axis=0) for loop in loops])
+    for low in _blocks(len(a), block):
+        part = slice(low, min(low + block, len(a)))
+        i, j, _, _, cut = crossings(a[part], b[part], a, b)
+        found = np.flatnonzero(i + low < j)
+        if found.size:
+            at = cut[int(found[0])]
+            return False, (float(at[0]), float(at[1])), "crossing", 0.0
+        yield 1
+    d_here = np.concatenate([dist[s] for s in sources])
+    d_before = np.concatenate([np.roll(dist[s], 1) for s in sources])
+    d_after = np.concatenate([np.roll(dist[s], -1) for s in sources])
+    limit = np.minimum(d_here, np.minimum(d_before, d_after)) - tol - simplify_m - _VERIFY_SLACK_M
+    need = np.flatnonzero(limit > 0.0)
+    worst, worst_at = 0.0, None
+    edge_a, edge_b = src, np.roll(src, -1, axis=0)
+    edge_boxes = np.concatenate([np.minimum(edge_a, edge_b), np.maximum(edge_a, edge_b)], axis=1)
+    for low in _blocks(len(need), block):
+        pick = need[low:low + block]
+        pad = limit[pick][:, None]
+        boxes = np.concatenate([a[pick] - pad, a[pick] + pad], axis=1)
+        v, e = box_pairs(boxes, edge_boxes)
+        if v.size:
+            gap = limit[pick][v] - _point_edge_distance(a[pick][v], edge_a[e], edge_b[e])
+            top = int(np.argmax(gap))
+            if gap[top] > worst:
+                worst = float(gap[top])
+                at = a[pick][v[top]]
+                worst_at = (float(at[0]), float(at[1]))
+        yield 1
+    if worst_at is not None:
+        return False, worst_at, "distance", worst
+    return True, None, "", 0.0
+
+
+def _point_edge_distance(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """La distancia de cada punto ``p`` a su segmento ``a–b`` (de longitud no nula)."""
+    d, w = b - a, p - a
+    t = np.clip((w[:, 0] * d[:, 0] + w[:, 1] * d[:, 1])
+                / (d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1]), 0.0, 1.0)
+    return np.hypot(w[:, 0] - t * d[:, 0], w[:, 1] - t * d[:, 1])
 
 
 # Cierre morfológico ----------------------------------------------------------------------------
