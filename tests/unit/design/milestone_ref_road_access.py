@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Caso de referencia de la accesibilidad de la cantera con bancos y del tajo con dos superficies: CE-017-07 (spec 017, T16; HU-017-3; RF-017-24 y 25; CE-017-07 y CE-017-05; plan 017
+"""Caso de referencia de la accesibilidad de la cantera con bancos y del tajo con dos superficies, como prueba de **hito** (spec 017, T16, que lo dejó en el «verde» como
+``tests/referencia/des/test_ref_road_access.py``; T48, que lo pasó al paso «hito» de ``tools/check.py --completo`` para que el «verde» vuelva a costar ≤ +3 s: RNF-017-09): CE-017-07 (T16; HU-017-3; RF-017-24 y 25; CE-017-07 y CE-017-05; plan 017
 §5.4 A10 y A11; error 23): una entrada a 140 m, cuatro bermas a 135, 125, 115 y 105 m y una rampa grabada del 12,5 % que comunica las tres superiores, contra el **cálculo a mano**.
 
 Verifica **de forma independiente** lo que hace ``design.road_access``: lo alcanzable sale de la pendiente local a mano, la apertura con el disco exacto y la inundación 4-conexa de

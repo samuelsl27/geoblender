@@ -7,7 +7,7 @@ alcanzable sobre la final con los mismos parámetros. **No cambia ninguna superf
 
 Los valores esperados salen **a mano** y por **fuerza bruta** (los tramos con una búsqueda en anchura 4-conexa, la distancia con todas las parejas de celdas, lo alcanzable con la
 inundación de ``road_data.oracle_reachable``), **no** de llamar al código bajo prueba. Todo es sintético, sin Blender y sobre rejillas de ≤ 200 × 200 celdas; el caso de referencia
-entero (CE-017-07) es de ``tests/referencia/des/test_ref_road_access.py`` y la medida a escala, de ``milestone_road_access_berms``.
+entero (CE-017-07) es de ``milestone_ref_road_access`` (que la T48 pasó al paso «hito»; antes, ``tests/referencia/des/test_ref_road_access.py``) y la medida a escala, de ``milestone_road_access_berms``.
 """
 
 from __future__ import annotations

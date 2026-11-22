@@ -7,7 +7,7 @@ Todo en mallas de ≤ 40 × 40 nodos y pocos miles de estados (lo que pasa de 1 
 comprueba de la ruta no sale de ``design.road_route``**: cada condición de RF-017-10 (la pendiente de cada paso, el cambio de rumbo, la
 distancia vertical al terreno y los nodos que no se pisan) y el coste del paso (su fórmula, con el desvío medido en la media de los dos
 extremos, P-7) se recalculan aquí desde los nodos, los rumbos y las cotas de la ruta y la malla; la comparación del coste con un oráculo
-de fuerza bruta es de la T09 (``test_road_route_oracle``).
+de fuerza bruta es de la T09 (``milestone_road_route_oracle_cases``, que la T48 pasó al paso «hito»; antes, ``test_road_route_oracle``).
 """
 
 from __future__ import annotations

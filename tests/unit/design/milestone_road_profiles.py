@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pruebas de hito de «test_road_profiles» (spec 017, T04; plan 017 §8; RNF-017-09): lo que escribe en el proyecto una vez por
-prueba y suma más de 1 s. El «verde» deja en ``test_road_profiles`` lo que cubre cada RF (los derivados, las comprobaciones del
-perfil, la tabla, crear, renombrar, completar, la obsolescencia y cada rechazo); esto lo ejecuta el paso «hito» de
-``tools/check.py --completo`` (la publicación lo pide siempre).
+prueba y suma más de 1 s. El «verde» deja en ``test_road_profiles`` lo puro (los derivados y las comprobaciones del perfil, y el código del
+nombre) y, hasta la T48, dejaba también lo que cubre cada RF sobre un proyecto (la tabla, crear, renombrar, completar, la obsolescencia y
+cada rechazo), que desde la T48 es el hito ``milestone_road_profiles_operation`` (de donde se importa el proyecto de prueba); esto y aquello
+lo ejecuta el paso «hito» de ``tools/check.py --completo`` (la publicación lo pide siempre).
 
 Es lo que no cabe en el presupuesto de ``check.py`` (≤ +3 s para toda la 017, RNF-017-09): el tipo y el origen que elige la
 persona, los nombres que dan el mismo código, la **transacción única** (si falla a mitad no queda nada), la declaración que
@@ -17,7 +18,7 @@ from typing import Any
 from unittest import mock
 
 from tests.support.package import import_geoblender
-from tests.unit.design.test_road_profiles import (
+from tests.unit.design.milestone_road_profiles_operation import (
     MAIN,
     OPTIONAL,
     OTHER,

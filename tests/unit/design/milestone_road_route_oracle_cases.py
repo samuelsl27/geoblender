@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La ruta 3D contra el oráculo de fuerza bruta (spec 017, T09; HU-017-1; RF-017-10, RF-017-09, RF-017-11 y RF-017-12; RF-015-02; plan 017 §7.1,
+"""La ruta 3D contra el oráculo de fuerza bruta, **un caso por propiedad**, como prueba de **hito** (spec 017, T09, que lo dejó en el «verde» como
+``test_road_route_oracle``; T48, que lo pasó al paso «hito» de ``tools/check.py --completo`` para que el «verde» vuelva a costar ≤ +3 s: RNF-017-09;
+HU-017-1; RF-017-10, RF-017-09, RF-017-11 y RF-017-12; RF-015-02; plan 017 §7.1,
 §5.4 A1 a A3; D-23): el coste, los giros y **la ruta** del A\\* de ``design.road_route`` son los de ``design_oracles.hand_route`` —un Dijkstra
 completo sobre el grafo explícito de estados ``(nodo, nivel, rumbo)``, por fuerza bruta, que no comparte con el A\\* ni la cola, ni las tablas
 de saltos, ni la cota admisible, ni el empaquetado de las etiquetas— en mallas de 8 × 8 nodos y 5 niveles, y su pasillo es el que sale de
@@ -10,7 +12,9 @@ entero (nanómetros: ``Route.cost_units`` frente al del oráculo, **exacto**), l
 nivel de cada nodo, también con el desempate de D-23 (el menor número de giros, luego el primer rumbo en sentido horario desde el norte, y
 entre dos orígenes de un mismo estado el de menor rumbo anterior y menor salto de nivel) y con el peso de «preferible no afectar»; y el
 pasillo del código frente al del oráculo, nodo a nodo. Lo que pasa de 1 s (el barrido de cientos de casos al azar) va a
-``milestone_road_route_oracle`` (RNF-017-09); aquí, los casos que dan cada propiedad en menos de medio segundo.
+``milestone_road_route_oracle`` (RNF-017-09); aquí, los casos que dan cada propiedad en menos de medio segundo (que suman ≈ 0,8 s: por eso
+la T48 los movió; ``milestone_road_route_oracle`` los importa como ``green``). Las pruebas rápidas de la ruta que siguen en el «verde» son
+las de ``test_road_route`` y ``test_road_no_route``.
 """
 
 from __future__ import annotations

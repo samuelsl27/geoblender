@@ -2744,7 +2744,14 @@ RENAMED_TEST_MODULES = (("test_road_ops", "milestone_road_ops", "blender"), ("te
                         ("test_road_calculate_brought", "milestone_road_calculate_brought", "blender"),
                         ("test_road_access_ops", "milestone_road_access_ops", "blender"), ("test_road_steps", "milestone_road_steps_cuts", "blender"),
                         ("test_road_preview_data", "milestone_road_preview_data", "unit/design"), ("test_road_fixtures", "milestone_road_fixtures", "unit/design"),
-                        ("test_road_grade", "test_road_gradient", "unit/design"))
+                        ("test_road_grade", "test_road_gradient", "unit/design"),
+                        # Los que movió la T48 (el «verde» de la 017 vuelve a ≤ +3 s): la parte que monta un proyecto de ``test_road_profiles`` y de ``test_road_prepare``
+                        # (partidos: lo puro sigue en el «verde») y los módulos enteros de la ruta contra el oráculo y de los casos de referencia de la ruta y de la accesibilidad.
+                        ("test_road_profiles", "milestone_road_profiles_operation", "unit/design"),
+                        ("test_road_prepare", "milestone_road_prepare_checks", "unit/design"),
+                        ("test_road_route_oracle", "milestone_road_route_oracle_cases", "unit/design"),
+                        ("test_ref_road_route", "milestone_ref_road_route", "unit/design"),
+                        ("test_ref_road_access", "milestone_ref_road_access", "unit/design"))
 # Los hallazgos de código que cerró la convergencia (T40 a T44): ``verificacion.md`` §10 los nombra todos.
 CLOSED_CODE_FINDINGS = ("A-1", "A-2", "A-3", "A-6", "B-1", "B-2", "B-3", "B-4", "B-5", "B-11", "C-2", "D-1", "D-2", "S-1", "S-2", "S-3")
 

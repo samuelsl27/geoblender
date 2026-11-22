@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Casos de referencia de la ruta de la pista (spec 017, T09; HU-017-1; RF-017-09, RF-017-10, RF-017-11 y RF-017-12; CE-017-01 y CE-017-04;
+"""Casos de referencia de la ruta de la pista, como prueba de **hito** (spec 017, T09, que los dejó en el «verde» como
+``tests/referencia/des/test_ref_road_route.py``; T48, que los pasó al paso «hito» de ``tools/check.py --completo`` para que el «verde» vuelva a costar ≤ +3 s:
+RNF-017-09; HU-017-1; RF-017-09, RF-017-10, RF-017-11 y RF-017-12; CE-017-01 y CE-017-04;
 RNF-017-02; plan 017 §5.4 A1 a A3, §7.1; D-22): la parte de la **ruta** de los dos casos, contra el cálculo a mano.
 
 Verifica **de forma independiente** lo que hicieron T06 a T08 (``design.road_net`` y ``design.road_route``): cada cifra sale de un cálculo a mano

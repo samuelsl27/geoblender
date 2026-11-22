@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pruebas de hito de «test_road_route_oracle» (spec 017, T09; RF-017-10, RF-017-09, RF-017-11 y RF-017-12; RF-015-02; plan 017 §7.1; D-23): lo
-que pasa de 1 s y no entra en el «verde» (``tools/check.py``, RNF-017-09). El «verde» deja en ``test_road_route_oracle`` un caso por
-propiedad (8 × 8 nodos y cinco niveles); esto lo ejecuta el paso «hito» de ``tools/check.py --completo`` (la publicación lo pide siempre).
+que pasa de 1 s y no entra en el «verde» (``tools/check.py``, RNF-017-09). Un caso por propiedad (8 × 8 nodos y cinco niveles) estuvo en el «verde»
+como ``test_road_route_oracle`` y desde la T48 es el hito ``milestone_road_route_oracle_cases`` (importado aquí como ``green``); esto y aquello
+lo ejecuta el paso «hito» de ``tools/check.py --completo`` (la publicación lo pide siempre).
 
 - **El barrido al azar** (RF-017-10, RF-017-12, D-23): 300 casos de mallas de 5 × 6 a 8 × 8 nodos (bloques de 1 y de 2 celdas), terrenos
   de ruido de 0,05 a 0,5 m, pendientes de diseño del 4 al 15 %, alturas de 0 a 1 m con pasos de cota de 0,2 y de 0,25 m, λ de 0 a 2 1/m,
@@ -26,7 +27,7 @@ import numpy as np
 
 from tests.support.package import import_geoblender
 from tests.unit.design import test_road_route as base
-from tests.unit.design import test_road_route_oracle as green
+from tests.unit.design import milestone_road_route_oracle_cases as green
 
 road_model = import_geoblender("design.road_model")
 

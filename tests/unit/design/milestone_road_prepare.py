@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Preparar la pista con lo que cambia el proyecto (spec 017, T19; HU-017-1 y HU-017-2; RF-017-02, RF-017-03, RF-017-04, RF-017-05, RF-017-06; RF-015-07; RF-009-21; D-3 y D-16; plan 017
-§5.2.3, §5.4 A1 y §5.7 P-5), como prueba de **hito**: ``check.py --completo`` la ejecuta; el «verde» tiene las suyas en ``test_road_prepare.py``.
+§5.2.3, §5.4 A1 y §5.7 P-5), como prueba de **hito**: ``check.py --completo`` la ejecuta; el «verde» tiene las suyas, las puras, en ``test_road_prepare.py`` y, hasta la T48, también ``RoadPrepareTest`` (preparar
+y rechazar sobre el proyecto: desde la T48 es el hito ``milestone_road_prepare_checks``).
 
 - **Una versión que no se edita** (:class:`ClosedVersionTest`): sin versión activa o con V01 SUPERADA no se prepara.
 - **Un sector sin búsqueda de intocables** (:class:`PendingSectorTest`, RF-015-07): borrada la búsqueda del «Sector oeste», una pista cuyo pasillo, o cuya sección, lo toca se rechaza
