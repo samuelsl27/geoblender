@@ -292,14 +292,11 @@ class RejectionTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, pit_model.PitCode.TOO_MANY_BENCHES.value)
         self.assertGreater(caught.exception.values["vertices"], 100)
 
-    def test_not_yet_supported_inputs_are_program_errors(self) -> None:
-        """Las bermas cada n bancos y los bancos fijados son de la T12: hasta entonces no se ignoran en silencio."""
+    def test_a_double_bench_needs_the_fondo_on_the_lattice(self) -> None:
+        """RF-018-08 (T12): con n = 2 los fondos están en la retícula de n·h (z₀ + j·n·h); uno a 135 m es un error del programa (la preparación lo
+        rechaza antes). Los bancos dobles y los fijados, en ``test_pit_bench_fixed``."""
         with self.assertRaises(ValueError):
-            pit_bench.ascend(job(params=params(n_berm=2)))
-        fixed = pit_model.FixedBench("b1", np.array([[0.0, 0.0, 135.0], [1.0, 0.0, 135.0], [1.0, 1.0, 135.0]]) + (*pd.origin_of(pd.GRID), 0.0),
-                                     bench=1, closed=True)
-        with self.assertRaises(ValueError):
-            pit_bench.ascend(job(fixed=(fixed,)))
+            pit_bench.ascend(job(params=params(n_berm=2), sources=(fondo(level=135.0),)))
 
     def test_a_bottom_off_the_anchor_lattice_is_a_program_error(self) -> None:
         """Una cota de fondo que no es z₀ + j·h rompe la continuidad de los planos (D-4): la preparación lo rechaza antes; aquí, error."""
