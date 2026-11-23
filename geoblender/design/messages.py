@@ -3981,6 +3981,14 @@ CATALOG: tuple[Message, ...] = (
         "fiable.",
         "warning",
     ),
+    # T22 (RF-018-10): el cálculo se rechaza si algún desfase no se pudo verificar; nunca en silencio.
+    Message(
+        "des.pit_offset_not_verified",
+        "Pit «{name}»: the offset of bench {bench} could not be verified (defect {value} m, over {limit} m); the calculation is rejected and nothing "
+        "is relaxed (try a smaller arc or simplification tolerance, or a simpler outline).",
+        "Corta «{name}»: el desfase del banco {bench} no se pudo verificar (defecto de {value} m, más de {limit} m); se rechaza el cálculo y no se "
+        "relaja nada (pruebe una tolerancia de arco o de simplificación menor, o un contorno más simple).",
+    ),
     Message(
         "des.access_support_removed",
         "the accessibility «{name}» was discarded",

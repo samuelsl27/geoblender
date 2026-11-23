@@ -27,7 +27,7 @@ Las entradas no se modifican. Perezoso (RNF-001-03): nada del arranque lo import
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,7 +43,7 @@ from .provenance import pit_figures
 from .report import max_tangents, padded_rows
 from .zones import polygons_cells
 
-__all__ = ["BLOCK_PAIRS", "TERRAIN_TOL_M", "FLAT_TOL_M", "Figures", "figures", "findings"]
+__all__ = ["BLOCK_PAIRS", "TERRAIN_TOL_M", "FLAT_TOL_M", "Figures", "figures", "findings", "findings_units"]
 
 TERRAIN_TOL_M: float = 0.01
 """Lo que un trozo de polilínea puede estar por encima del terreno para contar como «existente» (m; P-14)."""
@@ -148,8 +148,23 @@ def _halfway(points: np.ndarray, lengths: np.ndarray) -> tuple[float, float]:
     return float(points[at, 0]), float(points[at, 1])
 
 
+def _drain[T](work: Generator[None, None, T]) -> T:
+    """Las unidades de ``work`` hasta el final, sin ceder el hilo: lo que devuelve."""
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            result: T = done.value
+            return result
+
+
 def _nearest(points: np.ndarray, line: np.ndarray, closed: bool) -> tuple[float, int]:
     """La menor distancia en planta de los ``points`` ``(m, 2)`` a las aristas de ``line`` y el índice del punto que la da."""
+    return _drain(_nearest_units(points, line, closed))
+
+
+def _nearest_units(points: np.ndarray, line: np.ndarray, closed: bool) -> Generator[None, None, tuple[float, int]]:
+    """:func:`_nearest` con una unidad (``yield``) por bloque de parejas (T22: para ceder el hilo en ≤ 0,05 s)."""
     a, b = _segments(line[:, :2], closed)
     delta = b - a
     length2 = (delta ** 2).sum(axis=1)
@@ -165,6 +180,7 @@ def _nearest(points: np.ndarray, line: np.ndarray, closed: bool) -> tuple[float,
         index = int(np.argmin(distance))
         if float(distance[index]) < best:
             best, where = float(distance[index]), first + index
+        yield
     return best, where
 
 
@@ -247,6 +263,10 @@ def _face_findings(job: PitJob, polylines: Sequence[Polyline], surface: PitSurfa
 
 
 def _berm_findings(job: PitJob, polylines: Sequence[Polyline], tolerance_m: float) -> list[Finding]:
+    return _drain(_berm_units(job, polylines, tolerance_m))
+
+
+def _berm_units(job: PitJob, polylines: Sequence[Polyline], tolerance_m: float) -> Generator[None, None, list[Finding]]:
     found = []
     items = [item for item in polylines if item.zone == ""]
     for crest in (item for item in items if item.kind == PolylineKind.CREST):
@@ -257,10 +277,10 @@ def _berm_findings(job: PitJob, polylines: Sequence[Polyline], tolerance_m: floa
                 and abs(item.z_m - crest.z_m) <= _LEVEL_TOL_M]
         best, place = math.inf, None
         for foot in feet:
-            distance, at = _nearest(crest.vertices[:, :2], foot.vertices, foot.closed)
+            distance, at = yield from _nearest_units(crest.vertices[:, :2], foot.vertices, foot.closed)
             if distance < best:
                 best, place = distance, crest.vertices[at, :2]
-            distance, at = _nearest(foot.vertices[:, :2], crest.vertices, crest.closed)
+            distance, at = yield from _nearest_units(foot.vertices[:, :2], crest.vertices, crest.closed)
             if distance < best:
                 best, place = distance, foot.vertices[at, :2]
         if place is not None and best < profile.berm_m - tolerance_m:
@@ -382,6 +402,12 @@ def _ramp_findings(ramps: Sequence[Any]) -> list[Finding]:
 
 def findings(job: PitJob, polylines: Sequence[Polyline], surface: PitSurface, *, face_tolerance_deg: float, ramps: Sequence[Any] = (),
              floor_width_m: float | None = None) -> tuple[Finding, ...]:
+    """:func:`findings_units` hasta el final, sin ceder el hilo (A12; RF-018-26): los hallazgos de la corta."""
+    return _drain(findings_units(job, polylines, surface, face_tolerance_deg=face_tolerance_deg, ramps=ramps, floor_width_m=floor_width_m))
+
+
+def findings_units(job: PitJob, polylines: Sequence[Polyline], surface: PitSurface, *, face_tolerance_deg: float, ramps: Sequence[Any] = (),
+                   floor_width_m: float | None = None) -> Generator[None, None, tuple[Finding, ...]]:
     """**A12** (RF-018-26): los hallazgos de la corta de ``job`` con sus ``polylines``, su ``surface`` y sus ``ramps`` (:class:`~design.pit_ramp.RampChecked`),
     en un orden estable (por tipo y por banco). ``face_tolerance_deg`` es la tolerancia de cara del proyecto (RF-013-27) y ``floor_width_m`` el ancho útil
     del fondo de una descendente (``Benches.floor_width_m``; en la ascendente se mide desde los fondos). No corrige nada; una lista vacía es «sin
@@ -396,7 +422,8 @@ def findings(job: PitJob, polylines: Sequence[Polyline], surface: PitSurface, *,
                            detail=sector or "perímetro"))
     if profiled:
         out += _face_findings(job, profiled, surface, face_tolerance_deg)
-        out += _berm_findings(job, profiled, job.params.arc_tol_m + job.params.simplify_m + _LEVEL_TOL_M)
+        yield
+        out += yield from _berm_units(job, profiled, job.params.arc_tol_m + job.params.simplify_m + _LEVEL_TOL_M)
     out += _floor_findings(job, polylines, floor_width_m)
     out += _crest_findings(job, polylines)
     if surface.blocked.any():

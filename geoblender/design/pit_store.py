@@ -54,18 +54,33 @@ import numpy as np
 from ..core.constraints import store as constraint_store
 from ..core.constraints.model import ConstraintType
 from ..core.datasets import registry as dataset_registry
+from ..core.project.model import Progress
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.versions.model import Version
 from ..gis import polygons
 from ..gis.grid import Grid
 from ..gis.masks import access
-from ..gis.masks.compile import is_active
+from ..gis.masks.compile import STEP_BUDGET_S, is_active
 from ..gis.masks.store import _resolved as _resolved_constraints
 from ..gis.masks.store import search_sectors
 from ..gis.messages import GisError
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
-from . import entities, entity_store, pipeline, pit_ramp_def, pit_rose, provenance, road_profiles
+from . import (
+    entities,
+    entity_store,
+    pipeline,
+    pit_bench,
+    pit_check013,
+    pit_ramp,
+    pit_ramp_def,
+    pit_report,
+    pit_rose,
+    pit_sky,
+    pit_surface,
+    provenance,
+    road_profiles,
+)
 from .compose import admitted_pair
 from .entities import EntityKind, EntityRegistry, EntityState
 from .entity_store import EntityParamRow
@@ -88,19 +103,32 @@ from .params import (
     rose_key,
 )
 from .pit_bench import _LATTICE_TOL_M, _samples
-from .pit_model import FixedBench, PitCode, PitJob, PitMode, PitParams, PitRequest, PitSector, PitSource, RampDef, RampStart, RoseRange
+from .pit_model import (
+    FixedBench,
+    PitCode,
+    PitJob,
+    PitMode,
+    PitOutcome,
+    PitParams,
+    PitRequest,
+    PitSector,
+    PitSource,
+    RampDef,
+    RampStart,
+    RoseRange,
+)
 from .preview import Notice
 from .road_model import Parts, Window
 from .road_profiles import RoadProfile
 from .road_section import sample_terrain
 from .road_store import _LINES_3D_PREFIXES, _ROUTE_PREFIX, read_lines_3d, untouchable_cells
 from .sectors import design_sectors, refuse_pending
-from .seeds import sector_layout
+from .seeds import pace_progress, sector_layout
 from .store import OperationStart, _loaded_masks, _start, require_version
 from .surfaces import project_frame, read_surface_steps
 from .zones import polygons_cells
 
-__all__ = ["PreparedPit", "prepare_pit", "prepare_pit_units", "source_sha256"]
+__all__ = ["OFFSET_NOT_VERIFIED", "PreparedPit", "compute", "compute_steps", "confirm_ramps", "prepare_pit", "prepare_pit_units", "source_sha256"]
 
 _NUMERIC = frozenset({"INTEGER", "DOUBLE"})
 _NAME_FIELDS = ("nombre", "name")
@@ -901,3 +929,104 @@ def prepare_pit(project: StoreProject, request: PitRequest, *, version: str | No
             result: PreparedPit = stop.value
             return result
 
+
+
+# --- Calcular (T22) --------------------------------------------------------------------------------------------------------
+
+OFFSET_NOT_VERIFIED = "des.pit_offset_not_verified"
+"""El código con que se rechaza un cálculo cuyo desfase no se pudo verificar (RF-018-10): ``PitCode.OFFSET_UNRELIABLE`` es su aviso."""
+_COMPUTE_PHASE = "pit_compute"
+
+
+def confirm_ramps(ramps: Sequence[Any], confirmed: Sequence[provenance.RampConfirmation] = ()
+                  ) -> tuple[tuple[provenance.RampConfirmation, ...], tuple[tuple[str, float, float], ...]]:
+    """Las pendientes medias de las rampas ``ramps`` (:class:`~design.pit_ramp.RampChecked`) frente a lo ya confirmado (``confirmed``; RF-018-19, RF-017-17):
+    las confirmaciones que cubren una media que pasa de pm y las que **faltan**, cada una ``(código de la rampa, media %, pm %)``. No rechaza: «Crear» (T23)
+    exige que no falte ninguna, con :func:`~design.pit_ramp.confirm_mean`."""
+    covering: list[provenance.RampConfirmation] = []
+    pending: list[tuple[str, float, float]] = []
+    for checked in ramps:
+        if not checked.mean_exceeded:
+            continue
+        found = None
+        for item in confirmed:
+            if item.ramp != checked.code:
+                continue
+            try:
+                found = pit_ramp.confirm_mean(checked, item)
+            except DesignError:
+                continue
+            break
+        if found is not None:
+            covering.append(found)
+        else:
+            pending.append((checked.code, float(checked.mean_gradient_pct), float(checked.profile.max_mean_gradient_pct)))
+    return tuple(covering), tuple(pending)
+
+
+def _reject_unreliable(job: PitJob, found: Any) -> None:
+    """RF-018-10: un desfase que no se pudo verificar **rechaza** el cálculo, con el banco y el defecto del primero y sin relajar nada."""
+    if found.reliable:
+        return
+    first = next((item for item in found.notices if item.code == PitCode.OFFSET_UNRELIABLE.value), None)
+    values = {} if first is None else dict(first.values)
+    raise DesignError(OFFSET_NOT_VERIFIED, obj=f"Corta «{job.request.name}»", field=PitParam.ARC_TOL.value, value=values.get("value"),
+                      name=job.request.name, bench=values.get("bench"), limit=values.get("limit"))
+
+
+def compute_steps(job: PitJob, window: Window, common: Mapping[str, float], *, crs: Any, vertical: Any,
+                  confirmed: Sequence[provenance.RampConfirmation] = (), budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, PitOutcome]:
+    """**A5 a A13** (T22; RF-018-03, 25, 26, 31, 35; RNF-018-06): el cálculo entero de la corta ``job``, por pasos de ``budget_s`` como mucho y **sin escribir
+    nada**: los bancos (ascendente o descendente, con sus rampas), **el rechazo de un desfase no verificado** (``des.pit_offset_not_verified``), la superficie,
+    la línea de cielo (con las distancias al límite legal y al perímetro de ``job``), los hallazgos, las cifras y el contraste con la 013. Devuelve el
+    :class:`~design.pit_model.PitOutcome` (``window``: la ventana de trabajo, que debe contener todo el movimiento; ``common``: los parámetros del proyecto
+    de la preparación, de los que se lee la tolerancia de cara; ``crs`` y ``vertical``: los del proyecto). ``outcome.extra`` lleva el contraste
+    (``contrast``), la superficie (``surface``: :class:`~design.pit_surface.PitSurface`), la línea de cielo (``sky``), las rampas comprobadas (``checked_ramps``),
+    las pendientes medias confirmadas (``mean_confirmed``) y las que faltan por confirmar (``mean_pending``; no rechazan el cálculo: las pide «Crear»).
+    Cerrar el generador a mitad no deja nada. Los rechazos (``DesignError``) salen al avanzar."""
+    try:
+        face_tolerance = float(common[provenance.TOLERANCE_FACE])
+    except KeyError as error:
+        raise ValueError(f"falta la tolerancia de cara del proyecto ({provenance.TOLERANCE_FACE}) en los parámetros comunes") from error
+    way = pit_bench.ascend_steps if job.mode is PitMode.UP else pit_bench.descend_steps
+    yield Progress(_COMPUTE_PHASE, 0, 6, "Calculando los bancos…")
+    benches = yield from pipeline.forward(way(job, budget_s=budget_s))
+    _reject_unreliable(job, benches)
+    ramps = tuple(benches.ramps)
+    yield Progress(_COMPUTE_PHASE, 1, 6, "Calculando la superficie de la corta…")
+    surface = yield from pipeline.forward(pit_surface.rasterize_steps(job, benches, ramps, crs=crs, vertical=vertical, budget_s=budget_s))
+    rows, cols = window
+    outside = surface.cut_cells.copy()
+    outside[rows, cols] = False
+    if bool(outside.any()):
+        raise ValueError("la ventana de trabajo no contiene todo el movimiento de la corta (error del programa)")
+    yield Progress(_COMPUTE_PHASE, 2, 6, "Calculando la línea de cielo…")
+    sky = pit_sky.skyline(job.start, surface.stepped, job.grid, crs=crs, vertical=vertical, legal=job.legal, perimeter=job.perimeter)
+    yield Progress(_COMPUTE_PHASE, 3, 6, "Buscando los hallazgos…")
+    found = yield from pipeline.forward(pace_progress(
+        pit_report.findings_units(job, benches.polylines, surface, face_tolerance_deg=face_tolerance, ramps=ramps, floor_width_m=benches.floor_width_m),
+        budget_s, phase=_COMPUTE_PHASE, running="Buscando los hallazgos…", finished="Hallazgos calculados"))
+    yield Progress(_COMPUTE_PHASE, 4, 6, "Calculando las cifras…")
+    figures = pit_report.figures(job, benches.polylines, surface, crs=crs, vertical=vertical, skyline=sky, ramps=ramps, found=found)
+    yield Progress(_COMPUTE_PHASE, 5, 6, "Contrastando con la 013…")
+    contrast = yield from pipeline.forward(pit_check013.contrast_steps(job, surface, budget_s=budget_s))
+    covering, pending = confirm_ramps(ramps, confirmed)
+    extra = MappingProxyType({
+        "contrast": contrast, "surface": surface, "sky": sky, "checked_ramps": ramps, "mean_confirmed": covering, "mean_pending": pending,
+        "face_volume_m3": benches.face_volume_m3, "floor": (benches.floor_level_m, benches.floor_area_m2, benches.floor_width_m)})
+    return PitOutcome(
+        job.request.name, job.code, job.mode, window, surface.surface[rows, cols], surface.cut_cells[rows, cols], figures.specs,
+        (*benches.notices, *contrast.notices), benches.polylines, tuple(item.path for item in ramps), tuple(part.xyz for part in sky.parts),
+        figures.benches, found, benches.stop, (), extra)
+
+
+def compute(job: PitJob, window: Window, common: Mapping[str, float], *, crs: Any, vertical: Any,
+            confirmed: Sequence[provenance.RampConfirmation] = ()) -> PitOutcome:
+    """:func:`compute_steps` hasta el final, sin ceder el hilo: el :class:`~design.pit_model.PitOutcome`. Los mismos rechazos."""
+    work = compute_steps(job, window, common, crs=crs, vertical=vertical, confirmed=confirmed)
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            result: PitOutcome = done.value
+            return result
