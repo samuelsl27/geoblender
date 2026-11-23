@@ -7,6 +7,7 @@ El contraste con celdas de ≤ 2 m a ≤ 1 % (CE-018-12) está en ``tests/refere
 
 from __future__ import annotations
 
+import dataclasses
 import unittest
 
 import numpy as np
@@ -64,17 +65,35 @@ class AscendingContrastTest(unittest.TestCase):
         self.assertAlmostEqual(found.max_deg, 60.0, delta=0.5)
         self.assertIsNotNone(found.max_place)
 
-    def test_the_staircase_goes_above_the_general_envelope(self) -> None:
-        """RF-018-27: la superficie escalonada queda por encima de la envolvente de talud general por construcción (hasta ``h·B/a`` ≈ 5,1 m en el
-        perfil de referencia: la cara sube antes de lo que la envolvente) y el aviso lo dice con su recuento, su exceso y su lugar. Es el HALLAZGO de la
-        T20 (DIFF-018d, propuesto): el contraste literal de la spec avisa siempre en la ascendente."""
+    def test_reference_profile_does_not_warn(self) -> None:
+        """RF-018-27 (DIFF-018d): frente al escalonado recortado de la 013 (mismo perfil, ancla y semillas) la corta de referencia no lo supera en más de
+        una altura de banco: el exceso máximo medido es positivo (el escalonado de cara primero y el chamfer no coinciden) pero menor que ``h``, y no
+        hay aviso."""
         found = self.found
-        self.assertGreater(found.above_cells, 0)
+        self.assertGreater(found.above_max_m, 0.0)
         self.assertLess(found.above_max_m, pd.EXPL.height_m)
-        (notice,) = found.notices
-        self.assertEqual((notice.code, notice.severity), ("des.pit_above_envelope", "warning"))
-        self.assertIn("Corta 1", notice.text("es"))
-        self.assertEqual(notice.values["count"], found.above_cells)
+        self.assertIsNotNone(found.above_place)
+        self.assertEqual((found.above_cells, found.notices), (0, ()))
+
+    def test_warns_when_the_pit_goes_above_by_more_than_one_bench_height(self) -> None:
+        """RF-018-27 (DIFF-018d): si el escalonado de la corta supera al de la 013 en más de una altura de banco, el aviso dice el banco (su cota), el
+        exceso medido y el lugar; con un exceso de ``h`` o menos no avisa."""
+        height = pd.EXPL.height_m
+        for lift, warns in ((height - 0.1, False), (height + 0.5, True)):
+            with self.subTest(lift=lift):
+                raised = dataclasses.replace(self.surface, stepped=self.surface.stepped + lift)
+                found = pit_check013.contrast(self.job, raised)
+                self.assertEqual(bool(found.notices), warns)
+                if warns:
+                    (notice,) = found.notices
+                    self.assertEqual((notice.code, notice.severity), ("des.pit_above_envelope", "warning"))
+                    self.assertIn("Corta 1", notice.text("es"))
+                    self.assertIn("una altura de banco", notice.text("es"))
+                    self.assertEqual(notice.values["count"], found.above_cells)
+                    self.assertGreater(found.above_cells, 0)
+                    self.assertGreater(found.above_max_m, height)
+                    self.assertAlmostEqual(notice.values["excess"], found.above_max_m, delta=1e-12)
+                    self.assertIn("level", notice.values)
 
     def test_steps_end_with_the_same_result(self) -> None:
         """RF-018-27: por pasos da el mismo resultado que de una vez, y cerrar el generador a mitad no deja nada ni cambia nada."""
@@ -109,6 +128,8 @@ class MessageTest(unittest.TestCase):
         self.assertEqual(message.severity, "warning")
         self.assertIn("{count}", message.es)
         self.assertIn("{count}", message.msgid)
+        self.assertIn("{excess}", message.es)
+        self.assertIn("{level}", message.es)
 
 
 if __name__ == "__main__":

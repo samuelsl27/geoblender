@@ -3865,10 +3865,10 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.pit_above_envelope",
-        "Pit «{name}»: the ascending surface goes above the envelope of the benching (spec 013) in {count} cells, by up to {excess} m "
-        "(near x = {x} m, y = {y} m); the vector design cannot be steeper than the admissible envelope. Nothing is changed.",
-        "Corta «{name}»: la superficie ascendente supera la envolvente del escalonado (spec 013) en {count} celdas, hasta {excess} m "
-        "(cerca de x = {x} m, y = {y} m); el diseño vectorial no puede ser más empinado que la envolvente admisible. No se cambia nada.",
+        "Pit «{name}»: the ascending surface goes above the benching of spec 013 (same profile, anchor and seeds) by more than one bench height "
+        "in {count} cells; the worst is {excess} m, in the bench at level {level} m (near x = {x} m, y = {y} m). Nothing is changed.",
+        "Corta «{name}»: la superficie ascendente supera el escalonado de la 013 (mismo perfil, ancla y semillas) en más de una altura de banco "
+        "en {count} celdas; el peor exceso es de {excess} m, en el banco de cota {level} m (cerca de x = {x} m, y = {y} m). No se cambia nada.",
         "warning",
     ),
     Message(

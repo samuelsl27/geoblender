@@ -62,6 +62,9 @@ class ContrastWith013ReferenceTest(unittest.TestCase):
                 self.assertAlmostEqual(found.max_deg, 60.0, delta=0.5)
                 self.assertTrue(found.p90_deg <= found.p99_deg <= found.max_deg)
                 self.assertTrue(np.isfinite(found.volume_013_m3))
+                # CE-018-12 (DIFF-018d): la corta no supera el escalonado de la 013 en más de una altura de banco (exceso medido ~0,83 m y ~1,02 m).
+                self.assertLess(found.above_max_m, pd.EXPL.height_m)
+                self.assertEqual((found.above_cells, found.notices), (0, ()))
 
 
 if __name__ == "__main__":

@@ -10,8 +10,10 @@ recinto de la corta, y se compone con la partida como en la 013 (``mín`` en lo 
 - la **diferencia de volumen** de corte (m³ y %, respecto al de la 013);
 - la **inclinación de celda** del diseño p90, p99 y máxima (°, con el lugar de la máxima; la de ``design.report``: la mayor tangente a las ocho
   vecinas, solo en las celdas con corte);
-- un **aviso** (``des.pit_above_envelope``) si la superficie **ascendente** de las polilíneas supera la envolvente de la 013 en más de la tolerancia
-  de la métrica (:data:`~design.envelopes.TOLERANCE_M`): el diseño vectorial no puede ser más empinado que la envolvente admisible.
+- un **aviso** (``des.pit_above_envelope``) si la superficie **ascendente** de las polilíneas supera el **escalonado recortado de la 013** (mismo
+  perfil, ancla y semillas) en más de **una altura de banco** ``h`` (DIFF-018d, spec 0.6; el escalonado de cara primero queda por encima de la
+  envolvente de talud general hasta ``h·B/a`` por construcción, también en la 013, así que esa no sirve de umbral). Da el recuento de celdas, el
+  exceso máximo medido (``above_max_m``, aunque no pase de ``h``), el lugar y la cota del escalonado allí (el banco).
 
 **No cambia ninguna superficie** (ni la de la corta ni las de la 013). Con varios perfiles por sector se contrasta con el perfil base o, si no lo hay,
 con el primero de la corta (el contraste es por un solo perfil). Por pasos (:func:`contrast_steps`, ``Progress``) y de una vez (:func:`contrast`).
@@ -47,8 +49,8 @@ class Contrast:
     """El contraste con la 013 (RF-018-27): ``design013`` (la superficie de la 013, de la forma de la rejilla), ``max_diff_m`` y su ``max_diff_place``,
     el volumen de corte de cada una (``volume_pit_m3``, ``volume_013_m3``), la diferencia (``volume_diff_m3`` = corta − 013; ``volume_diff_pct`` en %
     del de la 013, ``None`` si es 0), la inclinación de celda del diseño ``p90_deg``, ``p99_deg`` y ``max_deg`` con el lugar de la máxima
-    (``max_place``; ``None`` sin corte), las celdas de la ascendente por encima de la envolvente (``above_cells``, ``above_max_m``,
-    ``above_place``) y los ``notices``."""
+    (``max_place``; ``None`` sin corte), las celdas de la ascendente a más de una altura de banco por encima del escalonado de la 013 (``above_cells``;
+    ``above_max_m`` y ``above_place``: el exceso máximo medido y su lugar, también si no pasa de ``h``) y los ``notices``."""
 
     design013: np.ndarray
     max_diff_m: float
@@ -137,15 +139,17 @@ def _contrast_steps(job: PitJob, surface: PitSurface, budget_s: float) -> Iterat
     above_cells, above_max, above_place = 0, 0.0, None
     notices: tuple[Notice, ...] = ()
     if job.mode is PitMode.UP:
+        # DIFF-018d: frente al escalonado recortado de la 013 (no a la envolvente de talud general, que el escalonado de cara primero supera por
+        # construcción hasta h·B/a), y se avisa solo si lo supera en más de una altura de banco.
         with np.errstate(invalid="ignore"):
-            excess = np.where(np.isfinite(surface.stepped) & np.isfinite(envelope), surface.stepped - envelope, -np.inf)
-        over = excess > envelopes.TOLERANCE_M
-        above_cells = int(np.count_nonzero(over))
-        if above_cells:
+            excess = np.where(np.isfinite(surface.stepped) & np.isfinite(trim.grid), surface.stepped - trim.grid, -np.inf)
+        if np.isfinite(excess).any():
             at2 = np.unravel_index(int(np.argmax(excess)), excess.shape)
-            above_max, above_place = float(excess[at2]), _place(job, int(at2[0]), int(at2[1]))
-            notices = (Notice("des.pit_above_envelope", {"name": job.request.name, "count": above_cells, "excess": above_max,
-                                                        "x": above_place[0], "y": above_place[1]}),)
+            above_max, above_place = max(float(excess[at2]), 0.0), _place(job, int(at2[0]), int(at2[1]))
+            above_cells = int(np.count_nonzero(excess > profile.height_m))
+            if above_cells:
+                notices = (Notice("des.pit_above_envelope", {"name": job.request.name, "count": above_cells, "excess": above_max,
+                                                            "level": float(surface.stepped[at2]), "x": above_place[0], "y": above_place[1]}),)
     result = Contrast(design013, max_diff, diff_place, volume_pit, volume013, volume_pit - volume013, pct, p90, p99, top, place, above_cells,
                       above_max, above_place, notices)
     yield Progress(_PHASE, 1, 1, "Contraste calculado", result=result)
