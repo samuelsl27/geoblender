@@ -12,8 +12,11 @@ Los valores decimales, en ``StringProperty`` (regla 4: nada de float32). Los per
 asignaciones por sector se escriben ``sector=valor`` separadas por «;». Lo que se deja vacío lo resuelve el dominio: el valor por defecto de su parámetro o, si no lo tiene, el rechazo de
 RF-015-08 con su nombre. Un diálogo a medias no activa la vista previa ni escribe nada.
 
-Las demás órdenes de la corta («Expandir banco…», «Rampa…», «Roseta de taludes…», «Línea de cielo…» y «Superficie y sólido…») son de las tareas T32 y T33; las provisionales del catálogo
-(``des_expand_bench``, ``des_add_ramp``, ``des_compute_daylight``) las sustituyen ellas."""
+**«Roseta de taludes…» y «Rampa…»** (T32; RF-018-07, RF-018-15; plan 018 H-5): :class:`GEOBLENDER_OT_des_edit_pit_rose` y :class:`GEOBLENDER_OT_des_edit_pit_ramp` abren sus ventanas
+(``bl.ui.pit_panels``) y las internas :class:`GEOBLENDER_OT_des_save_pit_rose` y :class:`GEOBLENDER_OT_des_save_pit_ramp` crean, completan y renombran con
+``design.pit_rose.edit_pit_roses`` y ``design.pit_ramp_def.edit_pit_ramps`` (``des.edit_pit_roses`` y ``des.edit_pit_ramps``: operaciones **de proyecto**, una transacción cada una;
+la copia, para la corta, de «Perfil de pista…» de la 017). Las demás órdenes de la corta («Expandir banco…», «Línea de cielo…» y «Superficie y sólido…») son de las tareas
+siguientes; las provisionales del catálogo (``des_expand_bench``, ``des_compute_daylight``) las sustituyen ellas."""
 
 from __future__ import annotations
 
@@ -27,23 +30,36 @@ from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from ...core.errors import GeoblenderError
 from ...core.i18n import tr
+from ...core.params import ParameterStore, ParamKind
+from ...core.provenance.undo import UndoKind
+from ...design import params as design_params
 from ...core.project.model import Progress
 from ...core.timeutil import format_utc
 from ...design import messages as design_messages
 from ...design import provenance
 from ..scene import versions as scene_versions
-from ..ui import constraint_panels, des_panels
+from ..scene import undo_watch
+from ..ui import constraint_panels, des_panels, pit_panels
 from ..ui.commands import catalog, command_idname
 from ..ui.commands import text as command_text
-from ..ui.res_panels import NOT_SHOWN
+from ..ui.res_panels import NOT_SHOWN, record_text
 from . import surface_proposal
 from .core import _StepsModal
-from .core_provenance import SESSION, ProvenanceAwareOperator, ensure_ready, write_unavailable
+from .core_provenance import (
+    PARAMETER_SCOPE_ITEMS,
+    SESSION,
+    SOURCE_KIND_ITEMS,
+    ProvenanceAwareOperator,
+    ensure_ready,
+    scope_choice,
+    write_unavailable,
+)
 from .des import (
     DIALOG_WIDTH,
     TRANSLATION_CONTEXT,
     ComputeFormError,
     DesignCommandAware,
+    PROFILE_KIND_ITEMS,
     ProfileFormError,
     _ask_confirmation,
     _CalculateAndCreate,
@@ -683,7 +699,463 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
         return found
 
 
-classes: tuple[type, ...] = (GEOBLENDER_OT_des_create_pit,)
-"""Las órdenes de la corta por bancos (T31: «Nueva corta…»; T32 y T33 ponen las demás)."""
+# --- Roseta de taludes… y Rampa… (T32; HU-018-1, HU-018-3; RF-018-07, RF-018-15; plan 018 H-5) -----------------------------------------------------
 
-__all__ = ["CREATE_PIT", "GEOBLENDER_OT_des_create_pit", "classes", "refresh_pit_choices"]
+EDIT_PIT_ROSE = provenance.PIT_ROSE_COMMAND
+EDIT_PIT_RAMP = provenance.PIT_RAMP_COMMAND
+SAVE_PIT_ROSE = pit_panels.SAVE_ROSE
+SAVE_PIT_RAMP = pit_panels.SAVE_RAMP
+_NOT_CHOSEN = "NONE"
+RAMP_TYPE_ITEMS = [(_NOT_CHOSEN, "Not chosen", "Not chosen"), ("spiral", "Spiral", "The ramp winds along the wall of the pit"), ("zigzag", "Zigzag", "The ramp goes to and fro with return platforms")]
+"""El tipo de la rampa (RF-018-15): sin valor por defecto, lo declara una persona."""
+RAMP_SENSE_ITEMS = [(_NOT_CHOSEN, "Not chosen", "Not chosen"), ("cw", "Clockwise", "The ramp turns clockwise"), ("ccw", "Counter-clockwise", "The ramp turns counter-clockwise")]
+"""El sentido de la rampa (RF-018-15)."""
+
+
+def _call_panel(name: str) -> set[str]:
+    """Abre la ventana emergente ``name`` (la de ``bl.ops.des``); una que no está registrada, nada. Aparte para que las pruebas la sustituyan."""
+    from .des import _call_panel as call
+
+    return call(name)
+
+
+_RAMP_ROADS: list[tuple[str, str, str]] = []
+"""La lista viva de los perfiles de pista del diálogo de «Rampa…» (los ``items`` de un ``EnumProperty`` han de seguir vivos)."""
+
+
+def ramp_road_items(self: Any, context: Any) -> list[tuple[str, str, str]]:
+    """Los perfiles de pista del proyecto, **precedidos por «sin elegir»**: el valor por defecto de una rampa no lo da ningún perfil (D-19) y renombrar no escribe ninguno."""
+    base = des_panels.road_profile_items(self, context)
+    _RAMP_ROADS[:] = [(_NOT_CHOSEN, tr("Not chosen"), tr("Not chosen")), *(item for item in base if item[0] != des_panels.NO_ZONE)]
+    return _RAMP_ROADS
+
+
+def ramp_field_label(attribute: str) -> str:
+    """El nombre, en el idioma de la interfaz, del campo ``attribute`` del diálogo de «Rampa…» (cada uno, un ``msgid`` literal del catálogo)."""
+    labels = {"ramp_type": tr("Ramp type"), "sense": tr("Sense"), "start": tr("Start point"), "gradient": tr("Design gradient g (%)"), "road_profile": tr("Road profile"),
+              "transition": tr("Transition (m)"), "turn_radius": tr("Turning radius (m)"), "min_platform": tr("Minimum platform (m)")}
+    return labels[attribute]
+
+
+def refresh_ramp_choices(project: Any) -> None:
+    """Vuelve a leer de ``project`` los perfiles de pista que ofrece el diálogo de «Rampa…» (la lista viva de ``des_panels.road_profile_items``)."""
+    from ...design import road_profiles  # al usarlo: habilitar no carga el cálculo
+
+    with project.read() as conn:
+        stored = road_profiles.read_profiles(conn)
+    if stored:
+        des_panels._CHOICES.road_profiles = [(item.code, item.name, tr("Road profile")) for item in stored]
+
+
+class _CodedSave:
+    """Lo común de las dos órdenes que guardan un dato del proyecto con código (la roseta y la rampa): la fila que se completa o se renombra, la declaración de los valores
+    (tipo, fuente, decisor, motivo y ámbito) y el cierre. Las propiedades las declara cada orden."""
+
+    provenance_dialog = False
+    _KEY_EXAMPLE = ""
+    _known: dict[str, dict[str, str]]
+
+    def _rows(self, conn: Any) -> Any:
+        raise NotImplementedError
+
+    def _stored(self, project: Any) -> Any:
+        """La fila de :attr:`code` en el proyecto; ``ProfileFormError`` si ya no está (sin código, ``None``: uno nuevo)."""
+        if not self.code:
+            return None
+        with project.read() as conn:
+            found = [row for row in self._rows(conn) if row.code == self.code]
+        if not found:
+            raise ProfileFormError(tr("«{code}» is no longer in the project: open the list again", code=self.code))
+        return found[0]
+
+    def _declaration(self, declaration_type: Any) -> Any:
+        """La declaración de lo escrito: su tipo, su fuente, quién lo decide, por qué y para quién (el proyecto o solo la versión activa)."""
+        decided_by = self.decided_by.strip()
+        if not decided_by:
+            raise ProfileFormError(tr("Write who decides the values"))
+        source = self.source.strip()
+        version = None
+        if self.scope == "VERSION":  # solo la versión activa (RF-009-24, RF-009-29)
+            active = scene_versions.active()
+            if active is None:
+                raise ProfileFormError(tr("Choose the active version first: Project ▸ Versions ▸ Active version"))
+            version = active.code
+        kind = ParamKind.ADOPTADO if self.kind == "ADOPTADO" else ParamKind.HIPOTESIS
+        return declaration_type(source=source or decided_by, decided_by=decided_by, reason=self.reason.strip() or tr("Declared in the pit windows"),
+                                source_kind=self.source_kind.lower() if source else "person", kind=kind.value, version=version)
+
+    def _invoke(self, context: Any, title: str) -> set[str]:
+        self.provenance_dialog = True
+        project = SESSION.project
+        try:
+            row = self._stored(project)
+            self._known = {} if row is None else self._known_values(project, row.code)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        if row is not None:
+            self.name = row.name
+        if not self.decided_by:
+            self.decided_by = project.session.user_host
+        if not self.properties.is_property_set("scope"):
+            self.scope = "PROJECT"
+        return context.window_manager.invoke_props_dialog(self, width=DIALOG_WIDTH, translate=False, title=title, confirm_text=tr("Save"))
+
+    def _known_values(self, project: Any, code: str) -> dict[str, dict[str, str]]:
+        return {}
+
+    def _draw_scope(self, layout: Any) -> None:
+        choice = scope_choice(self._KEY_EXAMPLE)
+        if choice is None:  # «¿Para el proyecto o solo para V01?» (RF-009-29)
+            return
+        layout.label(text=tr("For the project or only for {version}?", version=choice.code), translate=False)
+        row = layout.row(align=True)
+        row.use_property_split = False
+        row.prop_enum(self, "scope", "PROJECT", text=tr("The project"), translate=False)
+        only = row.row(align=True)
+        only.enabled = choice.refusal is None  # «Versión no editable» (RF-009-21)
+        only.prop_enum(self, "scope", "VERSION", text=tr("Only {version}", version=choice.code), translate=False)
+        if choice.refusal is not None:
+            refused = layout.row()
+            refused.alert = True
+            refused.label(text=choice.refusal, icon="ERROR", translate=False)
+
+    def _draw_declaration(self, layout: Any) -> None:
+        layout.prop(self, "kind", text=tr("Type"), translate=False)
+        layout.prop(self, "source", text=tr("Source"), translate=False)
+        layout.prop(self, "source_kind", text=tr("Source type"), translate=False)
+        layout.prop(self, "decided_by", text=tr("Decided by"), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def _renamed(self, row: Any, has_values: bool) -> str | None:
+        """El nombre nuevo de la fila que se completa (``None``: el suyo); ``ProfileFormError`` si no cambia nada."""
+        typed_name = self.name.strip()
+        renamed = self.name if typed_name and typed_name != row.name else None
+        if renamed is None and not has_values:
+            raise ProfileFormError(tr("Nothing to change in «{name}»", name=row.name))
+        return renamed
+
+    def _run(self, saver: Any, said: Any, after: Any) -> set[str]:
+        """Escribe con ``saver`` (el dominio) y lo deja dicho: nada se escribe si lo escrito no vale (el dominio lo mira todo antes: 0 transacciones, RF-018-07, RF-018-15)."""
+        project = SESSION.project
+        try:
+            edit, declaration = self._request(project)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog, version=scene_versions.active_version())
+        if ready is None:
+            return {"CANCELLED"}
+        try:
+            edited = saver(project, [edit], declaration)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, self.provenance_op_type)
+        rows = edited.roses if hasattr(edited, "roses") else edited.ramps
+        code = edited.created[0] if edited.created else edit.code
+        name = next(row.name for row in rows if row.code == code)
+        text = said(bool(edited.created), name, code)
+        after(project, code, text)
+        self.report({"INFO"}, text)
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_des_edit_pit_rose(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Slope roses of the pit, with their ranges, their source and the advance and overall slope derived from them"""
+
+    bl_idname = EDIT_PIT_ROSE
+    bl_label = "Slope rose…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.EDIT_PIT_ROSES
+
+    def execute(self, context: Any) -> set[str]:
+        """Lee las rosetas del proyecto y sus rangos en la versión activa en la vista y abre su ventana; desde un guion sin ventana, solo la vista (RF-018-07). Activa con el proyecto
+        en escritura y la versión activa editable (o ninguna: la edición es de proyecto) y, si no, desactivada con su motivo (RF-015-28)."""
+        try:
+            pit_panels.fill_pit_roses(SESSION.project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}
+        return _call_panel(pit_panels.ROSES_PANEL)
+
+
+class GEOBLENDER_OT_des_save_pit_rose(_CodedSave, DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Create a slope rose, complete the ranges it lacks or rename it"""
+
+    bl_idname = SAVE_PIT_ROSE
+    bl_label = "Save slope rose…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    provenance_op_type = provenance.EDIT_PIT_ROSES
+    _KEY_EXAMPLE = design_params.rose_key("r", "r1", design_params.RoseParam.FACE_DEG)
+
+    code: StringProperty(  # type: ignore[valid-type]
+        name="Rose", description="Code of the slope rose to complete or rename (empty: a new rose)", options=_HIDDEN)
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the rose, such as ROSETA_NORTE: it can change, its code cannot", options=_FIELD)
+    ranges: StringProperty(  # type: ignore[valid-type]
+        name="Ranges",
+        description="The ranges of the face azimuth, each as «from to angle berm» (degrees, degrees, degrees, metres) separated by «;»: they cover 0 to 360 without gaps or overlaps",
+        options=_FIELD)
+    kind: EnumProperty(  # type: ignore[valid-type]
+        name="Type", description="Type of the values: adopted or hypothesis", items=PROFILE_KIND_ITEMS, default="ADOPTADO", options=_FIELD)
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Source", description="Document, standard, person, operation or algorithm the values come from (empty: the decider)", options=_FIELD)
+    source_kind: EnumProperty(  # type: ignore[valid-type]
+        name="Source type", description="Whether the source is a document, a standard, a person, an operation or an algorithm", items=SOURCE_KIND_ITEMS, default="PERSON",
+        options=_FIELD)
+    decided_by: StringProperty(  # type: ignore[valid-type]
+        name="Decided by", description="Who decided the values (the owner, a laboratory, a person)", options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the rose has these values (recorded in its history)", options=_FIELD)
+    scope: EnumProperty(  # type: ignore[valid-type]
+        name="Scope", description="Whether the change is for the project or only for the active version (a parameter that its module admits by version)",
+        items=PARAMETER_SCOPE_ITEMS, default="PROJECT", options=_FIELD)
+
+    def _rows(self, conn: Any) -> Any:
+        from ...design import pit_rose  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+        return pit_rose.read_roses(conn)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo: de una roseta que existe, con su nombre; de una nueva, vacío. Propone el decisor y el ámbito; no cambia nada hasta que se acepta."""
+        return self._invoke(context, tr("Slope rose"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        self._draw_scope(layout)
+        layout.prop(self, "ranges", text=tr("Ranges"), translate=False)
+        layout.label(text=tr("Each range: from to angle berm, separated by «;»"), translate=False)
+        self._draw_declaration(layout)
+
+    def _ranges(self) -> list[tuple[float, float, float, float]]:
+        """Lo tecleado en :attr:`ranges` como cuatro números por rango (desde, hasta, α, B); ``ProfileFormError`` nombrando el rango si no son cuatro números."""
+        found: list[tuple[float, float, float, float]] = []
+        for part in self.ranges.split(";"):
+            tokens = part.split()
+            if not tokens:
+                continue
+            if len(tokens) != 4:
+                raise ProfileFormError(tr("«{value}» is not a range: write «from to angle berm»", value=part.strip()))
+            numbers = [typed_number(token, tr("Ranges")) for token in tokens]
+            found.append((numbers[0], numbers[1], numbers[2], numbers[3]))  # type: ignore[arg-type]
+        return found
+
+    def _request(self, project: Any) -> tuple[Any, Any]:
+        """Lo escrito, como lo pide el dominio: la edición y la declaración de los rangos. Los huecos, los solapes, los nombres y los valores fuera de rango los rechaza el dominio
+        (``DesignError``, RF-018-07): ninguna regla ni cuenta es de aquí."""
+        from ...design import pit_rose  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+        row = self._stored(project)
+        ranges = self._ranges()
+        if row is None:
+            edit = pit_rose.RoseEdit(name=self.name, ranges=ranges)
+        else:
+            edit = pit_rose.RoseEdit(name=self._renamed(row, bool(ranges)), code=row.code, ranges=ranges or None)
+        return edit, (self._declaration(pit_rose.Declaration) if ranges else None)
+
+    def execute(self, context: Any) -> set[str]:
+        """Crea, completa o renombra la roseta con ``design.pit_rose.edit_pit_roses`` (una sola operación de proyecto y una transacción; RF-018-07). Todo se mira antes de escribir:
+        sin nombre, con el nombre de otra, con un hueco o un solape de azimut, con un valor fuera de rango o con un texto que no son cuatro números se rechaza nombrando la roseta, el
+        rango y el valor, y no deja nada (0 transacciones)."""
+        from ...design import pit_rose  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+        def said(created: bool, name: str, code: str) -> str:
+            if created:
+                return tr("Slope rose «{name}» created with the code «{code}»", name=name, code=code)
+            return tr("Slope rose «{name}» saved (code «{code}»)", name=name, code=code)
+
+        def after(project: Any, code: str, text: str) -> None:
+            try:
+                pit_panels.fill_pit_roses(project)
+            except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+                LOGGER.warning("No se pudo volver a leer la lista de rosetas", exc_info=True)
+            pit_panels.choose_pit_rose(code)
+            pit_panels.show_pit_rose_report([(text, False)])
+
+        return self._run(pit_rose.edit_pit_roses, said, after)
+
+
+class GEOBLENDER_OT_des_edit_pit_ramp(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Ramp definitions of the pit, with their values, their source and the length they need per bench"""
+
+    bl_idname = EDIT_PIT_RAMP
+    bl_label = "Ramp…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.EDIT_PIT_RAMPS
+
+    def execute(self, context: Any) -> set[str]:
+        """Lee las definiciones de rampa del proyecto y sus valores en la versión activa en la vista y abre su ventana; desde un guion sin ventana, solo la vista (RF-018-15)."""
+        try:
+            pit_panels.fill_pit_ramps(SESSION.project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}
+        return _call_panel(pit_panels.RAMPS_PANEL)
+
+
+class GEOBLENDER_OT_des_save_pit_ramp(_CodedSave, DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Create a ramp definition, complete the values it lacks or rename it"""
+
+    bl_idname = SAVE_PIT_RAMP
+    bl_label = "Save ramp…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    provenance_op_type = provenance.EDIT_PIT_RAMPS
+    _KEY_EXAMPLE = design_params.pitramp_key("q", design_params.PitRampParam.GRADIENT)
+
+    code: StringProperty(  # type: ignore[valid-type]
+        name="Ramp", description="Code of the ramp definition to complete or rename (empty: a new ramp)", options=_HIDDEN)
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the ramp, such as ESPIRAL_A: it can change, its code cannot", options=_FIELD)
+    ramp_type: EnumProperty(  # type: ignore[valid-type]
+        name="Ramp type", description="Spiral along the wall or zigzag with return platforms", items=RAMP_TYPE_ITEMS, default=_NOT_CHOSEN, options=_FIELD)
+    sense: EnumProperty(  # type: ignore[valid-type]
+        name="Sense", description="Whether the ramp turns clockwise or counter-clockwise", items=RAMP_SENSE_ITEMS, default=_NOT_CHOSEN, options=_FIELD)
+    start: StringProperty(  # type: ignore[valid-type]
+        name="Start point", description="Where the ramp starts: «fondo», «banco N» or «capa:nombre» (a point of a layer of points)", options=_FIELD)
+    gradient: StringProperty(  # type: ignore[valid-type]
+        name="Design gradient g (%)", description="Design gradient of the ramp in per cent, more than 0 and at most the maximum of its road profile", options=_FIELD)
+    road_profile: EnumProperty(  # type: ignore[valid-type]
+        name="Road profile", description="Road profile of the ramp: its section width and its rules", items=ramp_road_items, options=_FIELD)
+    transition: StringProperty(  # type: ignore[valid-type]
+        name="Transition (m)", description="Length of the linear transition of the face in metres, 0 or more", options=_FIELD)
+    turn_radius: StringProperty(  # type: ignore[valid-type]
+        name="Turning radius (m)", description="Turning radius of a zigzag ramp in metres, more than 0 (hypothesis: no default value)", options=_FIELD)
+    min_platform: StringProperty(  # type: ignore[valid-type]
+        name="Minimum platform (m)", description="Minimum length of the return platform of a zigzag ramp in metres, more than 0 (hypothesis: no default value)", options=_FIELD)
+    kind: EnumProperty(  # type: ignore[valid-type]
+        name="Type", description="Type of the values: adopted or hypothesis", items=PROFILE_KIND_ITEMS, default="ADOPTADO", options=_FIELD)
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Source", description="Document, standard, person, operation or algorithm the values come from (empty: the decider)", options=_FIELD)
+    source_kind: EnumProperty(  # type: ignore[valid-type]
+        name="Source type", description="Whether the source is a document, a standard, a person, an operation or an algorithm", items=SOURCE_KIND_ITEMS, default="PERSON",
+        options=_FIELD)
+    decided_by: StringProperty(  # type: ignore[valid-type]
+        name="Decided by", description="Who decided the values (the owner, a laboratory, a person)", options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the ramp has these values (recorded in its history)", options=_FIELD)
+    scope: EnumProperty(  # type: ignore[valid-type]
+        name="Scope", description="Whether the change is for the project or only for the active version (a parameter that its module admits by version)",
+        items=PARAMETER_SCOPE_ITEMS, default="PROJECT", options=_FIELD)
+
+    _FIELDS = (("ramp_type", design_params.PitRampParam.TYPE, "Ramp type"), ("sense", design_params.PitRampParam.SENSE, "Sense"),
+               ("start", design_params.PitRampParam.START, "Start point"), ("gradient", design_params.PitRampParam.GRADIENT, "Design gradient g (%)"),
+               ("road_profile", design_params.PitRampParam.ROAD_PROFILE, "Road profile"), ("transition", design_params.PitRampParam.TRANSITION, "Transition (m)"),
+               ("turn_radius", design_params.PitRampParam.TURN_RADIUS, "Turning radius (m)"),
+               ("min_platform", design_params.PitRampParam.MIN_PLATFORM, "Minimum platform (m)"))
+
+    def _rows(self, conn: Any) -> Any:
+        from ...design import pit_ramp_def  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+        return pit_ramp_def.read_ramps(conn)
+
+    def _known_values(self, project: Any, code: str) -> dict[str, dict[str, str]]:
+        """Lo que la rampa ``code`` ya tiene declarado, por propiedad y ámbito (``PROJECT`` o ``VERSION``): su texto. Con ello el diálogo de completar no pide lo que ya vale."""
+        store = ParameterStore(project)
+        version = scene_versions.active()
+        found: dict[str, dict[str, str]] = {}
+        with project.read() as conn:
+            for attribute, param, _label in self._FIELDS:
+                key = design_params.pitramp_key(code, param)
+                records = {"PROJECT": store.get(key, conn=conn), "VERSION": None if version is None else store.get(key, version=version.uid, conn=conn)}
+                found[attribute] = {scope: record_text(record) for scope, record in records.items() if record is not None and record.value is not None}
+        return found
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo: de una rampa que existe, con su nombre y lo que ya vale en cada ámbito (solo se piden los valores que le faltan); de una nueva, vacío."""
+        try:
+            refresh_ramp_choices(SESSION.project)
+        except (GeoblenderError, sqlite3.Error, OSError):
+            LOGGER.warning("No se pudo volver a leer la lista de perfiles de pista", exc_info=True)
+        return self._invoke(context, tr("Ramp definition"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        self._draw_scope(layout)
+        known = getattr(self, "_known", {})
+        declared = False
+        for attribute, _param, label in self._FIELDS:
+            here = known.get(attribute, {}).get(self.scope)
+            if here is not None:  # ya vale en ese ámbito: se cambia con «Cambiar…»
+                layout.label(text=tr("{name}: {value}", name=ramp_field_label(attribute), value=here), translate=False)
+                declared = True
+            else:
+                layout.prop(self, attribute, text=ramp_field_label(attribute), translate=False)
+        if declared:
+            layout.label(text=tr("Values already declared are changed with «Change…» in the list"), translate=False)
+        self._draw_declaration(layout)
+
+    def _values(self) -> dict[Any, Any]:
+        """Lo escrito como lo pide el dominio (por valor de la rampa); lo vacío o «sin elegir» no se da: el dominio dice cuál falta (D-19: ningún valor por defecto)."""
+        values: dict[Any, Any] = {}
+        for attribute, item, label in self._FIELDS:
+            typed = getattr(self, attribute)
+            if attribute in ("ramp_type", "sense", "road_profile"):
+                if typed not in (_NOT_CHOSEN, des_panels.NO_ZONE, ""):
+                    values[item] = typed
+            elif item is design_params.PitRampParam.START:
+                if typed.strip():
+                    values[item] = typed.strip()
+            else:
+                number = typed_number(typed, ramp_field_label(attribute))
+                if number is not None:
+                    values[item] = number
+        return values
+
+    def _request(self, project: Any) -> tuple[Any, Any]:
+        """La edición y la declaración de lo escrito. Los rangos, el nombre y la pendiente máxima del perfil de pista los rechaza el dominio (``DesignError``, RF-018-15)."""
+        from ...design import pit_ramp_def, pit_rose  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+        row = self._stored(project)
+        values = self._values()
+        if row is None:
+            edit = pit_ramp_def.RampEdit(name=self.name, values=values)
+        else:
+            edit = pit_ramp_def.RampEdit(name=self._renamed(row, bool(values)), code=row.code, values=values or None)
+        return edit, (self._declaration(pit_rose.Declaration) if values else None)
+
+    def execute(self, context: Any) -> set[str]:
+        """Crea, completa o renombra la definición con ``design.pit_ramp_def.edit_pit_ramps`` (una sola operación de proyecto y una transacción; RF-018-15). Todo se mira antes de
+        escribir: sin nombre, con el nombre de otra, sin un valor, con uno fuera de rango o con una pendiente por encima de la máxima del perfil de pista se rechaza nombrando la rampa,
+        el campo y el valor, y no deja nada (0 transacciones)."""
+        from ...design import pit_ramp_def  # al usarlo: habilitar no lo carga (RNF-001-03)
+
+        def said(created: bool, name: str, code: str) -> str:
+            if created:
+                return tr("Ramp «{name}» created with the code «{code}»", name=name, code=code)
+            return tr("Ramp «{name}» saved (code «{code}»)", name=name, code=code)
+
+        def after(project: Any, code: str, text: str) -> None:
+            try:
+                pit_panels.fill_pit_ramps(project)
+            except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+                LOGGER.warning("No se pudo volver a leer la lista de rampas", exc_info=True)
+            pit_panels.choose_pit_ramp(code)
+            pit_panels.show_pit_ramp_report([(text, False)])
+
+        return self._run(pit_ramp_def.edit_pit_ramps, said, after)
+
+
+classes: tuple[type, ...] = (GEOBLENDER_OT_des_create_pit, GEOBLENDER_OT_des_edit_pit_rose, GEOBLENDER_OT_des_save_pit_rose, GEOBLENDER_OT_des_edit_pit_ramp,
+                             GEOBLENDER_OT_des_save_pit_ramp)
+"""Las órdenes de la corta por bancos (T31: «Nueva corta…»; T32: «Roseta de taludes…» y «Rampa…» con sus internas; las demás las ponen las tareas siguientes)."""
+
+__all__ = ["CREATE_PIT", "EDIT_PIT_RAMP", "EDIT_PIT_ROSE", "GEOBLENDER_OT_des_create_pit", "classes", "refresh_pit_choices", "refresh_ramp_choices"]

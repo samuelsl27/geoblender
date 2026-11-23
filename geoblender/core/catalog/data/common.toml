@@ -711,6 +711,29 @@ frequency = 1
 
 # Las órdenes de pistas y rampas de la 017 (T29 a T33; HU-017-1 a HU-017-4; RF-017-07, RF-017-29): «Pista…», «Proponer el trazado…», «Accesibilidad de las pistas…», «Perfil de pista…» y «Exportar pista…» tienen
 # su casa en Diseño ▸ Pistas y entidades (07_design.toml, entrada 017: sustituyen a las tres provisionales de R-40, D-20); lo único que queda aquí es la interna de la ventana del perfil de pista.
+# Las internas de las ventanas de «Roseta de taludes…» y «Rampa…» de la 018 (T32; RF-018-07, RF-018-15): sus órdenes tienen su casa en Diseño ▸ Corta por bancos (07_design.toml).
+[[command]]
+key = "geoblender.des_save_pit_rose"
+kind = "internal"
+label.en = "Save slope rose…"
+label.es = "Guardar roseta de taludes…"
+description.en = "Create a slope rose, complete the ranges it lacks or rename it"
+description.es = "Crea una roseta de taludes, completa los rangos que le faltan o la renombra"
+entry = "R-35"
+action = "P"
+frequency = 1
+
+[[command]]
+key = "geoblender.des_save_pit_ramp"
+kind = "internal"
+label.en = "Save ramp…"
+label.es = "Guardar rampa…"
+description.en = "Create a ramp definition, complete the values it lacks or rename it"
+description.es = "Crea una definición de rampa, completa los valores que le faltan o la renombra"
+entry = "R-35"
+action = "P"
+frequency = 1
+
 [[command]]
 key = "geoblender.des_save_road_profile"
 kind = "internal"

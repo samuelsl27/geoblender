@@ -12062,3 +12062,222 @@ es = "La pendiente media de la rampa «{ramp}», {mean} %, pasa del {limit} % de
 
 ["Pit «{name}» in {version}"]
 es = "Corta «{name}» en {version}"
+
+["There is no bench profile with a height: the advance and the overall slope need one"]
+es = "No hay ningún perfil de banco con altura: el avance y el talud general la necesitan"
+
+["{bench} (h {height}): {low}°–{high}°: advance {advance} · overall slope {slope}°"]
+es = "{bench} (h {height}): {low}°–{high}°: avance {advance} · talud general {slope}°"
+
+["spiral"]
+es = "espiral"
+
+["zigzag"]
+es = "zig-zag"
+
+["clockwise"]
+es = "horario"
+
+["counter-clockwise"]
+es = "antihorario"
+
+["{type} · {sense} · start {start} · g {gradient} · {road}"]
+es = "{type} · {sense} · inicio {start} · g {gradient} · {road}"
+
+["The road profile «{road}» of the ramp is not in the project"]
+es = "El perfil de pista «{road}» de la rampa no está en el proyecto"
+
+["There is no bench profile with a height: the length needed per bench needs one"]
+es = "No hay ningún perfil de banco con altura: la longitud que pide cada banco la necesita"
+
+["{bench} (h {height}): length needed per bench {length}"]
+es = "{bench} (h {height}): longitud de eje que pide cada banco {length}"
+
+["Section of the road profile: {section}"]
+es = "Sección del perfil de pista: {section}"
+
+["New rose…"]
+es = "Roseta nueva…"
+
+["There are no slope roses yet: create one with its azimuth ranges, each with its face angle and its berm"]
+es = "Aún no hay rosetas de taludes: cree una con sus rangos de azimut, cada uno con su ángulo de cara y su berma"
+
+["Slope roses: {count}"]
+es = "Rosetas de taludes: {count}"
+
+["New ramp…"]
+es = "Rampa nueva…"
+
+["There are no ramp definitions yet: create one with its type, sense, start, gradient, road profile and transition"]
+es = "Aún no hay definiciones de rampa: cree una con su tipo, sentido, inicio, pendiente, perfil de pista y transición"
+
+["Ramp definitions: {count}"]
+es = "Definiciones de rampa: {count}"
+
+["Slope roses"]
+es = "Rosetas de taludes"
+
+["Ramp definitions"]
+es = "Definiciones de rampa"
+
+["Slope roses of the project with their ranges and their type"]
+es = "Rosetas de taludes del proyecto con sus rangos y su tipo"
+
+["Ramp definitions of the project with their values and their type"]
+es = "Definiciones de rampa del proyecto con sus valores y su tipo"
+
+["Slope roses of the pit: their ranges with their source and type and their derived advance and overall slope, and the orders to create, complete and rename them"]
+es = "Rosetas de taludes de la corta: sus rangos con su fuente y su tipo y el avance y el talud general que se derivan de ellos, y las órdenes para crearlas, completarlas y renombrarlas"
+
+["Ramp definitions of the pit: their values with their source and type and the length they need per bench, and the orders to create, complete and rename them"]
+es = "Definiciones de rampa de la corta: sus valores con su fuente y su tipo y la longitud que piden por banco, y las órdenes para crearlas, completarlas y renombrarlas"
+
+["«{code}» is no longer in the project: open the list again"]
+es = "«{code}» ya no está en el proyecto: abra la lista otra vez"
+
+["Write who decides the values"]
+es = "Escriba quién decide los valores"
+
+["Declared in the pit windows"]
+es = "Declarado en las ventanas de la corta"
+
+["Slope rose «{name}» created with the code «{code}»"]
+es = "Roseta de taludes «{name}» creada con el código «{code}»"
+
+["Slope rose «{name}» saved (code «{code}»)"]
+es = "Roseta de taludes «{name}» guardada (código «{code}»)"
+
+["Ramp «{name}» created with the code «{code}»"]
+es = "Rampa «{name}» creada con el código «{code}»"
+
+["Ramp «{name}» saved (code «{code}»)"]
+es = "Rampa «{name}» guardada (código «{code}»)"
+
+["«{value}» is not a range: write «from to angle berm»"]
+es = "«{value}» no es un rango: escriba «desde hasta ángulo berma»"
+
+["Ranges"]
+es = "Rangos"
+
+["Each range: from to angle berm, separated by «;»"]
+es = "Cada rango: desde hasta ángulo berma, separados por «;»"
+
+["Slope rose"]
+es = "Roseta de taludes"
+
+["Ramp type"]
+es = "Tipo de rampa"
+
+["Start point"]
+es = "Punto de inicio"
+
+["Design gradient g (%)"]
+es = "Pendiente de diseño g (%)"
+
+["Transition (m)"]
+es = "Transición (m)"
+
+["Turning radius (m)"]
+es = "Radio de giro (m)"
+
+["Minimum platform (m)"]
+es = "Plataforma mínima (m)"
+
+["Spiral"]
+es = "Espiral"
+
+["Zigzag"]
+es = "Zig-zag"
+
+["Clockwise"]
+es = "Horario"
+
+["Counter-clockwise"]
+es = "Antihorario"
+
+["The ramp winds along the wall of the pit"]
+es = "La rampa sube por la pared de la corta en espiral"
+
+["The ramp goes to and fro with return platforms"]
+es = "La rampa va y viene con plataformas de retorno"
+
+["The ramp turns clockwise"]
+es = "La rampa gira en sentido horario"
+
+["The ramp turns counter-clockwise"]
+es = "La rampa gira en sentido antihorario"
+
+["Slope rose…"]
+es = "Roseta de taludes…"
+
+["Save slope rose…"]
+es = "Guardar roseta de taludes…"
+
+["Ramp…"]
+es = "Rampa…"
+
+["Save ramp…"]
+es = "Guardar rampa…"
+
+["Slope roses of the pit, with their ranges, their source and the advance and overall slope derived from them"]
+es = "Rosetas de taludes de la corta, con sus rangos, su fuente y el avance y el talud general que se derivan de ellos"
+
+["Create a slope rose, complete the ranges it lacks or rename it"]
+es = "Crea una roseta de taludes, completa los rangos que le faltan o la renombra"
+
+["Ramp definitions of the pit, with their values, their source and the length they need per bench"]
+es = "Definiciones de rampa de la corta, con sus valores, su fuente y la longitud que piden por banco"
+
+["Create a ramp definition, complete the values it lacks or rename it"]
+es = "Crea una definición de rampa, completa los valores que le faltan o la renombra"
+
+["Rose"]
+es = "Roseta"
+
+["Code of the slope rose to complete or rename (empty: a new rose)"]
+es = "Código de la roseta de taludes que se completa o se renombra (vacío: una roseta nueva)"
+
+["Name of the rose, such as ROSETA_NORTE: it can change, its code cannot"]
+es = "Nombre de la roseta, como ROSETA_NORTE: puede cambiar, su código no"
+
+["The ranges of the face azimuth, each as «from to angle berm» (degrees, degrees, degrees, metres) separated by «;»: they cover 0 to 360 without gaps or overlaps"]
+es = "Los rangos del azimut de la cara, cada uno como «desde hasta ángulo berma» (grados, grados, grados, metros) separados por «;»: cubren de 0 a 360 sin huecos ni solapes"
+
+["Why the rose has these values (recorded in its history)"]
+es = "Por qué la roseta tiene estos valores (queda en su historial)"
+
+["Ramp"]
+es = "Rampa"
+
+["Code of the ramp definition to complete or rename (empty: a new ramp)"]
+es = "Código de la definición de rampa que se completa o se renombra (vacío: una rampa nueva)"
+
+["Name of the ramp, such as ESPIRAL_A: it can change, its code cannot"]
+es = "Nombre de la rampa, como ESPIRAL_A: puede cambiar, su código no"
+
+["Spiral along the wall or zigzag with return platforms"]
+es = "Espiral por la pared o zig-zag con plataformas de retorno"
+
+["Whether the ramp turns clockwise or counter-clockwise"]
+es = "Si la rampa gira en sentido horario o antihorario"
+
+["Where the ramp starts: «fondo», «banco N» or «capa:nombre» (a point of a layer of points)"]
+es = "Dónde empieza la rampa: «fondo», «banco N» o «capa:nombre» (un punto de una capa de puntos)"
+
+["Design gradient of the ramp in per cent, more than 0 and at most the maximum of its road profile"]
+es = "Pendiente de diseño de la rampa en por ciento, mayor que 0 y como mucho la máxima de su perfil de pista"
+
+["Road profile of the ramp: its section width and its rules"]
+es = "Perfil de pista de la rampa: el ancho de su sección y sus reglas"
+
+["Length of the linear transition of the face in metres, 0 or more"]
+es = "Longitud de la transición lineal de la cara en metros, 0 o más"
+
+["Turning radius of a zigzag ramp in metres, more than 0 (hypothesis: no default value)"]
+es = "Radio de giro de una rampa en zig-zag en metros, mayor que 0 (hipótesis: sin valor por defecto)"
+
+["Minimum length of the return platform of a zigzag ramp in metres, more than 0 (hypothesis: no default value)"]
+es = "Longitud mínima de la plataforma de retorno de una rampa en zig-zag en metros, mayor que 0 (hipótesis: sin valor por defecto)"
+
+["Why the ramp has these values (recorded in its history)"]
+es = "Por qué la rampa tiene estos valores (queda en su historial)"

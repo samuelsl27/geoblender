@@ -1710,11 +1710,11 @@ PIT_COMMAND = "geoblender.des_create_pit"
 """La orden que lanza la corta: «Nueva corta…» (``bl.ops.des_pit``, T31). Sustituye a la provisional ``des_new_pit`` del catálogo (D-20)."""
 PIT_EXPAND_COMMAND = "geoblender.des_expand_bench"
 PIT_LAYER_COMMAND = "geoblender.des_compute_daylight"
-PIT_ROSE_COMMAND = PIT_COMMAND
-PIT_RAMP_COMMAND = "geoblender.des_add_ramp"
-"""Las órdenes de «Expandir banco…», «Línea de cielo…», «Roseta de taludes…» y «Rampa…» (plan 018 §5.3.3): **las provisionales que ya tiene el
-catálogo** (D-20; una orden que lanza una operación debe estar en él), a falta de las reales (``des_pit_skyline``, ``des_edit_pit_rose`` y
-``des_edit_pit_ramp``), que las sustituyen en las tareas de la fase G; la de la roseta usa la de «Nueva corta…», que aún no tiene otra."""
+PIT_ROSE_COMMAND = "geoblender.des_edit_pit_rose"
+PIT_RAMP_COMMAND = "geoblender.des_edit_pit_ramp"
+"""Las órdenes de «Roseta de taludes…» y «Rampa…» (``bl.ops.des_pit``, T32; plan 018 §5.3.3): ya con su clase real; sustituyen a la provisional ``des_add_ramp`` del catálogo
+(D-20). Las de «Expandir banco…» y «Línea de cielo…» siguen siendo **las provisionales que ya tiene el catálogo** (D-20; una orden que lanza una operación debe estar en él), a
+falta de las reales (``des_pit_skyline``), que las sustituyen en las tareas siguientes."""
 PIT_OPERATION_TYPES: tuple[OperationType, ...] = (
     OperationType(PIT, "Pit", (ENTITY_SURFACE_GRID, ENTITY_TABLE, PIT_POLYLINES_TABLE, PIT_SKYLINE_TABLE, PIT_RAMPS_TABLE,
                                PIT_FINDINGS_TABLE, PIT_BENCHES_TABLE, ENTITY_REPORT_TABLE), (), (*PIT_FIGURES, *SUPPORT_FIGURES),

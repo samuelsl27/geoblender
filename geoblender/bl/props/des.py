@@ -12,6 +12,7 @@ ventanas «Perfiles de banco…», «Sectores de diseño…» y «Envolventes y 
   :class:`GEOBLENDER_PG_des_param`), el elegido (``profile_index``);
 - los **perfiles de pista** de la 017 (T29: :class:`GEOBLENDER_PG_des_road_profile`: sus quince valores con su tipo, su ámbito y su fuente,
   su clase normativa y sus derivados), el elegido (``road_profile_index``) y el último resultado (``road_profile_report``);
+- las **rosetas de taludes** y las **definiciones de rampa** de la 018 (T32: :class:`GEOBLENDER_PG_des_pit_item`; ``pit_roses`` y ``pit_ramps`` con su elegida y su último resultado);
 - los **sectores de diseño** (:class:`GEOBLENDER_PG_des_sector`: su nombre y código, su área, el
   estado de su búsqueda de intocables, su talud impuesto con su origen y decisor y el perfil
   asignado), el elegido (``sector_index``), y los parámetros huérfanos aparte (``orphans``);
@@ -188,6 +189,25 @@ class GEOBLENDER_PG_des_line(bpy.types.PropertyGroup):
     uid: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_des_pit_item(bpy.types.PropertyGroup):
+    """Una roseta de taludes o una definición de rampa de las listas de «Roseta de taludes…» y «Rampa…» (spec 018, T32; RF-018-07, RF-018-15), ya leída del proyecto: su nombre
+    (``name``) y su código (``code``, inmutable), cómo se lee (``summary``), la insignia de tipo de sus valores (``badge``: [ADO] o [HIP], la del menos firme), el ámbito de donde
+    salen (``scope``), lo que le falta o no vale en la versión activa (``problem``, en ámbar), sus valores con su tipo, su ámbito y su fuente (``parameters``) y **sus derivados**,
+    que no son parámetros ni se editan (``lines``: el avance y el talud general por rango y perfil de banco; la longitud necesaria por banco y la sección del perfil de pista)."""
+
+    code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    summary: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    badge: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    scope: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    problem: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    parameters: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_param, options=_STATIC,
+    )
+    lines: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_line, options=_STATIC,
+    )
+
+
 class GEOBLENDER_PG_des_refit_surface(bpy.types.PropertyGroup):
     """Una superficie de diseño de la versión activa que ofrece «Ajustar el diseño a un límite
     nuevo…» (spec 014, T33; RF-014-27; plan 014 §5.3.3): el nombre de su dato (``name``), lo que
@@ -228,6 +248,22 @@ class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
     road_profile_report: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_des_line, options=_STATIC,
     )
+    pit_roses: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_pit_item, options=_STATIC,
+    )
+    pit_rose_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    pit_roses_project: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    pit_rose_report: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_line, options=_STATIC,
+    )
+    pit_ramps: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_pit_item, options=_STATIC,
+    )
+    pit_ramp_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    pit_ramps_project: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    pit_ramp_report: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_line, options=_STATIC,
+    )
     sectors: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_des_sector, options=_STATIC,
     )
@@ -259,7 +295,7 @@ class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
 
 # En orden de registro: cada grupo, después de los que contiene.
 classes: tuple[type, ...] = (GEOBLENDER_PG_des_param, GEOBLENDER_PG_des_road_profile, GEOBLENDER_PG_des_profile,
-                             GEOBLENDER_PG_des_sector, GEOBLENDER_PG_des_line,
+                             GEOBLENDER_PG_des_sector, GEOBLENDER_PG_des_line, GEOBLENDER_PG_des_pit_item,
                              GEOBLENDER_PG_des_refit_surface, GEOBLENDER_PG_des_bring_row,
                              GEOBLENDER_PG_des_panels)
 

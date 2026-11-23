@@ -55,6 +55,7 @@ from . import (
     keymap,
     layouts,
     menus,
+    pit_panels,
     provenance,
     quick_access,
     registry,
@@ -90,6 +91,7 @@ classes: tuple[type, ...] = (
     *res_panels.classes,
     *constraint_panels.classes,
     *des_panels.classes,
+    *pit_panels.classes,
 )
 
 _UNDO: list[Callable[[], None]] = []
@@ -135,6 +137,7 @@ def register() -> None:
         (view_panels.register, view_panels.unregister),
         (constraint_panels.install, constraint_panels.uninstall),
         (des_panels.install, des_panels.uninstall),
+        (pit_panels.install, pit_panels.uninstall),
         (layouts.register, layouts.unregister),
         (lambda: None, context.clear),
         (lambda: None, command_line.clear),

@@ -236,13 +236,23 @@ action = "H"
 frequency = 1
 
 [[menu.group.item.item]]
-key = "geoblender.des_add_ramp"
-label.en = "Ramp"
-label.es = "Rampa"
-description.en = "Spiral or switchback ramp"
-description.es = "Rampa en espiral o en zigzag"
+key = "geoblender.des_edit_pit_ramp"
+label.en = "Ramp…"
+label.es = "Rampa…"
+description.en = "Ramp definitions of the pit (spiral or zigzag), with their values, their source and the length they need per bench"
+description.es = "Definiciones de rampa de la corta (espiral o zigzag), con sus valores, su fuente y la longitud que piden por banco"
 entry = "R-35"
-action = "H"
+action = "P"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.des_edit_pit_rose"
+label.en = "Slope rose…"
+label.es = "Roseta de taludes…"
+description.en = "Slope roses of the pit: the azimuth ranges with their face angle and berm, their source and the advance and overall slope derived from them"
+description.es = "Rosetas de taludes de la corta: los rangos de azimut con su ángulo de cara y su berma, su fuente y el avance y el talud general que se derivan de ellos"
+entry = "R-35"
+action = "P"
 frequency = 1
 
 [[menu.group.item.item]]
