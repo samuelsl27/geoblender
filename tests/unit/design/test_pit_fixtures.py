@@ -378,7 +378,7 @@ class MainNamesTest(unittest.TestCase):
         """D-20: las órdenes de la corta (las provisionales, que T35 sustituye, y las ya reales) están en el catálogo y la de R-49 existe."""
         text = (EXTENSION_DIR / "core" / "catalog" / "data" / "menus" / "07_design.toml").read_text(encoding="utf-8")
         tomllib.loads(text)
-        for key in ("des_create_pit", "des_edit_pit_ramp", "des_edit_pit_rose", "des_compute_daylight", "des_create_design_surface",
+        for key in ("des_create_pit", "des_edit_pit_ramp", "des_edit_pit_rose", "des_pit_skyline", "des_pit_surface", "des_create_design_surface",
                     "des_expand_bench", "des_design_pit_from_shell"):
             self.assertIn(f"geoblender.{key}", text, key)
 

@@ -25,23 +25,28 @@ import logging
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from ...core.errors import GeoblenderError
+from ...core import i18n
 from ...core.i18n import tr
 from ...core.params import ParameterStore, ParamKind
 from ...core.provenance.undo import UndoKind
 from ...design import params as design_params
 from ...core.project.model import Progress
 from ...core.timeutil import format_utc
+from ...gis import provenance as gis_provenance
+from ...gis.messages import GisError
 from ...design import messages as design_messages
 from ...design import provenance
 from ..scene import versions as scene_versions
 from ..scene import undo_watch
 from ..ui import constraint_panels, des_panels, pit_panels
+from ..ui import provenance as ui_provenance
 from ..ui.commands import catalog, command_idname
 from ..ui.commands import text as command_text
 from ..ui.res_panels import NOT_SHOWN, record_text
@@ -53,6 +58,8 @@ from .core_provenance import (
     SOURCE_KIND_ITEMS,
     ProvenanceAwareOperator,
     ensure_ready,
+    error_text,
+    read_only_dirs,
     scope_choice,
     write_unavailable,
 )
@@ -60,10 +67,15 @@ from .des import (
     DIALOG_WIDTH,
     TRANSLATION_CONTEXT,
     ComputeFormError,
+    DesignCommand,
     DesignCommandAware,
     PROFILE_KIND_ITEMS,
     ProfileFormError,
     _ask_confirmation,
+    _confirm_later,
+    _entity_or_selected,
+    _EntitySteps,
+    _export_progress,
     _CalculateAndCreate,
     _ChainsEntityLayer,
     _ClearsEntityPreview,
@@ -77,6 +89,7 @@ from .des import (
     discard_calculation,
     calculation,
     design_error_text,
+    design_unavailable,
     typed_number,
 )
 
@@ -1500,8 +1513,290 @@ class GEOBLENDER_OT_des_expand_bench(_CreatesInSteps, _CalculateAndCreate, Desig
         return _CalculateAndCreate._cancelled_text(self)
 
 
-classes: tuple[type, ...] = (GEOBLENDER_OT_des_create_pit, GEOBLENDER_OT_des_expand_bench, GEOBLENDER_OT_des_edit_pit_rose, GEOBLENDER_OT_des_save_pit_rose, GEOBLENDER_OT_des_edit_pit_ramp,
+# --- «Línea de cielo…» y «Superficie y sólido…» (spec 018, T33; HU-018-4; RF-018-29, RF-018-30, RF-018-33, RF-018-34) -------------------------------------------------------------------
+
+SKYLINE = provenance.PIT_LAYER_COMMAND
+"""La orden de «Línea de cielo…» (la de la operación ``des.pit_layer``)."""
+SURFACE = "geoblender.des_pit_surface"
+"""La orden de «Superficie y sólido…»."""
+SURFACE_ITEMS = [
+    ("TIN", "TIN", "The TIN of the pit, with its polylines and its skyline as edges, as a view of the 3D window (it writes nothing in the project)"),
+    ("SOLID", "Excavation solid", "The solid of the excavation: a closed mesh between the start surface and the surface of the pit, as a view of the 3D window (it writes nothing in the project)"),
+    ("SURFACE", "Surface to GeoTIFF", "The surface of the pit, the official one of the project, as a deliverable GeoTIFF"),
+    ("FINDINGS", "Findings to CSV", "The findings of the pit, with their place, as a CSV file for Excel")]
+"""Lo que hace «Superficie y sólido…»: las dos vistas y los dos entregables."""
+_SURFACE_FILES = ("SURFACE", "FINDINGS")
+"""Lo que pide un fichero."""
+
+
+def _pit_of(given: str, context: Any) -> str:
+    """La corta a la que se refiere una orden de la línea de cielo o de la superficie: la tecleada (su código o su nombre) o la del objeto seleccionado en la vista. :class:`ValueError` si no hay ninguna."""
+    ref = _entity_or_selected(given, context)
+    if not ref:
+        raise ValueError(tr("Choose the pit: give its code or its name, or select its object in the 3D view"))
+    return ref
+
+
+def _metres(value: float) -> str:
+    """Un número en metros con dos decimales y la coma decimal del español (el punto, en inglés)."""
+    text = f"{float(value):,.2f}"
+    return text if i18n.language() == "en" else text.replace(",", " ").replace(".", ",")
+
+
+def _skyline_lines(shown: Any) -> list[str]:
+    """Lo que dice el informe de la línea de cielo de ``shown`` (``design.pit_view.SkylineReport``): su título, sus cifras con su insignia de tipo y el lugar de las distancias."""
+    language = i18n.language()
+    lines = [tr("Skyline of pit «{name}» ({code}) in {version}", name=shown.name, code=shown.code, version=shown.version_code)]
+    if not shown.figures:
+        lines.append(tr("The pit has no skyline: it does not come out at the ground"))
+    lines += [f"{ui_provenance.badge(figure.kind)} {provenance.figure_text(figure, language=language)}" for figure in shown.figures]
+    for label, found in ((tr("legal limit"), shown.legal), (tr("perimeter of the works"), shown.perimeter)):
+        if found is not None:
+            lines.append(tr("Closest to the {limit}: the skyline at x = {x} m, y = {y} m, z = {z} m",
+                            limit=label, x=_metres(found.on_line[0]), y=_metres(found.on_line[1]), z=_metres(found.on_line[2])))
+    return lines
+
+
+class GEOBLENDER_OT_des_pit_skyline(_EntitySteps, DesignCommandAware, ProvenanceAwareOperator, _StepsModal, bpy.types.Operator):
+    """Show the figures of the skyline of a pit (where it comes out at the ground: its parts, its length, the area it encloses, its lowest and highest level and its distance to the legal limit and to the perimeter of the works) and bring its layer up to date if it is behind"""
+
+    bl_idname = SKYLINE
+    bl_label = "Skyline…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.PIT_LAYER
+
+    pit: StringProperty(  # type: ignore[valid-type]
+        name="Pit", description="Code or name of the pit of the active version (empty: the one of the object selected in the 3D view)", options=_FIELD)
+    update_layer: BoolProperty(  # type: ignore[valid-type]
+        name="Bring the layer up to date", description="If the layer of the skyline for QGIS is behind the pits of the version, bring it up to date (it is the only thing this command writes)", default=True,
+        options=_FIELD)
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """El diálogo de la corta y de poner al día la capa; Intro la muestra. La corta del objeto seleccionado, si lo hay, se propone."""
+        self.in_steps = getattr(context, "window", None) is not None
+        if not self.pit.strip():
+            try:
+                self.pit = _entity_or_selected("", context)
+            except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+                LOGGER.debug("No se pudo leer la corta seleccionada", exc_info=True)
+        return context.window_manager.invoke_props_dialog(self, width=DIALOG_WIDTH, translate=False, title=tr("Skyline…"), confirm_text=tr("Show"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "pit", text=tr("Pit"), translate=False)
+        layout.prop(self, "update_layer", text=tr("Bring the layer up to date"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Enseña las cifras registradas de la línea de cielo de la corta (``design.pit_view.skyline_report``: solo lee) y, si la capa de la línea de cielo está atrasada y ``update_layer``, la pone
+        al día (``des.pit_layer``: una operación de la versión, por pasos con el avance y Esc desde la interfaz). Lo demás no escribe nada (RF-018-29, RF-018-33)."""
+        from ...design import pit_layer, pit_view  # al usarlo: habilitar no carga el cálculo
+
+        blocked = design_unavailable()
+        refusal = None if blocked is not None else self._version_refusal()
+        if blocked is not None or refusal is not None:
+            self.report({"ERROR"}, blocked or refusal or "")
+            return {"CANCELLED"}
+        project, version = SESSION.project, scene_versions.active_version() or ""
+        try:
+            shown = pit_view.skyline_report(project, version, _pit_of(self.pit, context))
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        self.report_log = []
+        for text in _skyline_lines(shown):
+            self._report({"INFO"}, text)
+        if not shown.layer_pending:
+            self._report({"INFO"}, tr("The skyline layer of {version} is already up to date", version=shown.version_code))
+            return {"FINISHED"}
+        if not self.update_layer:
+            self._report({"WARNING"}, tr("The skyline layer of {version} is behind the pits: tick «Bring the layer up to date» to bring it up to date", version=shown.version_code))
+            return {"FINISHED"}
+        self._version = shown.version_code
+        return self._run_steps(context, project, shown.name, pit_layer.pit_layer_steps(project, version, budget_s=self.STEP_BUDGET_S))
+
+    def _finished(self, context: Any, result: Any) -> set[str]:
+        undo_watch.record(UndoKind.OPERATION, provenance.PIT_LAYER)  # Ctrl+Z no lo deshace
+        self._report({"INFO"}, tr("The skyline layer of {version} is brought up to date", version=getattr(self, "_version", "")))
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+        return {"FINISHED"}
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Bringing the skyline layer up to date… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Cancelled: the layer has been left as it was; nothing has been left half-done")
+
+
+class GEOBLENDER_OT_des_pit_surface(_EntitySteps, DesignCommand, _StepsModal, bpy.types.Operator):
+    """Create, when you ask for it, the TIN or the solid of the excavation of a pit as a view (with the warning before creating more triangles than the limit of a view) or write its surface to a GeoTIFF or its findings to a CSV; it writes nothing in the project"""
+
+    bl_idname = SURFACE
+    bl_label = "Surface and solid…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    pit: StringProperty(  # type: ignore[valid-type]
+        name="Pit", description="Code or name of the pit of the active version (empty: the one of the object selected in the 3D view)", options=_FIELD)
+    what: EnumProperty(  # type: ignore[valid-type]
+        name="What", description="The TIN or the solid of the pit as a view, or its surface to GeoTIFF or its findings to CSV", items=SURFACE_ITEMS, default="TIN", options=_FIELD)
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="File", subtype="FILE_PATH",
+        description="File to write the surface or the findings to (empty: the exports folder of the project, with the name of the data and the version)", options={"SKIP_SAVE"})
+    overwrite: BoolProperty(  # type: ignore[valid-type]
+        name="Replace", description="Replace the file if it already exists", options=_FIELD)
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    confirm_large: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """El diálogo (la corta, qué se hace y el fichero); con ``confirm``, la confirmación de crear la vista por encima del límite de triángulos o de sustituir el fichero que ya existe."""
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            if self.confirm_large:
+                return context.window_manager.invoke_confirm(self, event, title=tr("Create the view anyway"), confirm_text=tr("Create"), translate=False,
+                                                             message=tr("«{name}» has more triangles than the limit of a view: it may be slow. Create it anyway?", name=self.pit))
+            self.overwrite = True
+            return context.window_manager.invoke_confirm(self, event, title=tr("Replace the file"), confirm_text=tr("Replace"), translate=False,
+                                                         message=tr("«{file}» already exists: replace it?", file=Path(self.filepath).name))
+        if not self.pit.strip():
+            try:
+                self.pit = _entity_or_selected("", context)
+            except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+                LOGGER.debug("No se pudo leer la corta seleccionada", exc_info=True)
+        return context.window_manager.invoke_props_dialog(self, width=DIALOG_WIDTH, translate=False, title=tr("Surface and solid…"), confirm_text=tr("Accept"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "pit", text=tr("Pit"), translate=False)
+        layout.prop(self, "what", text=tr("What"), translate=False)
+        if self.what in _SURFACE_FILES:
+            layout.prop(self, "filepath", text=tr("File"), translate=False)
+            layout.prop(self, "overwrite", text=tr("Replace"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Hace lo pedido sobre la corta de la versión activa sin escribir nada en el proyecto: **el TIN o el sólido** (``bl.scene.views.load_steps`` con los cargadores de ``bl.scene.pit_views``, por pasos con
+        el avance y Esc; por encima del límite de triángulos, el aviso **antes de crear nada** y, desde la interfaz, la pregunta de si se crea de todos modos), o **la superficie a GeoTIFF**
+        (``design.export.export_grid_steps``) o **los hallazgos a CSV** (``design.export.export_pit_findings_csv``) en ``filepath`` (vacío: la carpeta de exportaciones del proyecto), sin sustituir un fichero que existe
+        salvo con ``overwrite``."""
+        from ...design import pit_view  # al usarlo: habilitar no carga el cálculo
+
+        blocked = design_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project, version = SESSION.project, scene_versions.active_version() or ""
+        try:
+            if not version:
+                raise ValueError(tr("There is no active version: make the version of the pit the active one first"))
+            found = pit_view.pit_datasets(project, version, _pit_of(self.pit, context))
+            if self.what in ("TIN", "SOLID"):
+                return self._view(context, project, found)
+            return self._export(context, project, found)
+        except GisError as exc:
+            interactive = self.in_steps and getattr(context, "window", None) is not None
+            if exc.code == "gis.export_target_exists" and interactive:
+                self.report({"WARNING"}, error_text(exc))
+                _confirm_later({"pit": self.pit, "what": self.what, "filepath": self.filepath}, idname=SURFACE)
+            else:
+                self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+
+    # --- Las vistas ---------------------------------------------------------------------------
+
+    def _view(self, context: Any, project: Any, found: Any) -> set[str]:
+        from ..scene import pit_views, views
+
+        self._found = found
+        pit_views.take_large()  # un aviso de antes no es de esta carga
+        uid = found.polylines_uid if self.what == "TIN" else found.benches_uid
+        confirmed = bool(self.confirm_large)
+
+        def steps() -> Iterator[Progress]:
+            if confirmed:
+                with pit_views.unlimited():  # al cerrar los pasos (Esc) también se quita
+                    yield from views.load_steps(context, project, [uid])
+            else:
+                yield from views.load_steps(context, project, [uid])
+
+        return self._run_steps(context, project, found.name, steps())
+
+    def _loaded(self, outcome: Any) -> set[str]:
+        """Lo que dice la orden de lo cargado: los avisos, el aviso de triángulos (que, desde la interfaz, pregunta si se crea de todos modos) y los errores."""
+        from ..scene import pit_views
+
+        for text in outcome.notes:
+            self._report({"WARNING"}, text)
+        large = pit_views.take_large()
+        if outcome.loaded:
+            for text in outcome.errors:
+                self._report({"WARNING"}, text)
+            self._report({"INFO"}, tr("Loaded into the view: {names}", names=", ".join(outcome.labels or outcome.loaded)))
+            return {"FINISHED"}
+        if large is not None and not self.confirm_large and self.in_steps and getattr(bpy.context, "window", None) is not None:
+            self._report({"WARNING"}, design_error_text(large))
+            _confirm_later({"pit": self.pit or self._found.code, "what": self.what, "confirm_large": True}, idname=SURFACE)
+            return {"FINISHED"}  # no se ha creado nada: la pregunta sigue
+        for text in outcome.errors:
+            self._report({"ERROR"}, text)
+        return {"CANCELLED"}
+
+    # --- Los entregables ----------------------------------------------------------------------
+
+    def _target(self, project: Any, found: Any, dataset: str, suffix: str) -> Path:
+        shown = self.filepath.strip()
+        if shown:
+            return Path(bpy.path.abspath(shown))
+        return Path(project.root, gis_provenance.EXPORTS_FOLDER, f"{dataset}_{found.version_code}{suffix}")
+
+    def _export(self, context: Any, project: Any, found: Any) -> set[str]:
+        from ...design import export  # al usarlo: habilitar no lo carga
+
+        self._found = found
+        if self.what == "FINDINGS":
+            target = self._target(project, found, found.findings, ".csv")
+            export.export_pit_findings_csv(project, found.code, target, version=found.version_uid, read_only=read_only_dirs(), overwrite=bool(self.overwrite))
+            self.report_log = []
+            return self._written(target)
+        target = self._target(project, found, found.surface, ".tif")
+        stored = export.stored_grid(project, found.surface, version=found.version_uid)
+        work = export.export_grid_steps(project, stored.family, stored.name, target, version=stored.version_uid, read_only=read_only_dirs(), overwrite=bool(self.overwrite))
+        return self._run_steps(context, project, found.name, _export_progress(work, target.name))
+
+    def _written(self, target: Path) -> set[str]:
+        if self.what == "FINDINGS":
+            self._report({"INFO"}, tr("Findings of the pit exported to «{file}»", file=target.name))
+        else:
+            self._report({"INFO"}, tr("Surface of the pit exported to «{file}»", file=target.name))
+        return {"FINISHED"}
+
+    def _finished(self, context: Any, result: Any) -> set[str]:
+        from ..scene import views
+
+        if isinstance(result, views.LoadOutcome):
+            return self._loaded(result)
+        return self._written(Path(result))
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if self.what in ("TIN", "SOLID"):
+            return tr("Creating the view of «{name}»… {percent} % · Esc: cancel", name=self._name, percent=percent)
+        return tr("Exporting «{file}»… {percent} % · Esc: cancel", file=step.message, percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Cancelled: nothing has been left half-done")
+
+
+classes: tuple[type, ...] = (GEOBLENDER_OT_des_create_pit, GEOBLENDER_OT_des_expand_bench, GEOBLENDER_OT_des_pit_skyline, GEOBLENDER_OT_des_pit_surface, GEOBLENDER_OT_des_edit_pit_rose, GEOBLENDER_OT_des_save_pit_rose, GEOBLENDER_OT_des_edit_pit_ramp,
                              GEOBLENDER_OT_des_save_pit_ramp)
 """Las órdenes de la corta por bancos (T31: «Nueva corta…»; T32: «Roseta de taludes…» y «Rampa…» con sus internas; las demás las ponen las tareas siguientes)."""
 
-__all__ = ["CREATE_PIT", "EDIT_PIT_RAMP", "EDIT_PIT_ROSE", "EXPAND_BENCH", "GEOBLENDER_OT_des_create_pit", "classes", "refresh_expand_choices", "refresh_pit_choices", "refresh_ramp_choices"]
+__all__ = ["CREATE_PIT", "EDIT_PIT_RAMP", "EDIT_PIT_ROSE", "EXPAND_BENCH", "GEOBLENDER_OT_des_create_pit", "GEOBLENDER_OT_des_pit_skyline", "GEOBLENDER_OT_des_pit_surface", "SKYLINE", "SURFACE", "classes", "refresh_expand_choices", "refresh_pit_choices", "refresh_ramp_choices"]

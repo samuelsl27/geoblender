@@ -34,7 +34,7 @@ from ..gis.polygons import segment_distance
 from ..gis.ports import Cancelled, Progress
 from ..gis.raster import Raster, sample
 
-__all__ = ["BAND_M", "SkyDistance", "SkyPart", "Skyline", "skyline"]
+__all__ = ["BAND_M", "SkyDistance", "SkyPart", "Skyline", "limit_distances", "skyline"]
 
 BAND_M: float = 0.9
 """El valor absoluto al que se acota la diferencia de cotas (m): menor que el intervalo de 1 m, para que solo cruce la cota 0."""
@@ -255,3 +255,14 @@ def skyline(start: np.ndarray, design: np.ndarray, grid: Grid, *, crs: CrsRef, v
     distances = {name: None if limit is None else _distance(parts, tuple(tuple(part) for part in limit), origin, cancelled)
                  for name, limit in (("legal", legal), ("perimeter", perimeter))}
     return Skyline(found.parts, found.length_m, found.length3d_m, found.area_m2, found.z_min_m, found.z_max_m, **distances)
+
+
+def limit_distances(parts: Sequence[SkyPart], *, legal: Sequence[Sequence[np.ndarray]] | None = None, perimeter: Sequence[Sequence[np.ndarray]] | None = None,
+                    cancelled: Cancelled | None = None) -> tuple[SkyDistance | None, SkyDistance | None]:
+    """Las distancias mínimas (y su lugar) de una línea de cielo **ya guardada** (``parts``) al límite legal y al perímetro de actuación (spec 018, T33; RF-018-29, RF-018-33): lo mismo que da
+    :func:`skyline` con sus límites, sin la rejilla (la guardan las polilíneas ``des_psk_``, no el lugar de la distancia). ``(None, None)`` sin línea; ``None`` de un límite que no se da."""
+    if not parts:
+        return None, None
+    origin = np.asarray(parts[0].xyz[0, :2], dtype=np.float64)
+    found = tuple(None if limit is None else _distance(parts, tuple(tuple(part) for part in limit), origin, cancelled) for limit in (legal, perimeter))
+    return found[0], found[1]

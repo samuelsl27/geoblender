@@ -256,13 +256,23 @@ action = "P"
 frequency = 1
 
 [[menu.group.item.item]]
-key = "geoblender.des_compute_daylight"
-label.en = "Daylight with the DTM"
-label.es = "Línea de cielo con el MDT"
-description.en = "Intersection of the design with the terrain"
-description.es = "Intersección del diseño con el terreno"
+key = "geoblender.des_pit_skyline"
+label.en = "Skyline…"
+label.es = "Línea de cielo…"
+description.en = "Figures of the skyline of a pit (where it comes out at the ground: parts, length, area, levels and distance to the legal limit and to the perimeter of the works) and its layer for QGIS"
+description.es = "Cifras de la línea de cielo de una corta (donde sale a superficie: partes, longitud, área, cotas y distancia al límite legal y al perímetro de actuación) y su capa para QGIS"
 entry = "R-35"
-action = "A"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.des_pit_surface"
+label.en = "Surface and solid…"
+label.es = "Superficie y sólido…"
+description.en = "The TIN and the solid of the excavation of a pit as views, and its surface to GeoTIFF and its findings to CSV, with the warning before creating too many triangles"
+description.es = "El TIN y el sólido de excavación de una corta como vistas, y su superficie a GeoTIFF y sus hallazgos a CSV, con el aviso antes de crear demasiados triángulos"
+entry = "R-35"
+action = "D"
 frequency = 1
 
 [[menu.group.item.item]]

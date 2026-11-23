@@ -83,10 +83,10 @@ COMMANDS_016: dict[str, str] = {"des.stockpile_detect": "geoblender.des_detect_s
 cada una con su clase real."""
 ROAD_TYPES = ("des.road", "des.road_access", "des.road_propose", "des.road_layer")
 PIT_TYPES = ("des.pit", "des.pit_expand", "des.pit_layer")  # la 018 (T02 y T03)
-PIT_PROVISIONAL = {"geoblender.des_compute_daylight"}
+PIT_PROVISIONAL: set[str] = set()
 """Las órdenes provisionales del catálogo que lanzan los tipos de la corta (018): las sustituyen las tareas de la fase G."""
-PIT_REAL = {"geoblender.des_create_pit", "geoblender.des_expand_bench", "geoblender.des_edit_pit_rose", "geoblender.des_edit_pit_ramp"}
-"""«Nueva corta…» (018, T31), «Expandir banco…» (T32b), «Roseta de taludes…» y «Rampa…» (018, T32): ya con su clase real (``bl.ops.des_pit``; sus pruebas son ``milestone_pit_ops.py`` y ``test_pit_edit_ops.py``); su entrada, R-35, la entrega la T35."""
+PIT_REAL = {"geoblender.des_create_pit", "geoblender.des_expand_bench", "geoblender.des_edit_pit_rose", "geoblender.des_edit_pit_ramp", "geoblender.des_pit_skyline"}
+"""«Nueva corta…» (018, T31), «Expandir banco…» (T32b), «Roseta de taludes…» y «Rampa…» (018, T32) y «Línea de cielo…» (T33): ya con su clase real (``bl.ops.des_pit``; sus pruebas son ``milestone_pit_ops.py`` y ``test_pit_edit_ops.py``); su entrada, R-35, la entrega la T35."""
 PIT_PROJECT_TYPES = ("des.edit_pit_roses", "des.edit_pit_ramps")  # la edición de las rosetas y de las rampas: de proyecto (T03)
 """Los cuatro tipos de la 017 (T03 y T26): de la versión y repetibles; los tres primeros, reproducibles (sin comportamiento todavía el último, «Proponer el trazado»); **la capa de ejes de pistas
 (``des.road_layer``, T26-a) no se reproduce**: incluye el estado de cada pista, que deduce el grafo (como la capa de entidades)."""
@@ -500,7 +500,7 @@ class DesignRegisteredTest(unittest.TestCase):
                                                    "geoblender.des_edit_bench_profiles",
                                                    PLATFORM_COMMAND, *COMMANDS_014,
                                                    *COMMANDS_016.values(), *COMMANDS_017.values(), "geoblender.des_create_pit", "geoblender.des_expand_bench",
-                                               "geoblender.des_compute_daylight", "geoblender.des_edit_pit_rose", "geoblender.des_edit_pit_ramp"}))  # las provisionales de la corta (018, T02 y T03)
+                                               "geoblender.des_pit_skyline", "geoblender.des_edit_pit_rose", "geoblender.des_edit_pit_ramp"}))  # las provisionales de la corta (018, T02 y T03)
         self.assertEqual(launched["geoblender.des_compute_envelope"], list(VERSION_TYPES))
         self.assertEqual(launched[PLATFORM_COMMAND], list(ENTITY_TYPES))  # RF-015-02 (T04)
         by_command: dict[str, list[str]] = {}

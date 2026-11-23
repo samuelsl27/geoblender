@@ -23,7 +23,8 @@ no dejan nada. Cargar no cambia ninguna operación.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import bpy
@@ -46,8 +47,8 @@ from . import des_views, triangulator, views
 from .gis_views import _blocks, _object, _scaled, _surface
 from .mesh import mesh_steps, mesh_vertices_local
 
-__all__ = ["MAX_TRIANGLES", "SKYLINE_FAMILY", "SOLID_FAMILY", "SOLID_LABEL", "TIN_FAMILY", "TIN_LABEL", "load_pit_solid", "load_pit_tin", "solid_companions", "solid_loader", "solid_steps",
-           "tin_companions", "tin_loader", "tin_steps"]
+__all__ = ["MAX_TRIANGLES", "SKYLINE_FAMILY", "SOLID_FAMILY", "SOLID_LABEL", "TIN_FAMILY", "TIN_LABEL", "confirmed", "limit", "load_pit_solid", "load_pit_tin", "solid_companions", "solid_loader",
+           "solid_steps", "take_large", "tin_companions", "tin_loader", "tin_steps", "unlimited"]
 
 TIN_FAMILY = design_provenance.PIT_POLYLINES_TABLE
 """La familia de datos con la que se carga el TIN: las polilíneas de la corta (``des_pbl_``)."""
@@ -62,6 +63,47 @@ SOLID_LABEL = "Pit excavation solid"
 MAX_TRIANGLES = 300_000
 """El límite de triángulos de una vista antes de avisar (RNF-018-09)."""
 _MILLIMETRE = 1_000.0
+
+
+_STATE: dict[str, Any] = {"unlimited": False, "large": None}
+"""Lo que comparten los cargadores registrados y la orden «Superficie y sólido…» (spec 018, T33): si se ha confirmado crear sin límite de triángulos y el último aviso de triángulos que dio un cargador."""
+
+
+def limit() -> int | None:
+    """El límite de triángulos de los cargadores registrados ahora: :data:`MAX_TRIANGLES`, o ``None`` (sin aviso) mientras dura un :func:`unlimited`. Se lee al cargar: cambiar la constante vale en la carga siguiente."""
+    return None if _STATE["unlimited"] else MAX_TRIANGLES
+
+
+def confirmed() -> bool:
+    """Si ahora mismo se está creando una vista confirmada por encima del límite (:func:`unlimited`)."""
+    return bool(_STATE["unlimited"])
+
+
+@contextmanager
+def unlimited() -> Iterator[None]:
+    """Mientras dura, los cargadores registrados **no avisan** de los triángulos: lo que hace la orden tras confirmar el aviso (RNF-018-09). Se quita al salir, también si los pasos se cierran a mitad (Esc)."""
+    _STATE["unlimited"] = True
+    try:
+        yield
+    finally:
+        _STATE["unlimited"] = False
+
+
+def take_large() -> DesignError | None:
+    """El último ``des.pit_view_large`` que dio un cargador registrado, **y lo olvida** (``None`` si no hubo): la orden lo pide tras una carga que no creó nada, para preguntar si se crea de todos modos."""
+    found = _STATE["large"]
+    _STATE["large"] = None
+    return found  # type: ignore[no-any-return]
+
+
+def _warned(loader: views.ViewLoader, request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
+    """Los pasos de ``loader`` apuntando el aviso de triángulos que dé (:func:`take_large`)."""
+    try:
+        return (yield from loader(request))
+    except DesignError as error:
+        if error.code == "des.pit_view_large":
+            _STATE["large"] = error
+        raise
 
 
 def _suffix(name: str, family: str) -> str:
@@ -231,8 +273,9 @@ def tin_loader(max_triangles: int | None = MAX_TRIANGLES) -> views.ViewLoader:
     return load
 
 
-load_pit_tin = tin_loader()
-"""El cargador registrado del TIN, con el límite por defecto."""
+def load_pit_tin(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
+    """El cargador registrado del TIN: con el límite de triángulos de ahora (:func:`limit`: el por defecto, o ninguno mientras se confirma con :func:`unlimited`)."""
+    return (yield from _warned(tin_loader(limit()), request))
 
 
 def tin_companions(conn: Any, record: DatasetRecord) -> tuple[DatasetRecord, ...]:
@@ -315,8 +358,9 @@ def solid_loader(max_triangles: int | None = MAX_TRIANGLES) -> views.ViewLoader:
     return load
 
 
-load_pit_solid = solid_loader()
-"""El cargador registrado del sólido, con el límite por defecto."""
+def load_pit_solid(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
+    """El cargador registrado del sólido: con el límite de triángulos de ahora (:func:`limit`)."""
+    return (yield from _warned(solid_loader(limit()), request))
 
 
 def solid_companions(conn: Any, record: DatasetRecord) -> tuple[DatasetRecord, ...]:

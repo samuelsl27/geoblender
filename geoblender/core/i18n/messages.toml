@@ -12398,3 +12398,108 @@ es = "Bancos por berma de cada sector de diseño, escritos sector=número y sepa
 
 ["How the corners of the offset are made: rounded with arcs or mitred"]
 es = "Cómo son las esquinas del desfase: redondeadas con arcos o a inglete"
+
+["Skyline…"]
+es = "Línea de cielo…"
+
+["Bring the layer up to date"]
+es = "Poner al día la capa"
+
+["Choose the pit: give its code or its name, or select its object in the 3D view"]
+es = "Elija la corta: dé su código o su nombre, o seleccione su objeto en la vista 3D"
+
+["The skyline layer of {version} is already up to date"]
+es = "La capa de la línea de cielo de {version} ya está al día"
+
+["The skyline layer of {version} is behind the pits: tick «Bring the layer up to date» to bring it up to date"]
+es = "La capa de la línea de cielo de {version} está atrasada respecto a las cortas: marque «Poner al día la capa» para ponerla al día"
+
+["Skyline of pit «{name}» ({code}) in {version}"]
+es = "Línea de cielo de la corta «{name}» ({code}) en {version}"
+
+["The pit has no skyline: it does not come out at the ground"]
+es = "La corta no tiene línea de cielo: no sale a superficie"
+
+["legal limit"]
+es = "límite legal"
+
+["perimeter of the works"]
+es = "perímetro de actuación"
+
+["Closest to the {limit}: the skyline at x = {x} m, y = {y} m, z = {z} m"]
+es = "Lo más cerca del {limit}: la línea de cielo en x = {x} m, y = {y} m, z = {z} m"
+
+["The skyline layer of {version} is brought up to date"]
+es = "La capa de la línea de cielo de {version} queda puesta al día"
+
+["Bringing the skyline layer up to date… {percent} % · Esc: cancel"]
+es = "Poniendo al día la capa de la línea de cielo… {percent} % · Esc: cancelar"
+
+["Cancelled: the layer has been left as it was; nothing has been left half-done"]
+es = "Cancelado: la capa se ha dejado como estaba; no queda nada a medias"
+
+["Code or name of the pit of the active version (empty: the one of the object selected in the 3D view)"]
+es = "Código o nombre de la corta de la versión activa (vacío: la del objeto seleccionado en la vista 3D)"
+
+["If the layer of the skyline for QGIS is behind the pits of the version, bring it up to date (it is the only thing this command writes)"]
+es = "Si la capa de la línea de cielo para QGIS está atrasada respecto a las cortas de la versión, la pone al día (es lo único que escribe esta orden)"
+
+["Show the figures of the skyline of a pit (where it comes out at the ground: its parts, its length, the area it encloses, its lowest and highest level and its distance to the legal limit and to the perimeter of the works) and bring its layer up to date if it is behind"]
+es = "Enseña las cifras de la línea de cielo de una corta (donde sale a superficie: sus partes, su longitud, el área que encierra, su cota mínima y máxima y su distancia al límite legal y al perímetro de actuación) y pone al día su capa si está atrasada"
+
+["Surface and solid…"]
+es = "Superficie y sólido…"
+
+["Accept"]
+es = "Aceptar"
+
+["Create the view anyway"]
+es = "Crear la vista de todos modos"
+
+["«{name}» has more triangles than the limit of a view: it may be slow. Create it anyway?"]
+es = "«{name}» tiene más triángulos que el límite de una vista: puede ir lenta. ¿La crea de todos modos?"
+
+["What"]
+es = "Qué"
+
+["There is no active version: make the version of the pit the active one first"]
+es = "No hay versión activa: ponga primero como activa la versión de la corta"
+
+["Findings of the pit exported to «{file}»"]
+es = "Hallazgos de la corta exportados a «{file}»"
+
+["Surface of the pit exported to «{file}»"]
+es = "Superficie de la corta exportada a «{file}»"
+
+["Creating the view of «{name}»… {percent} % · Esc: cancel"]
+es = "Creando la vista de «{name}»… {percent} % · Esc: cancelar"
+
+["The TIN or the solid of the pit as a view, or its surface to GeoTIFF or its findings to CSV"]
+es = "El TIN o el sólido de la corta como vista, o su superficie a GeoTIFF o sus hallazgos a CSV"
+
+["File to write the surface or the findings to (empty: the exports folder of the project, with the name of the data and the version)"]
+es = "Fichero donde escribir la superficie o los hallazgos (vacío: la carpeta de exportaciones del proyecto, con el nombre del dato y la versión)"
+
+["Excavation solid"]
+es = "Sólido de excavación"
+
+["Surface to GeoTIFF"]
+es = "Superficie a GeoTIFF"
+
+["Findings to CSV"]
+es = "Hallazgos a CSV"
+
+["The TIN of the pit, with its polylines and its skyline as edges, as a view of the 3D window (it writes nothing in the project)"]
+es = "El TIN de la corta, con sus polilíneas y su línea de cielo como aristas, como vista de la ventana 3D (no escribe nada en el proyecto)"
+
+["The solid of the excavation: a closed mesh between the start surface and the surface of the pit, as a view of the 3D window (it writes nothing in the project)"]
+es = "El sólido de la excavación: una malla cerrada entre la superficie de partida y la de la corta, como vista de la ventana 3D (no escribe nada en el proyecto)"
+
+["The surface of the pit, the official one of the project, as a deliverable GeoTIFF"]
+es = "La superficie de la corta, la oficial del proyecto, como GeoTIFF entregable"
+
+["The findings of the pit, with their place, as a CSV file for Excel"]
+es = "Los hallazgos de la corta, con su lugar, como fichero CSV para Excel"
+
+["Create, when you ask for it, the TIN or the solid of the excavation of a pit as a view (with the warning before creating more triangles than the limit of a view) or write its surface to a GeoTIFF or its findings to a CSV; it writes nothing in the project"]
+es = "Crea, a petición, el TIN o el sólido de excavación de una corta como vista (con el aviso antes de crear más triángulos que el límite de una vista) o escribe su superficie a GeoTIFF o sus hallazgos a CSV; no escribe nada en el proyecto"

@@ -62,12 +62,14 @@ __all__ = [
     "expanded_table",
     "layer_differences",
     "marked_pits",
+    "pit_data",
     "pit_heads",
     "pit_layer_pending",
     "pit_layer_rows_steps",
     "pit_layer_steps",
     "pit_layer_sync_steps",
     "pit_layer_table",
+    "pit_source",
     "pit_sources",
     "prepare_pit_layer",
     "read_expanded_layer",
@@ -581,6 +583,17 @@ def _source(conn: sqlite3.Connection, head: PitHead, version: Version) -> PitSou
         raise DesignError("des.pitlayer_unusable", **where) from error
     prefix = provenance.dataset_name(provenance.PIT_POLYLINES_TABLE, "x")[:-1]
     return PitSource(head.code, head.name, poly_name.removeprefix(prefix), head.state, polylines, skyline, axes)
+
+
+def pit_source(conn: sqlite3.Connection, head: PitHead, version: Version) -> PitSource:
+    """Lo que las capas saben de **una** corta calculada (``head``, de :func:`pit_heads`) de la versión ``version``: lo de :func:`pit_sources` para ella sola (``T33``: la orden «Línea de cielo…» lee solo la suya).
+    Solo lee con ``conn``; los rechazos son los de :func:`pit_sources`."""
+    return _source(conn, head, version)
+
+
+def pit_data(conn: sqlite3.Connection, head: PitHead, version: Version, role: str, what: str) -> tuple[str, str]:
+    """La tabla y el nombre del dato de la corta ``head`` con el papel ``role`` (``what``: cómo se llama en los rechazos), **si se puede usar** (spec 018, T33; véase :func:`_data`). Solo lee."""
+    return _data(conn, head, version, role, what)
 
 
 def pit_sources(project: StoreProject, version: Version, *, conn: sqlite3.Connection | None = None) -> tuple[PitSource, ...]:

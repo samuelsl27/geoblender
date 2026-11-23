@@ -1709,12 +1709,12 @@ edición de los perfiles de pista no está aquí: es de proyecto y no se repite 
 PIT_COMMAND = "geoblender.des_create_pit"
 """La orden que lanza la corta: «Nueva corta…» (``bl.ops.des_pit``, T31). Sustituye a la provisional ``des_new_pit`` del catálogo (D-20)."""
 PIT_EXPAND_COMMAND = "geoblender.des_expand_bench"
-PIT_LAYER_COMMAND = "geoblender.des_compute_daylight"
+PIT_LAYER_COMMAND = "geoblender.des_pit_skyline"
 PIT_ROSE_COMMAND = "geoblender.des_edit_pit_rose"
 PIT_RAMP_COMMAND = "geoblender.des_edit_pit_ramp"
 """Las órdenes de «Roseta de taludes…» y «Rampa…» (``bl.ops.des_pit``, T32; plan 018 §5.3.3): ya con su clase real; sustituyen a la provisional ``des_add_ramp`` del catálogo
-(D-20). Las de «Expandir banco…» y «Línea de cielo…» siguen siendo **las provisionales que ya tiene el catálogo** (D-20; una orden que lanza una operación debe estar en él), a
-falta de las reales (``des_pit_skyline``), que las sustituyen en las tareas siguientes."""
+(D-20). La de «Línea de cielo…» (``des_pit_skyline``, ``bl.ops.des_pit``, T33; la capa de la operación ``des.pit_layer``) sustituye a la provisional ``des_compute_daylight`` del catálogo (D-20);
+«Expandir banco…» ya es real desde T32b."""
 PIT_OPERATION_TYPES: tuple[OperationType, ...] = (
     OperationType(PIT, "Pit", (ENTITY_SURFACE_GRID, ENTITY_TABLE, PIT_POLYLINES_TABLE, PIT_SKYLINE_TABLE, PIT_RAMPS_TABLE,
                                PIT_FINDINGS_TABLE, PIT_BENCHES_TABLE, ENTITY_REPORT_TABLE), (), (*PIT_FIGURES, *SUPPORT_FIGURES),

@@ -185,6 +185,20 @@ class DistanceTest(unittest.TestCase):
         found = sky_of(grid, start, start + 5.0, legal=((pd.absolute([(0, 0), (9, 0), (9, 9)], grid),),))
         self.assertIsNone(found.legal)
 
+    def test_limit_distances_of_stored_parts_are_those_of_the_calculation(self) -> None:
+        """RF-018-29, RF-018-33 (T33): ``limit_distances`` —las distancias y su lugar de una línea ya guardada, sin rejilla— da lo mismo que la línea calculada con sus mismos límites."""
+        west = float(self.case.exact[:, :, 0].min())
+        east = float(self.case.exact[:, :, 0].max())
+        legal, perimeter = self.box(west - 17.0 - 50.0, 0.0, west - 17.0, 400.0), self.box(-1000.0, -1000.0, east + 23.0, 2000.0)
+        calculated = self.sky(legal=legal, perimeter=perimeter)
+        found_legal, found_perimeter = pit_sky.limit_distances(calculated.parts, legal=legal, perimeter=perimeter)
+        for found, wanted in ((found_legal, calculated.legal), (found_perimeter, calculated.perimeter)):
+            self.assertAlmostEqual(found.distance_m, wanted.distance_m, delta=1e-9)
+            self.assertTrue(np.allclose(found.on_line, wanted.on_line, atol=1e-9))
+            self.assertTrue(np.allclose(found.on_boundary, wanted.on_boundary, atol=1e-9))
+        self.assertEqual(pit_sky.limit_distances(calculated.parts), (None, None), "sin límites, ninguna distancia")
+        self.assertEqual(pit_sky.limit_distances((), legal=legal), (None, None), "sin línea, ninguna distancia")
+
 
 class NoSurfaceTest(unittest.TestCase):
     def test_a_pit_that_does_not_reach_the_surface_has_no_line(self) -> None:

@@ -4097,6 +4097,12 @@ CATALOG: tuple[Message, ...] = (
         "Pit «{name}»: «{what}» has nothing to show: {reason}.",
         "Corta «{name}»: «{what}» no tiene nada que mostrar: {reason}.",
     ),
+    # T33 (RF-018-29, RF-018-30): las órdenes «Línea de cielo…» y «Superficie y sólido…» piden una corta calculada de la versión activa.
+    Message(
+        "des.pit_view_unknown",
+        "«{name}» is not a pit calculated in {version}: calculate it first or give the code or the name of one.",
+        "«{name}» no es una corta calculada en {version}: calcúlela antes o dé el código o el nombre de una.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

@@ -810,6 +810,32 @@ class PitH2Test(unittest.TestCase):
         self.assertEqual(len(bpy.data.meshes), meshes)
         REPORT.append(f"T30: TIN de {triangles:,} triángulos y sólido de {volume:,.0f} m³ (malla) frente a {cut:,.0f} m³ de corte (rejilla)")
 
+    def test_hb_the_skyline_report_gives_the_figures_and_the_place_of_the_distances(self) -> None:
+        """T33, RF-018-29, RF-018-33: con la corta en ladera ya creada, ``design.pit_view.skyline_report`` da las cifras registradas de su línea de cielo y **el lugar** de la distancia mínima al límite legal
+        y al perímetro de actuación, medido sobre la línea guardada: su distancia es la cifra registrada (≤ 10⁻⁶ m), el punto de la línea está **en** la línea guardada, con la cota del terreno, y el del
+        borde está en el borde del límite (x o y del rectángulo); sin escribir nada en el proyecto."""
+        pit_view = _module("design.pit_view")
+        before = self.counts()
+        report = pit_view.skyline_report(self.project, self.v01.uid, "Corta en ladera")
+        self.assertEqual((report.name, report.version_code, report.layer_pending), ("Corta en ladera", "V01", True), "creada por el dominio, sin encadenar su capa: está atrasada")
+        figures = self.figures_of(self.made["slope_uid"])
+        self.assertEqual({item.key for item in report.figures}, {key for key in figures if key.startswith("des.pit_sky_")})
+        stored = self.rows("SELECT locator FROM gb_dataset WHERE name = ? AND status = 'current'", self.dprov.dataset_name(self.dprov.PIT_SKYLINE_TABLE, "Corta en ladera"))[0][0]
+        pit_lines = _module("design.pit_lines")
+        with self.project.read() as conn:
+            rows = pit_lines.read_pit_lines(conn, stored, pit_lines.SKYLINE)
+        points = np.vstack([row.points for row in rows])
+        for found, key, rectangle in ((report.legal, "des.pit_sky_dist_legal_m", (8.0, 8.0, 392.0, 392.0)), (report.perimeter, "des.pit_sky_dist_perimeter_m", (20.0, 20.0, 380.0, 340.0))):
+            self.assertIsNotNone(found, key)
+            self.assertAlmostEqual(found.distance_m, figures[key], delta=1e-6, msg=key)
+            gap = np.hypot(*(points[:, :2] - found.on_line[:2]).T)
+            self.assertLess(float(gap.min()), 1.5 * 2.0, "el punto está sobre la línea guardada (entre sus vértices)")
+            self.assertAlmostEqual(found.on_line[2], 130.0 + 0.10 * local(found.on_line[None, :])[0, 0], delta=1e-6, msg="con la cota del terreno")
+            x, y = local(np.append(found.on_boundary[:2], 0.0)[None, :])[0]
+            left, bottom, right, top = rectangle
+            self.assertTrue(any(abs(value - edge) < 1e-6 for value, edge in ((x, left), (x, right), (y, bottom), (y, top))), f"el punto del borde ({x:.3f}, {y:.3f}) está en el borde del límite {rectangle}")
+        self.assertEqual(self.counts(), before, "leer no escribe nada")
+
     # --- i: restricciones, banco fijado y hallazgos -------------------------------------------------------------------------
 
     def test_i_the_perimeter_the_untouchable_and_the_fixed_bench(self) -> None:
