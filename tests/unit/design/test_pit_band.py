@@ -111,5 +111,20 @@ class SpiralSurfaceTest(unittest.TestCase):
         self.assertTrue(np.array_equal(self.result.surface, again.surface, equal_nan=True))
 
 
+class ZigzagSurfaceTest(unittest.TestCase):
+    """CE-018-06 y 11: la superficie del zig-zag de cinco bancos, también sin rechazos de la triangulación."""
+
+    def test_surface_and_volume_by_bench(self) -> None:
+        job = rp.zigzag_job()
+        found = pit_bench.ascend(job)
+        result = pit_surface.rasterize(job, found, found.ramps, crs=pd.CRS, vertical=pd.VERTICAL)
+        self.assertGreater(result.cut_m3, 0.0)
+        self.assertAlmostEqual(float(result.bench_m3.sum()), result.cut_m3, delta=1e-6 * result.cut_m3)
+        pieces = pit_band.arrange(found.polylines, [found.ramps[0].band])
+        polygon = pit_band.band_polygon(found.ramps[0].band)
+        mids = np.vstack([0.5 * (p.vertices[:-1, :2] + p.vertices[1:, :2]) for p in pieces])
+        self.assertFalse(bool(pit_band._inside(mids, polygon).any()))
+
+
 if __name__ == "__main__":
     unittest.main()

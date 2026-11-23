@@ -106,6 +106,12 @@ _NORTH_WRAP_DEG = 1e-7
 _MITER_FLOOR = 0.25
 """Cota inferior de ``1 + n₁·n₂`` en el vértice del eje (limita el inglete en los giros agudos)."""
 _LEVEL_TOL_M = 1e-6
+_OBLIQUE_DEG = 5.0
+"""La oblicuidad que admite el lado casi recto donde vuelve el tramo del zig-zag respecto del anterior (DIFF-018e)."""
+_FUSE_REACH = 5.0
+"""Hasta cuántas tolerancias se aparta del grupo un vértice antes de dejar de buscar una cuerda más larga."""
+_PARALLEL = 0.999
+"""El coseno de la oblicuidad que se admite con lados exactos (``tol_m`` = 0)."""
 """Lo que el pie de un banco puede apartarse de la cresta del anterior (m)."""
 
 
@@ -130,7 +136,8 @@ class Tramo:
     (``cw`` o ``ccw``), la cota del pie (``z_foot_m``), lo que sube (``rise_m``), la pendiente (``gradient``, fracción), la anchura de la
     banda (``width_m``) y la transición (``transition_m``), la abscisa de inicio sobre el pie (``abscissa_m``: ``s_k``, en el sentido
     pedido desde el vértice 0), lo que mide la rampa (``ramp_m`` = ``rise/g``) y el tramo (``length_m`` = ``ramp_m + transition_m``) y el
-    ``axis`` ``(k, 3)``: sus estaciones, del inicio al fin, con su Z (el marco del anillo con que se construyó)."""
+    ``axis`` ``(k, 3)``: sus estaciones, del inicio al fin, con su Z (el marco del anillo con que se construyó). ``slack_m`` (DIFF-018e, solo el zig-zag): lo que el pie real se aparta de
+    la recta del tramo (un lado casi recto, de aristas casi colineales fusionadas); 0 en un lado exacto."""
 
     bench: int
     foot_start: np.ndarray
@@ -144,6 +151,7 @@ class Tramo:
     ramp_m: float
     length_m: float
     axis: np.ndarray
+    slack_m: float = 0.0
 
     @property
     def start_xy(self) -> np.ndarray:
@@ -434,10 +442,14 @@ def foot_breaks(tramo: Tramo, ring: object) -> np.ndarray:
     return np.array(found_points).reshape(-1, 2)
 
 
-def zigzag_foot_breaks(tramo: Tramo) -> np.ndarray:
-    """Los dos puntos ``(2, 2)`` del pie donde empieza y acaba el tramo recto de un zig-zag (el eje es el pie desplazado ``W/2``: se restan ``W/2`` a lo largo de su normal)."""
+def zigzag_foot_breaks(tramo: Tramo, ring: object | None = None) -> np.ndarray:
+    """Los dos puntos ``(2, 2)`` del pie donde empieza y acaba el tramo recto de un zig-zag (el eje es el pie desplazado ``W/2``: se restan ``W/2`` a lo largo de su normal). Con un lado
+    casi recto (``tramo.slack_m`` > 0, DIFF-018e) y el pie ``ring``, son los puntos del pie más cercanos a esos (el pie se aparta de la cuerda hasta ``slack_m``)."""
     shift = tramo.axis[0, :2] - tramo.foot_start
-    return np.array([tramo.foot_start, tramo.axis[-1, :2] - shift])
+    found = np.array([tramo.foot_start, tramo.axis[-1, :2] - shift])
+    if ring is not None and tramo.slack_m > 0.0:
+        found = np.array([nearest_on_ring(ring, point)[0] for point in found])
+    return found
 
 
 def split_ring(ring: object, points: object) -> np.ndarray:
@@ -633,63 +645,127 @@ class _Side:
     edge: int
 
 
-def _sides(ring: np.ndarray, half_m: float) -> list[_Side]:
+def _fused(ring: np.ndarray, tol_m: float) -> list[tuple[int, int]]:
+    """Los lados casi rectos del anillo ``ring`` (DIFF-018e): ``(arista primera, vértice final)`` de cada grupo de aristas consecutivas casi colineales, en el orden del anillo. Un grupo
+    crece mientras todos sus vértices estén a ≤ ``tol_m`` de su cuerda y ninguna arista vuelva atrás respecto de ella (el término de la cresta por arista escalona el pie: sus aristas giran
+    ±4° y más respecto de la tendencia, así que el giro de cada arista no es el criterio, sino la separación de la cuerda); el anillo parte del vértice de mayor giro (el primero en un
+    empate), así que ningún grupo cruza una esquina y el resultado es determinista."""
+    count = len(ring)
     edge = np.roll(ring, -1, axis=0) - ring
     length = np.hypot(*edge.T)
     if bool((length <= 0.0).any()):
         raise ValueError("El anillo de la rampa tiene una arista de longitud 0")
-    u = edge / length[:, None]
-    n = np.column_stack([u[:, 1], -u[:, 0]])
-    return [_Side(ring[i] + half_m * n[i], u[i], n[i], float(length[i]), i) for i in range(len(ring))]
+    unit = edge / length[:, None]
+    heading = np.arctan2(unit[:, 1], unit[:, 0])
+    turn = np.abs((np.roll(heading, -1) - heading + np.pi) % (2.0 * np.pi) - np.pi)
+    first = (int(np.argmax(turn)) + 1) % count
+    groups: list[tuple[int, int]] = []
+    done = 0
+    while done < count:
+        best = done + 1
+        for stop in range(done + 2, count + 1):
+            vertices = ring[(first + np.arange(done, stop + 1)) % count]
+            chord = vertices[-1] - vertices[0]
+            size = float(np.hypot(*chord))
+            if size <= 0.0:
+                break
+            along = chord / size
+            sag = np.abs((vertices - vertices[0]) @ np.array([-along[1], along[0]]))
+            if float(sag.max()) <= tol_m and float((unit[(first + np.arange(done, stop)) % count] @ along).min()) > 0.0:
+                best = stop
+            elif float(sag.max()) > _FUSE_REACH * tol_m:  # una cuerda corta aún puede no valer y una más larga, sí: se sigue hasta que el pie ya se aparta de verdad
+                break
+        groups.append(((first + done) % count, (first + best) % count))
+        done = best
+    return groups
 
 
-def _first_side(ring: np.ndarray, point: Sequence[float], half_m: float) -> _Side:
+def _sides(ring: np.ndarray, half_m: float, tol_m: float = 0.0) -> list[_Side]:
+    """Los lados de ``ring``: uno por arista o, con ``tol_m`` > 0, uno por grupo de aristas casi colineales (:func:`_fused`; su cuerda)."""
+    if tol_m > 0.0:
+        groups = _fused(ring, tol_m)
+        ends = [(ring[first], ring[last], first) for first, last in groups]
+    else:
+        edge = np.roll(ring, -1, axis=0) - ring
+        if bool((np.hypot(*edge.T) <= 0.0).any()):
+            raise ValueError("El anillo de la rampa tiene una arista de longitud 0")
+        ends = [(ring[i], ring[(i + 1) % len(ring)], i) for i in range(len(ring))]
+    sides = []
+    for begin, finish, index in ends:
+        chord = finish - begin
+        size = float(np.hypot(*chord))
+        u = chord / size
+        n = np.array([u[1], -u[0]])
+        sides.append(_Side(begin + half_m * n, u, n, size, index))
+    return sides
+
+
+def _first_side(ring: np.ndarray, point: Sequence[float], half_m: float, tol_m: float = 0.0) -> _Side:
     """El lado más largo que contiene el punto del pie más cercano a ``point`` (en un vértice, el más largo de los dos; a igual longitud, el primero)."""
     distance = nearest_on_ring(ring, point)[3]
     target = np.asarray(point, dtype=np.float64)
-    edge = np.roll(ring, -1, axis=0) - ring
-    fraction = np.clip(np.einsum("ij,ij->i", target - ring, edge) / np.einsum("ij,ij->i", edge, edge), 0.0, 1.0)
-    reach = np.hypot(*(ring + fraction[:, None] * edge - target).T)
-    near = [item for item, value in zip(_sides(ring, half_m), reach, strict=True) if value <= distance + _TIE_M]
+    sides = _sides(ring, half_m, tol_m)
+    reach = []
+    for item in sides:
+        begin = item.p0 - half_m * item.n
+        fraction = float(np.clip((target - begin) @ item.u / item.length, 0.0, 1.0))
+        reach.append(float(np.hypot(*(begin + fraction * item.length * item.u - target))))
+    near = [item for item, value in zip(sides, reach, strict=True) if value <= distance + max(_TIE_M, tol_m)]
     return max(near, key=lambda item: (item.length, -item.edge))
 
 
-def _side_after(ring: np.ndarray, end: np.ndarray, back: np.ndarray, out: np.ndarray, half_m: float, min_length_m: float = 0.0) -> tuple[_Side, float]:
+def _side_after(ring: np.ndarray, end: np.ndarray, back: np.ndarray, out: np.ndarray, half_m: float, min_length_m: float = 0.0, tol_m: float = 0.0,
+                reach_m: float = 0.0) -> tuple[_Side, float]:
     """El lado del pie siguiente: el paralelo al anterior (el tramo vuelve en ``back``) y el más cercano por fuera del eje de ``end``,
     con la distancia lateral ``d`` (m). Con ``min_length_m`` (un pie real, con el escalón que deja el término de la cresta, tiene lados paralelos cortos), solo los que miden
-    al menos eso; si ninguno llega, todos (el rechazo lo da quien lo construye)."""
-    best: tuple[float, float, _Side] | None = None
-    sides = _sides(ring, half_m)
-    if min_length_m > 0.0 and any(item.length >= min_length_m - 1e-9 for item in sides):
-        sides = [item for item in sides if item.length >= min_length_m - 1e-9]
-    for side in sides:
-        if abs(float(side.u @ back)) < 0.999:
-            continue
-        lateral = float((side.p0 - end) @ out)
-        if lateral <= 1e-6:
-            continue
-        key = (lateral, -side.length)
-        if best is None or key < best[:2]:
-            best = (lateral, -side.length, side)
-    if best is None:
+    al menos eso; si ninguno llega, todos (el rechazo lo da quien lo construye). Con ``tol_m`` > 0 (DIFF-018e) los lados son casi rectos (aristas casi colineales fusionadas),
+    «paralelo» admite 5° de oblicuidad y, si ningún lado paralelo llega a ``min_length_m``, se admiten los que llegan a ``min_length_m − reach_m`` (el tramo se prolonga ``reach_m``)."""
+    sides = _sides(ring, half_m, tol_m)
+    cosine = math.cos(math.radians(_OBLIQUE_DEG)) if tol_m > 0.0 else _PARALLEL
+
+    def pick(chosen: Sequence[_Side]) -> tuple[_Side, float] | None:
+        best: tuple[float, float, _Side] | None = None
+        for side in chosen:
+            if abs(float(side.u @ back)) < cosine:
+                continue
+            lateral = float((side.p0 - end) @ out)
+            if lateral <= 1e-6:
+                continue
+            if tol_m > 0.0 and not -reach_m - 1e-9 <= float((end - side.p0) @ side.u) <= side.length + reach_m + 1e-9:
+                continue  # DIFF-018e: un lado casi recto que no está a la altura del fin del tramo (ni prolongándolo) no es donde vuelve
+            key = (lateral, -side.length)
+            if best is None or key < best[:2]:
+                best = (lateral, -side.length, side)
+        return None if best is None else (best[2], best[0])
+
+    tiers = [min_length_m]
+    if tol_m > 0.0 and reach_m > 0.0:
+        tiers.append(max(min_length_m - reach_m, 0.0))
+    for need in tiers:
+        long = [item for item in sides if item.length >= need - 1e-9] if need > 0.0 else sides
+        found = pick(long) if long else None
+        if found is not None:
+            return found
+    found = pick(sides)
+    if found is None:
         raise ValueError("El pie del banco siguiente no tiene un lado paralelo por fuera del eje de la rampa")
-    return best[2], best[0]
+    return found
 
 
 def _zigzag_tramo(side: _Side, t: float, sigma: float, *, bench: int, z_foot_m: float, rise_m: float, gradient_pct: float,
-                  width_m: float, platform_m: float, last: bool, sense: str) -> Tramo:
+                  width_m: float, platform_m: float, last: bool, sense: str, slack_m: float = 0.0, reach_m: float = 0.0) -> Tramo:
     gradient = gradient_pct / 100.0
     ramp = rise_m / gradient
     room = side.length - t if sigma > 0.0 else t
-    if ramp > room + 1e-9:
+    if ramp > room + reach_m + 1e-9:
         raise ZigzagDoesNotFit(bench, ramp, room, side.p0 + t * side.u)
     needed = ramp + (0.0 if last else platform_m)
-    if needed > side.length + 1e-9:
+    if needed > side.length + reach_m + 1e-9:
         raise ZigzagDoesNotFit(bench, needed, side.length, side.p0 + t * side.u)
     start = side.p0 + t * side.u
     end = start + sigma * ramp * side.u
     axis = np.array([[start[0], start[1], z_foot_m], [end[0], end[1], z_foot_m + rise_m]])
-    return Tramo(bench, start - 0.5 * width_m * side.n, sense, z_foot_m, rise_m, gradient, width_m, 0.0, t, ramp, ramp, axis)
+    return Tramo(bench, start - 0.5 * width_m * side.n, sense, z_foot_m, rise_m, gradient, width_m, 0.0, t, ramp, ramp, axis, slack_m)
 
 
 def _assemble(tramos: Sequence[Tramo], platforms: Sequence[np.ndarray], half_m: float, code: str, platform_m: float) -> Zigzag:
@@ -705,26 +781,33 @@ def _assemble(tramos: Sequence[Tramo], platforms: Sequence[np.ndarray], half_m: 
     return Zigzag(path, tuple(tramos), tuple(platforms), ramp_m, platforms_m, platform_m, float(axis[-1, 2] - axis[0, 2]))
 
 
-def _zigzag_link(ring: np.ndarray, tramo: Tramo, side: _Side, sigma: float, half_m: float, platform_m: float, z_next_m: float, bench: int
-                 ) -> tuple[np.ndarray, _Side, float, float]:
+def _zigzag_link(ring: np.ndarray, tramo: Tramo, side: _Side, sigma: float, half_m: float, platform_m: float, z_next_m: float, bench: int,
+                 tol_m: float = 0.0, reach_m: float = 0.0, strict: bool = False) -> tuple[np.ndarray, _Side, float, float]:
     """La plataforma de retorno tras ``tramo`` (que va por ``side`` en el sentido ``sigma``) hacia el pie ``ring`` del banco ``bench``: ``(plataforma ``(3, 3)``, el lado siguiente, su
     sentido, la abscisa de inicio sobre él)``. :class:`ZigzagDoesNotFit` si el tramo y la plataforma no caben en su lado o el aterrizaje cae fuera del lado siguiente."""
     needed = tramo.ramp_m + platform_m
-    if needed > side.length + 1e-9:
+    if (tol_m <= 0.0 or strict) and needed > side.length + 1e-9:  # el primer lado es el del fondo, sin escalones: ahí h/g + P sí ha de caber
         raise ZigzagDoesNotFit(tramo.bench, needed, side.length, side.p0 + tramo.abscissa_m * side.u)
     end = tramo.end_xy
     travel = sigma * side.u
     try:
-        following, lateral = _side_after(ring, end, -travel, side.n, half_m, tramo.ramp_m)
+        following, lateral = _side_after(ring, end, -travel, side.n, half_m, tramo.ramp_m, tol_m, reach_m)
     except ValueError:
         raise ZigzagDoesNotFit(bench, tramo.ramp_m, 0.0, end) from None
     turn = end + max(platform_m - lateral, 0.0) * travel
+    if tol_m > 0.0 and not strict:  # DIFF-018e: sin lado recto donde medir h/g + P, el giro de la plataforma cabe si no se pasa del lado casi recto más de ``reach_m`` (el tramo se prolonga igual)
+        along = float((turn - side.p0) @ side.u)
+        if not -reach_m - 1e-9 <= along <= side.length + reach_m + 1e-9:
+            raise ZigzagDoesNotFit(tramo.bench, needed, side.length, turn)
     landing = turn + lateral * side.n
     landing = landing - ((landing - following.p0) @ following.n) * following.n  # al eje del lado siguiente
     platform = np.array([[end[0], end[1], z_next_m], [turn[0], turn[1], z_next_m], [landing[0], landing[1], z_next_m]])
     t = float((landing - following.p0) @ following.u)
-    if not -1e-9 <= t <= following.length + 1e-9:
+    reach = reach_m if tol_m > 0.0 else 0.0  # DIFF-018e: el aterrizaje puede caer en la recta del lado, prolongada hasta ``reach_m`` (la plataforma se pasa del fin del tramo)
+    if not -1e-9 - tol_m - reach <= t <= following.length + 1e-9 + tol_m + reach:
         raise ZigzagDoesNotFit(bench, t, following.length, landing)
+    if tol_m > 0.0:
+        return platform, following, -sigma, t
     return platform, following, -sigma, min(max(t, 0.0), following.length)
 
 
@@ -765,14 +848,18 @@ class ZigzagStepper:
     """El zig-zag de ``ramp`` banco a banco (T21c): cada pie, al calcularse, pide su tramo (:meth:`tramo`) y, al acabar, :meth:`result` da el :class:`Zigzag` en absolutas. Es
     :func:`build_zigzag` con los pies de uno en uno (el lado siguiente y la plataforma salen del pie del banco que sigue, ya con el término de la cresta anterior)."""
 
-    def __init__(self, ramp: RampDef, width_m: float) -> None:
+    def __init__(self, ramp: RampDef, width_m: float, tol_m: float = 0.0) -> None:
         if ramp.type != "zigzag":
             raise ValueError(f"La rampa {ramp.code!r} es de tipo {ramp.type!r}, no «zigzag»")
         if ramp.turn_radius_m is None or ramp.min_platform_m is None:
             raise ValueError(f"La rampa {ramp.code!r} en zig-zag necesita el radio de giro y la plataforma mínima")
         self.ramp = ramp
         self.width_m = width_m
+        self.tol_m = tol_m
+        self.reach_m = 0.0
         self.platform_m = platform_length_m(ramp.turn_radius_m, ramp.min_platform_m)
+        if tol_m > 0.0:
+            self.reach_m = self.platform_m  # DIFF-018e (decisión por defecto, revisable): el tramo puede prolongarse hasta una plataforma más allá de su lado casi recto
         self.tramos: list[Tramo] = []
         self.platforms: list[np.ndarray] = []
         self._side: _Side | None = None
@@ -784,14 +871,14 @@ class ZigzagStepper:
         points = _ring(ring)
         half = 0.5 * self.width_m
         if self._side is None:
-            side = _first_side(points, point, half)
+            side = _first_side(points, point, half, self.tol_m)
             t = 0.0 if self._sigma > 0.0 else side.length
             sigma = self._sigma
         else:
-            platform, side, sigma, t = _zigzag_link(points, self.tramos[-1], self._side, self._sigma, half, self.platform_m, z_foot_m, bench)
+            platform, side, sigma, t = _zigzag_link(points, self.tramos[-1], self._side, self._sigma, half, self.platform_m, z_foot_m, bench, self.tol_m, self.reach_m, strict=len(self.tramos) == 1)
             self.platforms.append(platform)
         found = _zigzag_tramo(side, t, sigma, bench=bench, z_foot_m=z_foot_m, rise_m=rise_m, gradient_pct=self.ramp.gradient_pct, width_m=self.width_m,
-                              platform_m=self.platform_m, last=True, sense=self.ramp.sense)
+                              platform_m=self.platform_m, last=True, sense=self.ramp.sense, slack_m=self.tol_m, reach_m=self.reach_m)
         self._side, self._sigma = side, sigma
         self.tramos.append(found)
         return found
@@ -824,7 +911,8 @@ def zigzag_edge_extra_m(tramo: Tramo, ring: object, face_deg: object) -> np.ndar
     mid = 0.5 * (points + np.roll(points, -1, axis=0))
     s = (mid - start) @ along
     lateral = np.abs((mid - start) @ np.array([-along[1], along[0]]))
-    on = (np.abs(lateral - 0.5 * tramo.width_m) <= 1e-6) & (s >= -1e-9) & (s <= tramo.ramp_m + 1e-9)
+    slack = 1e-6 + tramo.slack_m  # un lado casi recto: el pie se aparta de la cuerda hasta ``slack_m`` (DIFF-018e)
+    on = (np.abs(lateral - 0.5 * tramo.width_m) <= slack) & (s >= -1e-9 - tramo.slack_m) & (s <= tramo.ramp_m + 1e-9 + tramo.slack_m)
     extra = np.zeros(len(points))
     extra[on] = tramo.width_m - tramo.gradient * s[on] / np.tan(np.radians(angle[on]))
     return extra

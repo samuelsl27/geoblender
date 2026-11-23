@@ -127,8 +127,14 @@ class StartTest(unittest.TestCase):
 
 
 class ZigzagTest(unittest.TestCase):
-    """CE-018-06 por ``ascend``: 100 m de tramo con g = 10 % en el primer banco. Con más de un banco, el pie real (con el escalón de la cresta retranqueada) no tiene un lado recto
-    paralelo donde volver: hoy se rechaza con el banco y los metros (RF-018-20), a la espera de DIFF-018d (T21c2)."""
+    """CE-018-06 por ``ascend``: 100 m de tramo con g = 10 % en cada banco. Con más de un banco el pie real no es concéntrico (donde subió el tramo su cresta es oblicua y donde acaba hay
+    un escalón): el zig-zag vuelve por un lado casi recto, con las aristas casi colineales fusionadas y hasta 5° de oblicuidad (DIFF-018e, opción A)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.job = zigzag_job()
+        cls.found = pit_bench.ascend(cls.job)
+        cls.checked = cls.found.ramps[0]
 
     def test_one_bench_has_a_tramo_of_100_m_at_10_percent(self) -> None:
         found = pit_bench.ascend(zigzag_job(start=pd.flat_terrain(pd.GRID, 135.0)))
@@ -140,11 +146,40 @@ class ZigzagTest(unittest.TestCase):
         foot = line_of(found, "foot", 0)
         self.assertGreater(len(foot), 6)  # el lado del tramo, partido en su inicio, su fin y trozos de ≤ 5 m para que la cresta siga la pared
 
-    def test_return_tramo_without_a_parallel_side_is_rejected_with_the_bench(self) -> None:
+    def test_five_benches_climb_with_four_returns(self) -> None:
+        """RF-018-17, CE-018-06: 5 bancos, 50 m de desnivel, la pendiente de la rampa y la cota de cada banco, la de su ancla."""
+        axis = self.checked.path.axis
+        self.assertEqual(self.found.count, 5)
+        self.assertEqual(set(np.unique(self.checked.benches)), {0, 1, 2, 3, 4})
+        self.assertAlmostEqual(float(axis[-1, 2] - axis[0, 2]), 50.0, delta=1e-9)
+        self.assertEqual((float(axis[0, 2]), float(axis[-1, 2])), (125.0, 175.0))
+        self.assertLessEqual(self.checked.max_gradient_pct, 10.0 + 1e-6)
+        flat = np.flatnonzero(np.abs(np.diff(axis[:, 2])) < 1e-12)
+        self.assertGreater(len(flat), 4 * 5)  # las cuatro plataformas de retorno, horizontales
+
+    def test_length_is_the_hand_value_less_the_curves(self) -> None:
+        """CE-018-06: 5·100 m de tramo + 4 plataformas de 40 m = 660 m de eje; las curvas redondeadas lo acortan (8 esquinas, ≤ 2R − πR/2 cada una)."""
+        total = hand.zigzag_totals(5, hand.Fraction(40))
+        self.assertAlmostEqual(float(total.ramp_m), 500.0, delta=1e-9)
+        self.assertLess(self.checked.length_m, float(total.axis_m))
+        self.assertGreater(self.checked.length_m, float(total.axis_m) - 8 * 6.0 - 10.0)
+
+    def test_deterministic_bit_by_bit(self) -> None:
+        again = pit_bench.ascend(zigzag_job())
+        for first, second in zip(self.found.polylines, again.polylines, strict=True):
+            self.assertTrue(np.array_equal(first.vertices, second.vertices))
+        self.assertTrue(np.array_equal(self.checked.path.axis, again.ramps[0].path.axis))
+
+    def test_a_side_that_does_not_fit_is_still_rejected_with_the_bench(self) -> None:
+        """RF-018-20: un fondo de 110 m no da el lado de h/g + P = 140 m: se rechaza con el banco y los metros, sin relajar nada."""
+        profile = road(min_radius_m=8.0)
+        ramp = ramp_def.PitRampDef("rampa", "Rampa 1", "zigzag", "ccw", "banco 0", 10.0, profile.code, 0.0, 12.0, 40.0)
+        sources = (pit_model.PitSource("fondo", pd.absolute(pd.rect_ring(110.0, pd.ZIGZAG_WIDTH_M)), pd.FLOOR_Z_M),)
+        job = up.job(ramps=(ramp,), road_profiles=(profile,), ramp_starts=(pit_model.RampStart("rampa", bench=0),), sources=sources, params=ARC_PARAMS)
         with self.assertRaises(messages.DesignError) as caught:
-            pit_bench.ascend(zigzag_job())
+            pit_bench.ascend(job)
         self.assertEqual(caught.exception.code, "des.pit_no_ramp_fit")
-        self.assertEqual(caught.exception.values["bench"], 1)
+        self.assertEqual(caught.exception.values["bench"], 0)
 
 
 class DescendTest(unittest.TestCase):

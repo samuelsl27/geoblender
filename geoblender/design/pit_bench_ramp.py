@@ -13,7 +13,8 @@ Decisiones por defecto (revisables, T21c): (a) una rampa con inicio ``banco N`` 
 empate: P-15), y una con inicio ``fondo`` o de una capa de puntos parte del primer banco con pie (el ``fondo`` es el banco 0; en una corta con fondos a cotas distintas, el más bajo
 que hay), desde el punto de la capa; (b) con varios pies en el banco, la rampa sube por el más cercano a su punto (a igual distancia, el primero por su posición); (c) dos rampas no
 comparten una arista del pie (se rechaza); (d) la preparación (T21b) ya comprobó el perfil de pista y la pendiente; (e) con una roseta o sectores, el ángulo de cara de una arista es el
-de su primer trozo si un límite de sector la parte. Los bancos dobles (``n > 1``) no llevan rampa todavía. Python puro con numpy (nivel 8); no lo importa el arranque.
+de su primer trozo si un límite de sector la parte; (f) el zig-zag con varios bancos vuelve por un lado casi recto del pie real (DIFF-018e: aristas casi colineales fusionadas a ``2·arc_tol`` de
+su cuerda, hasta 5° de oblicuidad, y la recta del lado se prolonga hasta una plataforma si el pie, con su escalón, es más corto que el tramo). Los bancos dobles (``n > 1``) no llevan rampa todavía. Python puro con numpy (nivel 8); no lo importa el arranque.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ from .road_profiles import derived as road_derived
 __all__ = ["RampLoop", "RingPlan"]
 
 _TIE_M = 1e-9
+_FUSE_ARC = 3.0
+"""Lo que se aparta un lado casi recto del zig-zag de su cuerda (DIFF-018e), en tolerancias de arco: el término de la cresta por arista escalona el pie hasta ``2·arc_tol`` y las esquinas redondeadas dejan otro tanto."""
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -98,7 +101,7 @@ class RampLoop:
             width = road_derived(profile).section_m
             run = _Run(ramp, starts[ramp.code], width)
             if ramp.type == "zigzag":
-                run.stepper = ZigzagStepper(ramp, width)
+                run.stepper = ZigzagStepper(ramp, width, _FUSE_ARC * self.arc_tol_m)
             self.runs.append(run)
 
     @property
@@ -147,7 +150,7 @@ class RampLoop:
         found: dict[int, RingPlan] = {}
         for index, items in mine.items():
             ring = rings[index]
-            breaks = [zigzag_foot_breaks(tramo) if run.stepper is not None else foot_breaks(tramo, ring) for run, tramo in items]
+            breaks = [zigzag_foot_breaks(tramo, ring) if run.stepper is not None else foot_breaks(tramo, ring) for run, tramo in items]
             split = split_ring(ring, np.vstack(breaks))
             face = face_of(split)
             extras = [zigzag_edge_extra_m(tramo, split, face) if run.stepper is not None else edge_extra_m(tramo, split, face) for run, tramo in items]
