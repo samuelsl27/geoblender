@@ -299,10 +299,12 @@ class CalculationTest(unittest.TestCase):
             other.confirm_pit(())
         self.assertFalse(other.needs_mean_confirmation)
 
-    def test_creating_it_is_the_t23(self) -> None:
+    def test_creating_without_the_confirmation_is_refused_before_writing_and_keeps_it_open(self) -> None:
+        """T23, RF-018-19: con la media por encima de pm sin confirmar, ``create`` rechaza antes de tocar nada y el cálculo sigue abierto (crearla con proyecto: ``milestone_pit_create``)."""
         calculation = self.calculation()
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaises(pit_store.DesignError) as caught:
             calculation.create()
+        self.assertEqual(caught.exception.code, "des.pit_ramp_mean_over")
         self.assertTrue(calculation.open)
 
     def test_discarding_closes_the_writer(self) -> None:

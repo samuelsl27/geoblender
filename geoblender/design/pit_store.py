@@ -44,7 +44,8 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Generator, Mapping, Sequence
+import sqlite3
+from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
@@ -55,6 +56,7 @@ from ..core.constraints import store as constraint_store
 from ..core.constraints.model import ConstraintType
 from ..core.datasets import registry as dataset_registry
 from ..core.project.model import Progress
+from ..core.provenance.operations import Use
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.versions.model import Version
 from ..gis import polygons
@@ -64,6 +66,7 @@ from ..gis.masks.compile import STEP_BUDGET_S, is_active
 from ..gis.masks.store import _resolved as _resolved_constraints
 from ..gis.masks.store import search_sectors
 from ..gis.messages import GisError
+from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
 from . import (
@@ -119,6 +122,7 @@ from .pit_model import (
     RoseRange,
 )
 from .platform import _project_number, _window_grid
+from .pit_lines import LineRow
 from .preview import Notice, Obsolete, ObsoleteKind, PitSummary, obsolete_notices
 from .road_model import Parts, Window
 from .road_profiles import RoadProfile
@@ -136,12 +140,25 @@ from .road_store import (
 )
 from .sectors import design_sectors, refuse_pending
 from .seeds import pace_progress, sector_layout
-from .store import OperationStart, _loaded_masks, _start, require_version
+from .store import (
+    _STORE_PHASE,
+    DesignWriter,
+    OperationStart,
+    Stored,
+    _LateSupports,
+    _loaded_masks,
+    _real,
+    _seen,
+    _start,
+    _store_steps,
+    require_version,
+)
 from .surfaces import project_frame, read_surface_steps
 from .zones import polygons_cells
 
-__all__ = ["OFFSET_NOT_VERIFIED", "OTHER_DESIGN_DIFFERS", "PreparedPit", "compare_others", "compute", "compute_steps", "confirm_ramps", "other_designs_steps", "pit_obsolete",
-           "pit_summary", "prepare_pit", "prepare_pit_units", "source_sha256", "summary_of"]
+__all__ = ["OFFSET_NOT_VERIFIED", "OTHERS_SEEN", "OTHER_DESIGN_DIFFERS", "PreparedPit", "compare_others", "compute", "compute_steps", "confirm_ramps", "create_pit", "create_pit_steps",
+           "other_designs_steps", "pit_bench_rows", "pit_entity_rows", "pit_finding_rows", "pit_obsolete", "pit_operation_start", "pit_polyline_rows", "pit_ramp_rows", "pit_report_rows",
+           "pit_skyline_rows", "pit_summary", "prepare_pit", "prepare_pit_units", "source_sha256", "summary_of"]
 
 _NUMERIC = frozenset({"INTEGER", "DOUBLE"})
 _NAME_FIELDS = ("nombre", "name")
@@ -1050,6 +1067,8 @@ def compute(job: PitJob, window: Window, common: Mapping[str, float], *, crs: An
 OTHER_DESIGN_DIFFERS = "des.pit_other_design_differs"
 """El aviso de un otro diseño de la versión cuya superficie difiere de la partida en la huella de la corta (RF-017-05 (b) llevado a la corta): no impide crearla."""
 _OTHERS_PHASE = "pit_others"
+OTHERS_SEEN = "others_seen"
+"""La clave de ``PitOutcome.extra`` con el hash (uid → hash) que tenía la superficie de cada otro diseño que difiere cuando se comparó: lo que «Crear» anota con la entrada."""
 
 
 def other_designs_steps(job: PitJob, outcome: PitOutcome, names: Sequence[str], read_other: OtherReader, min_thickness_m: float
@@ -1087,7 +1106,9 @@ def compare_others(project: StoreProject, prepared: PreparedPit, outcome: PitOut
     differing, notices = yield from other_designs_steps(prepared.job, outcome, names, other_reader(project, prepared.version), thickness)
     if not differing:
         return outcome
-    return replace(outcome, other_designs=differing, notices=(*outcome.notices, *notices))
+    with project.read() as conn:  # el hash de cada uno al calcular: «Crear» lo anota como entrada y ``des.input_changed`` vigila que no cambie hasta crearla (T23)
+        seen = _seen(conn, tuple(Use(other, provenance.ROAD_OTHER_DESIGN_ROLE) for other in differing), prepared.version)
+    return replace(outcome, other_designs=differing, notices=(*outcome.notices, *notices), extra={**outcome.extra, OTHERS_SEEN: dict(seen)})
 
 
 def pit_obsolete(project: StoreProject, prepared: PreparedPit, *, supersedes: str | None = None) -> tuple[Obsolete, ...]:
@@ -1122,3 +1143,175 @@ def pit_summary(project: StoreProject, prepared: PreparedPit, outcome: PitOutcom
     job = prepared.job
     profile = "" if job.profile is None else job.profile.code
     return summary_of(outcome, version=prepared.version.code, profile=profile, obsolete=pit_obsolete(project, prepared, supersedes=supersedes))
+
+
+# --- Crear: la operación, los datos, la huella y las dependencias (spec 018, T23; RF-018-01, RF-018-03, RF-018-19, RF-015-01, RF-015-02, RF-015-04, RF-015-10 a 14, RF-015-29; plan 018 §5.2.3 y §5.3.2) -------------
+
+Row = tuple[Any, ...]
+
+
+def _sources_digest(sources_sha256: Mapping[str, str]) -> str:
+    """El hash único de la huella de origen de la corta (RF-018-01): el de los hashes de cada polígono (:attr:`PreparedPit.sources_sha256`) por orden de nombre. Cambia con la geometría o la cota
+    de cualquier polígono y no con su orden de llegada."""
+    digest = hashlib.sha256()
+    for name in sorted(sources_sha256):
+        digest.update(f"{name}\0{sources_sha256[name]}\n".encode())
+    return digest.hexdigest()
+
+
+def pit_entity_rows(job: PitJob, outcome: PitOutcome, *, fid: int, start_surface: str, support_surface: str | None, sources_sha256: Mapping[str, str]) -> list[Row]:
+    """La fila de ``des_epr_`` (columnas de :data:`~.store.ENTITY_COLUMNS`) de la corta de ``job`` con su ``outcome`` (RF-015-01, RF-018-01): **una**, con los atributos de la entidad —su código, su nombre, su tipo
+    ``pit``, los datos de su superficie de partida (``start_surface``) y de apoyo, la capa de origen, el ``fid`` (``fid``: 0, una capa trae varios polígonos), el hash de sus geometrías de origen (:func:`_sources_digest`),
+    el modo y las celdas de la huella—, su ventana de trabajo y **la huella** (el área con movimiento) en tramos de fila (``entity_store.footprint_runs``: lo que leen la zona declarada de otra entidad, la capa de
+    entidades y lo que se apoya en la corta). Sin eje. Solo depende de lo que se lee para calcular, no del proyecto."""
+    window = outcome.window
+    runs = entity_store.footprint_runs(outcome.footprint, window)
+    json_of = entity_store._json
+    return [(job.code, job.request.name, EntityKind.PIT.value, start_surface, support_surface, job.request.layer, int(fid), _sources_digest(sources_sha256), PitMode(outcome.mode).value,
+             int(np.count_nonzero(outcome.footprint)), 0, json_of([int(window[0].start), int(window[0].stop), int(window[1].start), int(window[1].stop)]), json_of([list(run) for run in runs]),
+             json_of([]))]
+
+
+def pit_polyline_rows(outcome: PitOutcome) -> list[LineRow]:
+    """Las filas de ``des_pbl_`` (:data:`~.pit_lines.POLYLINE_COLUMNS`) del resultado: **una por polilínea, en el orden registrado** (RF-018-25) con sus vértices (x, y absolutas y la cota en la Z, float64), su banco,
+    tipo, zona, sector y parte, si es un anillo o una línea fijada, su cota y su longitud."""
+    return [LineRow(line.vertices, (line.bench, line.kind.value, line.zone, line.sector, line.part, ordinal, int(line.closed), int(line.fixed), _real("z_m", line.z_m), _real("length_m", line.length_m)),
+                    line.closed) for ordinal, line in enumerate(outcome.polylines, start=1)]
+
+
+def pit_skyline_rows(outcome: PitOutcome) -> list[LineRow]:
+    """Las filas de ``des_psk_`` (:data:`~.pit_lines.SKYLINE_COLUMNS`) del resultado: una por línea de la línea de cielo (RF-018-28), con la cota del terreno en la Z, su número y su longitud en planta."""
+    return [LineRow(line, (part, _real("length_m", float(np.hypot(*np.diff(line[:, :2], axis=0).T).sum())))) for part, line in enumerate(outcome.skyline, start=1)]
+
+
+def pit_ramp_rows(outcome: PitOutcome) -> list[Row]:
+    """Las filas de ``des_prl_`` (:data:`~.store.PIT_RAMP_COLUMNS`; RF-018-16): una por estación del eje de cada rampa, en el orden de las rampas, con su lugar absoluto, la cota y el semiancho de la banda."""
+    rows: list[Row] = []
+    for path in outcome.ramps:
+        for at, ((x, y, z), half) in enumerate(zip(path.axis.tolist(), path.half_width_m.tolist(), strict=True), start=1):
+            rows.append((path.code, path.bench, at, _real("x", x), _real("y", y), _real("level_m", z), _real("half_width_m", half)))
+    return rows
+
+
+def pit_finding_rows(outcome: PitOutcome) -> list[Row]:
+    """Las filas de ``des_pfn_`` (:data:`~.store.PIT_FINDING_COLUMNS`; RF-018-26): una por hallazgo, en el orden del cálculo."""
+    return [(item.kind.value, item.bench, None if item.value is None else _real("value", item.value), None if item.limit is None else _real("limit", item.limit), item.unit,
+             _real("x", item.place[0]), _real("y", item.place[1]), item.detail) for item in outcome.findings]
+
+
+def pit_bench_rows(outcome: PitOutcome) -> list[Row]:
+    """Las filas de ``des_pbk_`` (:data:`~.store.PIT_BENCH_COLUMNS`; RF-018-29, RF-018-31): una por banco, con sus cotas, longitudes, áreas de berma y de fondo (vacías donde no las tiene) y el volumen que se corta."""
+    return [(item.bench, item.z_foot_m, item.z_crest_m, item.len_foot_m, item.len_crest_m, item.area_berm_m2, item.area_floor_m2, item.cut_m3) for item in outcome.benches]
+
+
+def pit_report_rows(outcome: PitOutcome) -> list[Row]:
+    """Las filas de ``des_prp_`` (formato largo ``quantity, value, unit_code, note``; RF-018-31, RF-015-02) del resultado, en este orden: **las cifras** (su clave sin ``des.pit_``, su valor y su unidad), el criterio
+    que paró la corta (``stop``) y **los avisos y notas** (``warning`` y ``note``, con su código y sus valores en JSON) **menos los de** ``entity_store._OUTSIDE_NOTICES`` (dependen de algo que la operación no
+    consume: el informe se reproduce sin el proyecto). Un valor que no es finito es un error del programa (``ValueError``). Solo depende del resultado."""
+    from .road_store import _notice_text
+
+    rows: list[Row] = []
+    for figure in outcome.figures:
+        rows.append((figure.key.removeprefix("des.pit_"), None if figure.value is None else _real(figure.key, figure.value), figure.unit, None))
+    if outcome.stop is not None:
+        rows.append(("stop", None, None, str(getattr(outcome.stop, "value", outcome.stop))))
+    for notice in outcome.notices:
+        if notice.code not in entity_store._OUTSIDE_NOTICES:
+            rows.append((notice.severity, None, None, _notice_text(notice)))
+    return rows
+
+
+def pit_operation_start(start: OperationStart, outcome: PitOutcome, confirmed: Sequence[provenance.RampConfirmation]) -> OperationStart:
+    """Lo que anota la operación de la corta al crearla, además de lo que preparó (``start``: :func:`prepare_pit_units`): **los otros diseños de la versión que difieren en la huella**
+    (``outcome.other_designs``, RF-017-05 (b) llevado a la corta) como entradas con el papel :data:`~.provenance.ROAD_OTHER_DESIGN_ROLE` —con el hash que tenían al compararlos
+    (:data:`OTHERS_SEEN`; si cambia hasta crearla, ``des.input_changed``)—, de modo que **si cambian, la corta queda obsoleta con su causa**; y **lo confirmado** (``confirmed``: las pendientes medias de rampa
+    por encima de pm, con su motivo, quién y cuándo: RF-018-19) en sus ajustes, bajo :data:`~.provenance.PIT_RAMP_CONFIRMED`. Una ``OperationStart`` es inmutable: da otra. **La corta no declara nada**
+    (RF-015-12): ni ``protect`` ni una declaración."""
+    found = start
+    role = provenance.ROAD_OTHER_DESIGN_ROLE
+    have = {(use.item, str(use.role)) for use in start.inputs}
+    extra = tuple(Use(name, role) for name in outcome.other_designs if (name, role) not in have)
+    if extra:
+        found = replace(found, inputs=(*found.inputs, *extra), seen=MappingProxyType({**found.seen, **dict(outcome.extra.get(OTHERS_SEEN, {}))}))
+    if confirmed:
+        found = replace(found, settings={**found.settings, provenance.PIT_RAMP_CONFIRMED: [item.settings() for item in confirmed]})
+    return found
+
+
+def _check_confirmed(outcome: PitOutcome, confirmed: Sequence[provenance.RampConfirmation]) -> tuple[provenance.RampConfirmation, ...]:
+    """Las confirmaciones que cubren una media por encima de pm; **si falta alguna, ``des.pit_ramp_mean_over``** (``pit_ramp.confirm_mean``) antes de escribir nada (RF-018-19)."""
+    covering, pending = confirm_ramps(outcome.extra.get("checked_ramps", ()), confirmed)
+    if pending:
+        wanted = {code for code, _mean, _limit in pending}
+        for checked in outcome.extra["checked_ramps"]:
+            if checked.code in wanted:
+                pit_ramp.confirm_mean(checked)
+    return covering
+
+
+def create_pit_steps(project: StoreProject, writer: DesignWriter, prepared: PreparedPit, outcome: PitOutcome, *, confirmed: Sequence[provenance.RampConfirmation] = (),
+                     decided_by: str | None = None, budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, Stored]:
+    """**«Crear» una corta** por pasos (spec 018, T23; RF-018-01, RF-018-03, RF-018-19, RF-015-01, RF-015-02, RF-015-04, RF-015-15, RF-015-29; RNF-018-06): prepara cada salida en su temporal —**la superficie entera**
+    (la de partida con la ventana de trabajo sustituida por el resultado, ``PitOutcome.compose``; comprimida), la huella de la entidad (``des_epr_``, :func:`pit_entity_rows`), las polilíneas y la línea de cielo
+    con Z (``des_pbl_`` y ``des_psk_``), las rampas por estaciones (``des_prl_``), los hallazgos (``des_pfn_``), las cifras de cada banco (``des_pbk_``) y el informe (``des_prp_``)—, cada una montada y escrita por
+    pasos de ``budget_s`` como mucho, y las registra en **una** transacción (:meth:`~.store.DesignWriter.commit` de ``writer``, el de «Calcular»): **los parámetros de la entidad** (todas sus filas, con su origen
+    y el decisor ``decided_by``), la operación (:func:`pit_operation_start`: sus entradas —la capa de origen, la de bancos fijados y la de zonas sin rampa, la partida, las máscaras, **lo que pisa** (``supported_on``)
+    y los otros diseños que difieren— y sus ajustes, con lo confirmado), los datos, las cifras con el ámbito de la entidad y las que el gancho de las dependencias mide (``des.supported_m3``) y el mensaje.
+    **No se crea sin la confirmación expresa** de la pendiente media de rampa por encima de pm (``confirmed``, :func:`_check_confirmed`), **antes de tocar nada**. Si algo falla, o lo que consume cambió
+    desde que se calculó (``des.input_changed``), no queda nada y el error sigue; **no modifica la capa de origen ni la superficie de partida y no declara ninguna restricción** (RF-015-12: la zona de la corta se
+    excava, no se protege). Cerrar el generador antes de que termine borra los temporales. Con un escritor reanudado (``DesignWriter.resume``: un recálculo, T24) la operación ya empezó y ``commit`` la completa."""
+    if not isinstance(outcome, PitOutcome):
+        raise TypeError(f"se crea la corta de un PitOutcome, no {outcome!r}")
+    covering = _check_confirmed(outcome, confirmed)
+    job = prepared.job
+    name = job.request.name
+    yield Progress(_STORE_PHASE, 0, 1, f"Guardando la corta «{name}»…")
+
+    def grid_units() -> Generator[None, None, Any]:
+        whole = outcome.compose(job.start)
+        yield
+        return (yield from writer.grid_steps(provenance.ENTITY_SURFACE_GRID, Raster(job.grid, whole, writer.crs, writer.vertical)))
+
+    yield from pipeline.forward(_store_steps(grid_units(), budget_s, "la superficie de la corta"))
+    tables: tuple[tuple[str, Callable[[], list[Row]], str], ...] = (
+        (provenance.ENTITY_TABLE, lambda: pit_entity_rows(job, outcome, fid=0, start_surface=prepared.start_surface, support_surface=prepared.support_surface,
+                                                          sources_sha256=prepared.sources_sha256), "la huella de la corta"),
+        (provenance.PIT_RAMPS_TABLE, lambda: pit_ramp_rows(outcome), "las rampas de la corta"),
+        (provenance.PIT_FINDINGS_TABLE, lambda: pit_finding_rows(outcome), "los hallazgos de la corta"),
+        (provenance.PIT_BENCHES_TABLE, lambda: pit_bench_rows(outcome), "las cifras de cada banco"),
+        (provenance.ENTITY_REPORT_TABLE, lambda: pit_report_rows(outcome), "el informe de la corta"))
+    lines: tuple[tuple[str, Callable[[], list[LineRow]], str], ...] = (
+        (provenance.PIT_POLYLINES_TABLE, lambda: pit_polyline_rows(outcome), "las polilíneas de la corta"),
+        (provenance.PIT_SKYLINE_TABLE, lambda: pit_skyline_rows(outcome), "la línea de cielo de la corta"))
+    for family, make, what in tables:
+        yield from pipeline.forward(_store_steps(writer.table_steps(family, make()), budget_s, what))
+    for family, make_lines, what in lines:
+        yield from pipeline.forward(_store_steps(writer.pit_lines_steps(family, make_lines()), budget_s, what))
+    handle = writer.handle  # un recálculo: la operación empezó antes de calcular y sus ajustes ya llevan lo confirmado
+    start = None if handle is not None else pit_operation_start(prepared.start, outcome, covering)
+    seen = MappingProxyType(dict(outcome.extra.get(OTHERS_SEEN, {})))
+    late = _LateSupports() if handle is None else _LateSupports(tuple(Use(other, provenance.ROAD_OTHER_DESIGN_ROLE) for other in outcome.other_designs), seen)
+    yield Progress(_STORE_PHASE, 1, 1, f"Registrando la corta «{name}»…")
+
+    def parameters(conn: sqlite3.Connection) -> None:
+        if prepared.existing:
+            if ParameterStore(project).get(entity_key(prepared.code, PitParam.NAME), version=prepared.version_uid, conn=conn) is None:
+                raise ValueError(f"la entidad {prepared.code} no tiene sus parámetros en su versión: no está en ella (se prepara sin su código)")
+        else:
+            entity_store.set_entity_params(project, prepared.rows, version=prepared.version_uid, decided_by=decided_by, conn=conn)
+        if handle is not None:
+            late.register(conn, handle)
+
+    return writer.commit(start, figures=outcome.figures, message=outcome.message, before_begin=parameters)
+
+
+def create_pit(project: StoreProject, writer: DesignWriter, prepared: PreparedPit, outcome: PitOutcome, *, confirmed: Sequence[provenance.RampConfirmation] = (),
+               decided_by: str | None = None) -> Stored:
+    """:func:`create_pit_steps` de una vez (sin ceder el hilo): lo guardado (:class:`~.store.Stored`), con los mismos rechazos y la misma transacción."""
+    work = create_pit_steps(project, writer, prepared, outcome, confirmed=confirmed, decided_by=decided_by)
+    while True:
+        try:
+            next(work)
+        except StopIteration as stop:
+            result: Stored = stop.value
+            return result

@@ -58,7 +58,7 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   y la **calzada que no queda en su rasante** (RF-017-22): :attr:`Calculation.needs_mean_confirmation`, :attr:`~Calculation.needs_carriageway_confirmation` y :meth:`Calculation.confirm_road`.
 - :func:`pit_run` (spec 018, T22b; RF-018-03, RF-018-19, RF-018-35, RF-015-03, RF-015-29): «Calcular» una corta (``des.pit``, de una versión, con cadena y huella) del mismo modo: deja el cálculo
   (:class:`~.pit_model.PitOutcome`), su resumen (:class:`~.preview.PitSummary`) y **nada escrito**; las rampas con la pendiente media por encima de pm piden su confirmación
-  (:attr:`Calculation.needs_mean_confirmation`, :meth:`Calculation.confirm_pit`). **«Crear» es la T23.**
+  (:attr:`Calculation.needs_mean_confirmation`, :meth:`Calculation.confirm_pit`). **«Crear» una corta** (T23): :meth:`Calculation.create`.
 - :func:`road_propose_run` (spec 017, T33; RF-017-28, RF-015-03, RF-015-29, RF-017-30): «Calcular» una propuesta del trazado (``des.road_propose``, de una versión, **sin cadena, sin superficie y sin huella**: no es una
   entidad) del mismo modo: deja el **resultado** (``design.road_model.ProposalOutcome``: el eje, la rasante y las dos cifras) y el **resumen** (:class:`~.road_store.ProposalSummary`: la longitud, las pendientes, el radio
   mínimo y los avisos con su lugar; la pendiente media por encima de pm **avisa y no pide confirmación**) y **nada en el proyecto**. Crearla es :meth:`Calculation.create` o, por pasos, :meth:`Calculation.create_steps`: la
@@ -234,7 +234,7 @@ class Calculation:
     :meth:`create`, que escribe además los parámetros de su entidad. De una **detección de acopios** (spec 016, T12) lleva
     en ``entity`` la :class:`~.stockpile_store.PreparedDetection` y en ``summary`` el :class:`~.preview.StockpileSummary`;
     crearla es :meth:`create` o :meth:`create_steps` (T13). **De una corta** (spec 018, T22b) lleva en ``outcome`` el :class:`~.pit_model.PitOutcome`, en ``entity`` la :class:`~.pit_store.PreparedPit` y en
-    ``summary`` el :class:`~.preview.PitSummary`, con la confirmación de la pendiente media de sus rampas (:meth:`confirm_pit`); **crearla es la T23**. **De una pista** (spec 017, T20b) lleva en ``entity`` la :class:`~.road_store.PreparedRoad` y en ``summary`` el :class:`~.preview.RoadSummary`, con
+    ``summary`` el :class:`~.preview.PitSummary`, con la confirmación de la pendiente media de sus rampas (:meth:`confirm_pit`); **crearla** es :meth:`create` (T23). **De una pista** (spec 017, T20b) lleva en ``entity`` la :class:`~.road_store.PreparedRoad` y en ``summary`` el :class:`~.preview.RoadSummary`, con
     sus dos confirmaciones (:meth:`confirm_road`): la pendiente media por encima de pm, con un motivo, y la calzada que no queda en su rasante. Mientras esté abierta
     (:attr:`open`), sus rejillas esperan en temporales junto a su destino: hay que crearla o
     descartarla."""
@@ -453,6 +453,11 @@ class Calculation:
         y sus ajustes (con lo confirmado, :meth:`confirm_road`), los datos y las cifras; **no declara ninguna restricción**. Sin la confirmación de la pendiente media o de la calzada, se rechaza
         (``des.road_mean_unconfirmed``, ``des.road_mean_reason``, ``des.road_carriageway_unconfirmed``) **antes de escribir nada y sin cerrar el cálculo**.
 
+        **Una corta** (spec 018, T23; RF-018-01, RF-018-19, RF-015-02) se registra con :func:`~.pit_store.create_pit_steps`: la superficie entera, la huella, las polilíneas y la línea de cielo con Z, las
+        rampas, los hallazgos, las cifras de cada banco y el informe se preparan y se escriben en su temporal y una sola transacción registra los parámetros de la entidad, la operación (con los otros
+        diseños que difieren como entradas y lo confirmado, :meth:`confirm_pit`, en sus ajustes), los datos y las cifras; **no declara ninguna restricción**. Con una pendiente media de rampa por encima de pm
+        sin confirmar, se rechaza (``des.pit_ramp_mean_over``) **antes de escribir nada y sin cerrar el cálculo**.
+
         **Una propuesta del trazado** (spec 017, T33; RF-017-28, RF-015-02) se registra con :func:`~.road_store.create_propose_steps`: la capa propuesta (``des_rpl_``, editable en QGIS) se escribe en su temporal y una
         sola transacción registra la operación con sus entradas, el dato y las cifras; **ninguna superficie ni parámetro de entidad**, y sin confirmaciones (la pendiente media por encima de pm solo avisa).
 
@@ -462,7 +467,7 @@ class Calculation:
         una sola transacción registra los parámetros de la entidad, la operación, los datos y las cifras. Es
         :meth:`create_steps` llevado hasta el final. ``decided_by``: el decisor de los parámetros de la entidad (por defecto,
         quien tiene abierto el proyecto)."""
-        if isinstance(self.entity, stockpile_store.PreparedDetection | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal):
+        if isinstance(self.entity, stockpile_store.PreparedDetection | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal | pit_store.PreparedPit):
             stored: store.Stored | None = None
             for step in self.create_steps(decided_by=decided_by):
                 if step.result is not None:
@@ -471,8 +476,6 @@ class Calculation:
             return stored
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
-        if isinstance(self.entity, pit_store.PreparedPit):
-            raise NotImplementedError("«Crear» una corta es la T23 de la spec 018: «Calcular» (T22b) no la registra")
         if isinstance(self.entity, supported_store.PreparedRemoval):
             return self._create_removal(self.entity, decided_by)
         if isinstance(self.entity, supported_store.PreparedBody):
@@ -563,13 +566,15 @@ class Calculation:
         sola transacción (:func:`~.road_store.create_propose_steps`: **ninguna superficie, ningún parámetro de entidad**; sin confirmaciones). **Una pista** sin la confirmación expresa de la pendiente media o de la calzada
         (:meth:`ensure_road_creatable`) se rechaza **antes de escribir nada y sin cerrar el cálculo**: se confirma (:meth:`confirm_road`) y se vuelve a crear."""
         found = self.entity
-        if not isinstance(found, stockpile_store.PreparedDetection | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal):
-            raise TypeError(f"solo una detección de acopios, una accesibilidad, una pista o una propuesta del trazado se crea por pasos, no «{self.op_type}»")
+        if not isinstance(found, stockpile_store.PreparedDetection | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal | pit_store.PreparedPit):
+            raise TypeError(f"solo una detección de acopios, una accesibilidad, una pista, una corta o una propuesta del trazado se crea por pasos, no «{self.op_type}»")
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
         outcome = self.outcome
         if isinstance(found, road_store.PreparedRoad):
             self.ensure_road_creatable()  # sin cerrar el cálculo: se confirma y se vuelve a crear
+        if isinstance(found, pit_store.PreparedPit):
+            self.ensure_pit_creatable()  # sin cerrar el cálculo: se confirma (confirm_pit) y se vuelve a crear
         try:
             self._check_parameters()
             if isinstance(found, road_store.PreparedRoad):
@@ -578,6 +583,10 @@ class Calculation:
                 stored: store.Stored = yield from road_store.create_road_steps(
                     self._project, self._writer, found, outcome, mean=mean, carriageway=carriageway, reason=reason, decided_by=decided_by, budget_s=budget_s)
                 done = f"Pista «{self.name}» guardada"
+            elif isinstance(found, pit_store.PreparedPit):
+                assert isinstance(outcome, PitOutcome)
+                stored = yield from pit_store.create_pit_steps(self._project, self._writer, found, outcome, confirmed=self._pit_confirmed, decided_by=decided_by, budget_s=budget_s)
+                done = f"Corta «{self.name}» guardada"
             elif isinstance(found, road_store.PreparedProposal):
                 assert isinstance(outcome, ProposalOutcome)
                 stored = yield from road_store.create_propose_steps(self._project, self._writer, found, outcome, budget_s=budget_s)

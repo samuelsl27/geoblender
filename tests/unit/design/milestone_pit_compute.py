@@ -8,7 +8,7 @@ RNF-018-06; plan 018 §5.3.2), como prueba de **hito**: ``check.py --completo`` 
   bancos, la versión y el perfil; descartarla no cambia nada y dos cálculos dan lo mismo bit a bit (RF-018-25).
 - **Cerrar los pasos a mitad no deja nada** (RF-015-29, RF-018-35) y **un rechazo** (la capa que no es de polígonos) sale al avanzar, sin escribir nada.
 - **Los pasos de ≤ 0,2 s con rampa** (:class:`RampStepsTest`, sin proyecto: el de las cortas no tiene una rampa que quepa); la confirmación de la media, en ``test_pit_compute``.
-- **Los otros diseños** (:class:`OtherDesignsTest`): sin ninguno la corta no lleva nada (la comparación con uno que difiere, con su aviso, está en ``test_pit_compute.OtherDesignsTest``).
+- **Los otros diseños** (:class:`OtherDesignsTest`): sin ninguno la corta no lleva nada (crearla es ``milestone_pit_create``, T23; la comparación con uno que difiere, con su aviso, está en ``test_pit_compute.OtherDesignsTest``).
 """
 
 from __future__ import annotations
@@ -112,13 +112,6 @@ class CalculateTest(CalculateCase):
             list(steps.pit_run(self.project, request(source="gis_fea_corta_lineas"), version=self.v1.uid, masks=self.masks_v1))
         self.assertEqual(caught.exception.code, "des.pit_layer_kind")
         self.assertEqual(self.snapshot(), before)
-
-    def test_creating_it_is_the_t23(self) -> None:
-        calculation = self.calculate(request())
-        with self.assertRaises(NotImplementedError):
-            calculation.create()
-        self.assertTrue(calculation.open)
-        calculation.discard()
 
 
 class RampStepsTest(unittest.TestCase):

@@ -259,6 +259,9 @@ __all__ = [
     "ACCESS_PLATFORM_COLUMNS",
     "ACCESS_ZONE_COLUMNS",
     "ROAD_AXIS_COLUMNS",
+    "PIT_BENCH_COLUMNS",
+    "PIT_FINDING_COLUMNS",
+    "PIT_RAMP_COLUMNS",
     "BERM_COLUMNS",
     "BUTTRESS_ENTITY_COLUMNS",
     "CANDIDATE_COLUMNS",
@@ -458,7 +461,24 @@ ROAD_AXIS_COLUMNS: tuple[ColumnDef, ...] = (
 de partida (``terrain_m``) y la de la rasante (``level_m``), la pendiente del tramo que empieza en ella (``gradient_pct``, %, con signo: positiva si sube en el sentido de la
 marcha), el radio de la curva en que está (``radius_m``; vacío en una recta) y el número de esa curva (``curve``; 0 en una recta). Es lo que lee **una pista que parte del eje de
 otra** (``RDW-001@s``: su lugar y su cota a la abscisa ``s``, RF-017-03); la escribe la T21."""
+PIT_RAMP_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("ramp", "TEXT", True), ColumnDef("bench", "INTEGER", True), ColumnDef("station", "INTEGER", True), ColumnDef("x", "DOUBLE", True), ColumnDef("y", "DOUBLE", True),
+    ColumnDef("level_m", "DOUBLE", True), ColumnDef("half_width_m", "DOUBLE", True))
+"""Las columnas de ``des_prl_`` (spec 018, T23; plan 018 §5.2.3: «el eje y la banda de cada rampa por estaciones»): **una fila por estación** del eje de cada rampa, en el orden de la rampa y de
+su estación: el código de la definición (``ramp``), el banco de arriba (``bench``), el número de la estación (``station``, desde 1), su lugar absoluto (``x`` e ``y``), la cota del eje (``level_m``) y el semiancho
+de la banda en ella (``half_width_m``)."""
+PIT_FINDING_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("kind", "TEXT", True), ColumnDef("bench", "INTEGER", False), ColumnDef("value", "DOUBLE", False), ColumnDef("limit_value", "DOUBLE", False), ColumnDef("unit", "TEXT", True),
+    ColumnDef("x", "DOUBLE", True), ColumnDef("y", "DOUBLE", True), ColumnDef("detail", "TEXT", True, "''"))
+"""Las columnas de ``des_pfn_`` (spec 018, T23; RF-018-26): **una fila por hallazgo**, en el orden del cálculo: su tipo (``kind``), el banco (``bench``; vacío si no es de uno), el valor y el límite que no
+cumple (``value``, ``limit_value``) con su ``unit``, su lugar absoluto (``x`` e ``y``) y un ``detail`` de texto."""
+PIT_BENCH_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("bench", "INTEGER", True), ColumnDef("z_foot_m", "DOUBLE", True), ColumnDef("z_crest_m", "DOUBLE", True), ColumnDef("len_foot_m", "DOUBLE", True), ColumnDef("len_crest_m", "DOUBLE", True),
+    ColumnDef("area_berm_m2", "DOUBLE", False), ColumnDef("area_floor_m2", "DOUBLE", False), ColumnDef("cut_m3", "DOUBLE", True))
+"""Las columnas de ``des_pbk_`` (spec 018, T23; RF-018-29, RF-018-31): **una fila por banco** con las cotas de su pie y de su cresta, las longitudes de ambos, el área de su berma y de su fondo (vacías donde no
+las tiene) y el volumen que se corta en él."""
 _COLUMNS: Mapping[str, tuple[ColumnDef, ...]] = MappingProxyType({
+    provenance.PIT_RAMPS_TABLE: PIT_RAMP_COLUMNS, provenance.PIT_FINDINGS_TABLE: PIT_FINDING_COLUMNS, provenance.PIT_BENCHES_TABLE: PIT_BENCH_COLUMNS,
     provenance.BERM_TABLE: BERM_COLUMNS, provenance.REPORT_TABLE: REPORT_COLUMNS,
     provenance.QUARRY_REPORT_TABLE: REPORT_COLUMNS, provenance.EDGE_REPORT_TABLE: REPORT_COLUMNS,
     provenance.ENTITY_TABLE: ENTITY_COLUMNS, provenance.ENTITY_REPORT_TABLE: REPORT_COLUMNS,
@@ -1789,6 +1809,31 @@ class DesignWriter:
         self._vectors[provenance.ROUTE_LAYER_TABLE] = _Declared(provenance.ROUTE_LAYER_TABLE, planned, rows)
         return planned
 
+    def pit_lines_steps(self, family: str, rows: Iterable[Any]) -> Generator[None, None, DatasetSpec]:
+        """Prepara las líneas con Z de una corta (``pbl``, las polilíneas, o ``psk``, la línea de cielo; spec 018, T23; RF-018-01, RF-018-25) con ``rows`` (:class:`~.pit_lines.LineRow`; la tabla se escribe
+        **entera** al registrar la operación, ``design.pit_lines.write_pit_lines``), **sin registrar nada**: una capa de líneas del GeoPackage del proyecto, no editable a mano, cuyo hash calcula la operación
+        al registrarla. Devuelve su ``DatasetSpec`` en ``StopIteration.value``. Se rechaza al llamar, como :meth:`route_layer_steps` (``ValueError``; ``TypeError`` si una fila no es una ``LineRow``)."""
+        from .pit_lines import LineRow  # al usarlo
+        from .pit_lines import columns_of as line_columns
+
+        self._produces(family, "vector")
+        chosen = tuple(rows)
+        width = len(line_columns(family))
+        for item in chosen:
+            if not isinstance(item, LineRow):
+                raise TypeError(f"una fila de las líneas de la corta es una LineRow, no {item!r}")
+            if len(item.values) != width:
+                raise ValueError(f"una fila de «{family}» lleva {width} columnas, no {len(item.values)}")
+        return self._pit_lines_steps(family, chosen)
+
+    def _pit_lines_steps(self, family: str, rows: tuple[Any, ...]) -> Generator[None, None, DatasetSpec]:
+        planned = provenance.dataset_spec(family, self.name, self.version_code, crs_epsg=self.crs.epsg)
+        with self.project.read() as conn:
+            self._check_place(conn, planned)
+        yield
+        self._vectors[family] = _Declared(family, planned, rows)
+        return planned
+
     @property
     def specs(self) -> tuple[DatasetSpec, ...]:
         """Las salidas preparadas, en el orden de su tipo (las de una familia con partes, en el
@@ -1858,6 +1903,11 @@ class DesignWriter:
             from .road_layer import write_route_layer  # al usarlo: ``road_layer`` importa este módulo
 
             write_route_layer(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg, name=self.name)
+            return
+        if declared.family in (provenance.PIT_POLYLINES_TABLE, provenance.PIT_SKYLINE_TABLE):
+            from .pit_lines import write_pit_lines  # al usarlo
+
+            write_pit_lines(conn, declared.spec.locator, declared.family, declared.rows, srs_id=self.crs.epsg, label=self.name)
             return
         write = write_entity_layer if declared.family == provenance.ENTITY_MAP_TABLE else write_declared
         write(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
