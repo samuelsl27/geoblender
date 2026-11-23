@@ -119,6 +119,8 @@ HEAVY: frozenset[str] = frozenset({
     "design.pit_bench",
     # La rampa en espiral de la corta (spec 018, T15): lo pide quien calcula, no habilitar.
     "design.pit_ramp",
+    # La superficie de la corta en la rejilla (spec 018, T18): lo pide quien calcula, no habilitar.
+    "design.pit_surface",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 
