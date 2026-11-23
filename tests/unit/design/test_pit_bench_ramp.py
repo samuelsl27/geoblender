@@ -16,6 +16,7 @@ from tests.support import pit_data as pd
 from tests.support import pit_ramp_hand as hand
 from tests.support import road_data as rd
 from tests.support.package import import_geoblender
+from tests.unit.design import test_pit_bench_down as down
 from tests.unit.design import test_pit_bench_up as up
 
 pit_bench = import_geoblender("design.pit_bench")
@@ -170,6 +171,16 @@ class ZigzagTest(unittest.TestCase):
             self.assertTrue(np.array_equal(first.vertices, second.vertices))
         self.assertTrue(np.array_equal(self.checked.path.axis, again.ramps[0].path.axis))
 
+    def test_the_prolongations_are_noticed_with_bench_and_place(self) -> None:
+        """DIFF-018e (aceptada por Samuel, 23/11/2026): el tramo o la plataforma que pasan del lado casi recto del pie avisan (``des.pit_ramp_prolonged``) con el banco y el lugar."""
+        found = [item for item in self.found.notices if item.code == "des.pit_ramp_prolonged"]
+        self.assertGreater(len(found), 0)
+        for item in found:
+            self.assertEqual(set(item.values), {"entity", "bench", "value", "x", "y"})
+            self.assertGreater(item.values["value"], 0.0)
+            self.assertIn(item.values["bench"], {0, 1, 2, 3, 4})
+        self.assertEqual(messages.lookup("des.pit_ramp_prolonged").severity, "warning")
+
     def test_a_side_that_does_not_fit_is_still_rejected_with_the_bench(self) -> None:
         """RF-018-20: un fondo de 110 m no da el lado de h/g + P = 140 m: se rechaza con el banco y los metros, sin relajar nada."""
         profile = road(min_radius_m=8.0)
@@ -182,10 +193,134 @@ class ZigzagTest(unittest.TestCase):
         self.assertEqual(caught.exception.values["bench"], 0)
 
 
+def descent_job(kind: str = "spiral", **changes: object) -> object:
+    """CE-018-05 y 06 en la corta descendente (DIFF-018f): el límite circular de 170 m de radio (cinco bancos de 10 m con ``DESD_10_45_6``, por el máximo de bancos: los cinco tramos abarcan 280°, sin cruzar los quiebros que dejaron las rampas anteriores) con la espiral, o el rectángulo de 300 × 200 m con el zig-zag (con la cara a 60°: la pared que baja ``g/tan α`` por metro de rampa no pasa de la oblicuidad de 5° de DIFF-018e; cuatro bancos: con el quinto, el lado casi recto de la cresta, acortado 23,5 m por banco y partido por las paredes de las tres rampas anteriores, ya no deja 100 m)."""
+    benches = 5
+    if kind == "spiral":
+        profile = road(min_radius_m=7.0)
+        ramp = ramp_def.PitRampDef("rampa", "Rampa 1", "spiral", "ccw", "banco 0", 8.0, profile.code, 0.0)
+        sources = (down.limite(pd.circle_ring(170.0)),)
+    else:
+        profile = road(min_radius_m=8.0)
+        ramp = ramp_def.PitRampDef("rampa", "Rampa 1", "zigzag", "ccw", "banco 0", 10.0, profile.code, 0.0, 12.0, 40.0)
+        sources = (down.limite(pd.rect_ring(300.0, 200.0)),)
+        changes.setdefault("profile", down.profile(face_deg=60.0))
+        benches = 4
+    return down.job(ramps=(ramp,), road_profiles=(profile,), ramp_starts=(pit_model.RampStart("rampa", bench=0),), sources=sources,
+                    params=down.params(arc_tol_m=pd.HYPOTHESES.arc_m, simplify_m=1e-6, max_benches=benches), **changes)
+
+
 class DescendTest(unittest.TestCase):
-    def test_descent_with_a_ramp_is_not_calculated_yet(self) -> None:
-        with self.assertRaises(ValueError):
-            pit_bench.descend(dataclasses.replace(spiral_job(), request=up.request(mode="down")))
+    """CE-018-05 por ``descend`` (DIFF-018f): la rampa baja por la cresta de cada banco, de la cota de la cresta a la del pie, 125 m por banco a 8,000 %."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.job = descent_job()
+        cls.found = pit_bench.descend(cls.job)
+        cls.checked = cls.found.ramps[0]
+
+    def test_five_benches_and_one_checked_ramp(self) -> None:
+        self.assertEqual(self.found.count, 5)
+        self.assertEqual(len(self.found.ramps), 1)
+        self.assertEqual(self.checked.code, "rampa")
+        self.assertTrue(self.found.reliable)
+
+    def test_levels_and_gradient(self) -> None:
+        """La rampa baja de la cota de la cresta del banco 0 (100 m) a la del pie del banco 4 (50 m), con la pendiente de la rampa."""
+        self.assertEqual(set(np.unique(self.checked.benches)), {0, 1, 2, 3, 4})
+        self.assertEqual((float(self.checked.z[0]), float(self.checked.z[-1])), (100.0, 50.0))
+        self.assertLessEqual(self.checked.max_gradient_pct, 8.05)
+        self.assertFalse(self.checked.mean_exceeded)
+
+    def test_125_m_of_ramp_per_bench(self) -> None:
+        total = hand.spiral_totals()
+        axis = self.checked.path.axis
+        self.assertAlmostEqual(axis[0, 2] - axis[-1, 2], 50.0, delta=1e-9)
+        self.assertAlmostEqual(self.checked.length_m, float(total.axis_m), delta=40.0)
+
+    def test_axis_runs_inside_the_crest_and_the_foot_follows_the_oracle(self) -> None:
+        """RF-018-16: el eje parte a ``W/2`` de la cresta (hacia dentro) y el pie está a ``W + (z(s) - z_pie)/tan a`` de ella: de ``W + h/tan a`` a ``W``."""
+        crest = line_of(self.found, "crest", 0)
+        foot = line_of(self.found, "foot", 0)
+        start = self.checked.path.axis[0, :2]
+        self.assertAlmostEqual(float(np.hypot(*(crest - start).T).min()), W / 2.0, delta=0.1)
+        near = np.array([float(np.hypot(*(crest - point).T).min()) for point in foot])
+        full = W + 10.0 / math.tan(math.radians(45.0))
+        self.assertAlmostEqual(float(near.max()), full, delta=0.3)
+        self.assertTrue(bool(((near > W - 0.1) & (near < W + 0.5)).any()))
+        self.assertTrue(bool(((near > 0.5 * (W + full) - 0.5) & (near < 0.5 * (W + full) + 0.5)).any()))
+
+    def test_crests_are_split_at_the_ends_of_the_tramo(self) -> None:
+        crests = [item for item in self.found.polylines if item.kind == "crest"]
+        self.assertEqual(len(crests), 5)
+        self.assertTrue(all(len(item.vertices) > 4 for item in crests))
+
+    def test_deterministic_bit_by_bit(self) -> None:
+        again = pit_bench.descend(self.job)
+        for first, second in zip(self.found.polylines, again.polylines, strict=True):
+            self.assertTrue(np.array_equal(first.vertices, second.vertices))
+        self.assertTrue(np.array_equal(self.checked.path.axis, again.ramps[0].path.axis))
+
+    def test_without_ramps_nothing_changes(self) -> None:
+        plain = pit_bench.descend(down.job())
+        self.assertEqual(plain.ramps, ())
+        self.assertEqual(plain.count, 5)
+
+    def test_start_on_bench_two_starts_there(self) -> None:
+        job = dataclasses.replace(self.job, ramp_starts=(pit_model.RampStart("rampa", bench=2),))
+        found = pit_bench.descend(job)
+        self.assertEqual(set(np.unique(found.ramps[0].benches)), {2, 3, 4})
+        self.assertEqual(float(found.ramps[0].z[0]), 80.0)
+
+    def test_what_is_not_calculated_yet_is_a_clear_error(self) -> None:
+        """Los bancos dobles, varios limites y el primer banco de altura variable con rampa no se calculan todavia: ``ValueError`` con el motivo, sin registrar nada."""
+        with self.assertRaisesRegex(ValueError, "bancos dobles"):
+            pit_bench.descend(dataclasses.replace(self.job, params=down.params(arc_tol_m=pd.HYPOTHESES.arc_m, simplify_m=1e-6, n_berm=2)))
+        with self.assertRaisesRegex(ValueError, "varios l"):
+            pit_bench.descend(dataclasses.replace(self.job, sources=(down.limite(), down.limite(pd.square_ring(40.0, (100.0, 100.0)), name="otro"))))
+        with self.assertRaisesRegex(ValueError, "altura variable"):
+            pit_bench.descend(dataclasses.replace(self.job, start=pd.inclined_terrain(pd.GRID)))
+
+
+class DescendZigzagTest(unittest.TestCase):
+    """CE-018-06 por ``descend`` (DIFF-018f): el zig-zag baja por lados casi rectos de la cresta, 100 m por banco a 10,000 % (cuatro bancos, tres retornos)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.job = descent_job("zigzag")
+        cls.found = pit_bench.descend(cls.job)
+        cls.checked = cls.found.ramps[0]
+
+    def test_four_benches_descend_with_three_returns(self) -> None:
+        axis = self.checked.path.axis
+        self.assertEqual(self.found.count, 4)
+        self.assertEqual(set(np.unique(self.checked.benches)), {0, 1, 2, 3})
+        self.assertAlmostEqual(float(axis[0, 2] - axis[-1, 2]), 40.0, delta=1e-9)
+        self.assertEqual((float(axis[0, 2]), float(axis[-1, 2])), (100.0, 60.0))
+        self.assertLessEqual(self.checked.max_gradient_pct, 10.0 + 1e-6)
+        flat = np.flatnonzero(np.abs(np.diff(axis[:, 2])) < 1e-12)
+        self.assertGreater(len(flat), 3 * 3)
+
+    def test_length_is_the_hand_value_less_the_curves(self) -> None:
+        """CE-018-06: 4·100 m de tramo + 3 plataformas de 40 m = 520 m de eje; las curvas redondeadas lo acortan (6 esquinas, ≤ 2R − πR/2 cada una)."""
+        total = hand.zigzag_totals(4, hand.Fraction(40))
+        self.assertAlmostEqual(float(total.ramp_m), 400.0, delta=1e-9)
+        self.assertLess(self.checked.length_m, float(total.axis_m))
+        self.assertGreater(self.checked.length_m, float(total.axis_m) - 6 * 6.0 - 10.0)
+
+    def test_the_prolongations_are_noticed_with_bench_and_place(self) -> None:
+        """DIFF-018e (aceptada): el tramo o la plataforma que pasan del lado casi recto del pie avisan con el banco y el lugar, sin cambiar nada."""
+        found = [item for item in self.found.notices if item.code == "des.pit_ramp_prolonged"]
+        self.assertGreater(len(found), 0)
+        for item in found:
+            self.assertEqual(set(item.values), {"entity", "bench", "value", "x", "y"})
+            self.assertGreater(item.values["value"], 0.0)
+
+    def test_deterministic_bit_by_bit(self) -> None:
+        again = pit_bench.descend(self.job)
+        for first, second in zip(self.found.polylines, again.polylines, strict=True):
+            self.assertTrue(np.array_equal(first.vertices, second.vertices))
+        self.assertTrue(np.array_equal(self.checked.path.axis, again.ramps[0].path.axis))
 
 
 if __name__ == "__main__":

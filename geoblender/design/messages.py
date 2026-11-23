@@ -3859,6 +3859,14 @@ CATALOG: tuple[Message, ...] = (
         "warning",
     ),
     Message(
+        "des.pit_ramp_prolonged",
+        "Ramp «{entity}», bench {bench}: its zig-zag stretch or return platform runs {value} m beyond the almost straight side of the pit line "
+        "(x = {x} m, y = {y} m); there the band of the ramp stands above the berm. Nothing is changed.",
+        "Rampa «{entity}», banco {bench}: su tramo en zig-zag o su plataforma de retorno se prolonga {value} m más allá del lado casi recto de la "
+        "polilínea de la corta (x = {x} m, y = {y} m); allí la banda de la rampa queda sobre la berma. No se cambia nada.",
+        "warning",
+    ),
+    Message(
         "des.pit_no_search",
         "The sector «{sector}» that the pit touches has no current search of untouchable elements; search them before calculating.",
         "El sector «{sector}» que toca la corta no tiene la búsqueda de intocables vigente; búsquelos antes de calcular.",

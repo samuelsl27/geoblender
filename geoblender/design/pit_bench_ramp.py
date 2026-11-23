@@ -14,7 +14,10 @@ empate: P-15), y una con inicio ``fondo`` o de una capa de puntos parte del prim
 que hay), desde el punto de la capa; (b) con varios pies en el banco, la rampa sube por el más cercano a su punto (a igual distancia, el primero por su posición); (c) dos rampas no
 comparten una arista del pie (se rechaza); (d) la preparación (T21b) ya comprobó el perfil de pista y la pendiente; (e) con una roseta o sectores, el ángulo de cara de una arista es el
 de su primer trozo si un límite de sector la parte; (f) el zig-zag con varios bancos vuelve por un lado casi recto del pie real (DIFF-018e: aristas casi colineales fusionadas a ``2·arc_tol`` de
-su cuerda, hasta 5° de oblicuidad, y la recta del lado se prolonga hasta una plataforma si el pie, con su escalón, es más corto que el tramo). Los bancos dobles (``n > 1``) no llevan rampa todavía. Python puro con numpy (nivel 8); no lo importa el arranque.
+su cuerda, hasta 5° de oblicuidad, y la recta del lado se prolonga hasta una plataforma si el pie, con su escalón, es más corto que el tramo), y cada prolongación se avisa (``des.pit_ramp_prolonged``, con el
+banco y el lugar); (g) **la corta descendente** (T21c2b, DIFF-018f; ``down=True``): la rampa **baja por la cresta** del banco (el anillo que se da a :meth:`RampLoop.plan` es la cresta, con su cota
+``level_m + rise_m``; el eje es la cresta desfasada ``W/2`` hacia dentro), con el mismo sentido y el mismo inicio, y el término de la distancia por arista se suma al pie que sale de **esa** cresta: la abscisa
+se mide sobre la cresta y no hay circularidad. Los bancos dobles (``n > 1``) no llevan rampa todavía. Python puro con numpy (nivel 8); no lo importa el arranque.
 """
 
 from __future__ import annotations
@@ -81,8 +84,9 @@ class RampLoop:
     """Las rampas de una corta mientras se calculan sus bancos: :meth:`plan` por banco y :meth:`result` al acabar. ``origin`` es la esquina suroeste de la rejilla (el marco local de los
     bancos); sin rampas, :attr:`active` es falso y no hace nada."""
 
-    def __init__(self, job: PitJob, origin: np.ndarray, n_berm: int = 1) -> None:
+    def __init__(self, job: PitJob, origin: np.ndarray, n_berm: int = 1, down: bool = False) -> None:
         self.job = job
+        self.down = down
         self.arc_tol_m = job.params.arc_tol_m
         self.origin = np.asarray(origin, dtype=np.float64)
         self.runs: list[_Run] = []
@@ -101,7 +105,7 @@ class RampLoop:
             width = road_derived(profile).section_m
             run = _Run(ramp, starts[ramp.code], width)
             if ramp.type == "zigzag":
-                run.stepper = ZigzagStepper(ramp, width, _FUSE_ARC * self.arc_tol_m)
+                run.stepper = ZigzagStepper(ramp, width, _FUSE_ARC * self.arc_tol_m, down)
             self.runs.append(run)
 
     @property
@@ -115,6 +119,10 @@ class RampLoop:
         wanted = run.start.bench
         return wanted is None or wanted == 0 or bench >= wanted
 
+    def wants(self, bench: int) -> bool:
+        """Si alguna rampa sube (o baja) por el banco ``bench``."""
+        return any(self._wanted(run, bench) for run in self.runs)
+
     def _start_point(self, run: _Run, rings: Sequence[np.ndarray]) -> np.ndarray:
         if run.start.point is not None:
             return np.asarray(run.start.point, dtype=np.float64) - self.origin
@@ -123,7 +131,8 @@ class RampLoop:
     def plan(self, bench: int, level_m: float, rise_m: float, rings: Sequence[np.ndarray], face_of: Callable[[np.ndarray], np.ndarray]
              ) -> dict[int, RingPlan]:
         """El plan de los pies ``rings`` (antihorarios y abiertos, locales; ``level_m`` su cota, ``rise_m`` lo que sube el banco ``bench``) por el índice del pie: solo los que llevan
-        rampa. ``face_of(anillo)`` da el ángulo de cara (°) de cada arista de un pie. :class:`~design.messages.DesignError` ``des.pit_no_ramp_fit`` si un tramo no cabe (RF-018-20)."""
+        rampa. Con ``down`` (la descendente) ``rings`` son las **crestas** y ``level_m`` la cota del pie del banco: la rampa baja de ``level_m + rise_m`` a ``level_m``. ``face_of(anillo)`` da el
+        ángulo de cara (°) de cada arista del anillo. :class:`~design.messages.DesignError` ``des.pit_no_ramp_fit`` si un tramo no cabe (RF-018-20)."""
         mine: dict[int, list[tuple[_Run, Tramo]]] = {}
         for run in self.runs:
             if not self._wanted(run, bench):
@@ -139,7 +148,7 @@ class RampLoop:
                     tramo = run.stepper.tramo(rings[best], point, bench=bench, z_foot_m=level_m, rise_m=rise_m)
                 else:
                     tramo = build_tramo(rings[best], point, bench=bench, z_foot_m=level_m, rise_m=rise_m, gradient_pct=run.ramp.gradient_pct, width_m=run.width_m,
-                                        transition_m=run.ramp.transition_m, sense=run.ramp.sense)
+                                        transition_m=run.ramp.transition_m, sense=run.ramp.sense, down=self.down)
             except RampDoesNotFit as error:
                 if error.place is not None:
                     error.place = (error.place[0] + float(self.origin[0]), error.place[1] + float(self.origin[1]))
@@ -213,5 +222,8 @@ class RampLoop:
             one = check_ramp(found, self.job, run.ramp)
             checked.append(one)
             notices.extend(one.notices)
+            for bench, place, over in () if run.stepper is None else run.stepper.extensions:
+                notices.append(Notice("des.pit_ramp_prolonged", {"entity": run.ramp.name, "bench": bench, "value": over,
+                                                                   "x": float(place[0] + frame[0]), "y": float(place[1] + frame[1])}))
         return tuple(checked), tuple(notices)
 

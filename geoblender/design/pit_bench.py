@@ -56,7 +56,7 @@ from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.offset import offset_ring, simplify_ring
 from ..gis.polygons import chain, crossings, overlay
 from .messages import DesignError
-from .pit_bench_ramp import RampLoop
+from .pit_bench_ramp import RampLoop, RingPlan as RampPlan
 from .pit_model import (MAX_BENCHES, MAX_VERTICES, FixedBench, PitCode, PitJob, PitMode, PitSource, Polyline, PolylineKind,
                         StopCriterion)
 from .pit_offset import PolylineOffset, Step, edge_distances, offset_polyline_steps
@@ -364,11 +364,11 @@ def _offset(job: PitJob, ring: _Ring, step: Step, origin: np.ndarray, *, side: i
     raise AssertionError("el desfase no dio su resultado")
 
 
-def _face_of(job: PitJob, origin: np.ndarray) -> Callable[[np.ndarray], np.ndarray]:
-    """El ángulo de cara (°) de cada arista de un pie, con la roseta y los sectores de la corta (el de su primer trozo si un sector la parte)."""
+def _face_of(job: PitJob, origin: np.ndarray, side: int = 1) -> Callable[[np.ndarray], np.ndarray]:
+    """El ángulo de cara (°) de cada arista de un pie (de una cresta en la descendente, ``side = -1``), con la roseta y los sectores de la corta (el de su primer trozo si un sector la parte)."""
 
     def face(ring: np.ndarray) -> np.ndarray:
-        found = edge_distances(ring, step=Step.FACE, side=1, profile=job.profile, rose=job.rose, n_berm=_n_berm(job), sectors=job.sectors, origin=origin,
+        found = edge_distances(ring, step=Step.FACE, side=side, profile=job.profile, rose=job.rose, n_berm=_n_berm(job), sectors=job.sectors, origin=origin,
                                az_window_m=job.params.az_window_m)
         angle = np.empty(len(ring))
         angle[found.source_edge[::-1]] = found.face_deg[::-1]
@@ -608,7 +608,7 @@ def _descent_start(job: PitJob, source: PitSource, origin: np.ndarray) -> _Crest
 
 
 def _descend_limit(job: PitJob, source: PitSource, origin: np.ndarray, notices: list[Notice], flags: dict[str, bool],
-                   fixed: list[_Fixed], n: int) -> Generator[None, None, _Descent]:
+                   fixed: list[_Fixed], n: int, ramps: RampLoop, face_of: Callable[[np.ndarray], np.ndarray]) -> Generator[None, None, _Descent]:
     name, params = job.request.name, job.params
     height = job.height_m
     width = params.min_floor_width_m
@@ -631,10 +631,19 @@ def _descend_limit(job: PitJob, source: PitSource, origin: np.ndarray, notices: 
         feet: list[tuple[np.ndarray, str]] = []
         holes: list[tuple[np.ndarray, str]] = []
         dead: list[np.ndarray] = []
-        for item in crests:
+        plans: dict[int, RampPlan] = {}
+        if ramps.active and ramps.wants(index):
+            if any(float(np.ptp(item.z)) > _EXIT_TOL_M for item in crests):
+                raise ValueError(f"la cresta del banco {index} sigue el terreno (primer banco de altura variable): una rampa de la corta descendente no se calcula todavía sobre "
+                                 "un banco de altura variable (T21c2b, DIFF-018f); empiece la rampa en el banco 1 o dé la cota de la cresta")
+            plans = ramps.plan(index, foot_z, float(crests[0].z.mean()) - foot_z, [item.points for item in crests], face_of)
+        for position, item in enumerate(crests):
             first = index == 0
+            plan = plans.get(position)
+            if plan is not None:  # la cresta con las aristas partidas en los extremos del tramo de la rampa (DIFF-018f)
+                item = _Crest(plan.points, item.label, np.full(len(plan.points), float(item.z[0])), item.slack_m, item.fixed)
             face = yield from _offset(job, _Ring(item.points, item.label, item.slack_m), Step.FACE, origin, side=-1,
-                                      z_m=item.z if first else None, anchor_m=first_foot_z if first else None)
+                                      z_m=item.z if first else None, anchor_m=first_foot_z if first else None, extra_m=None if plan is None else plan.extra)
             if not face.result.verified:
                 flags["reliable"] = False
                 notices.append(Notice(PitCode.OFFSET_UNRELIABLE.value, {"name": name, "bench": index, "value": face.result.max_defect_m,
@@ -739,8 +748,6 @@ def _by_position(items: list[tuple[np.ndarray, str, np.ndarray, _Fixed | None]])
 
 def _descend_units(job: PitJob) -> Generator[None, None, Benches]:
     _check_supported(job, PitMode.DOWN)
-    if job.ramps:
-        raise ValueError("las rampas de la corta descendente no se calculan todavía (T21c2): el pie sale del desfase de la cresta con el término de la propia rampa")
     n = _n_berm(job)
     params = job.params
     if params.min_floor_width_m is None and params.bottom_level_m is None and params.max_benches is None:
@@ -752,9 +759,15 @@ def _descend_units(job: PitJob) -> Generator[None, None, Benches]:
     flags = {"reliable": True}
     descents: list[_Descent] = []
     fixed = _resolve_fixed(job, origin, up=False, n=n)
+    ramps = RampLoop(job, origin, n, down=True)
+    if ramps.active and len(job.sources) > 1:
+        raise ValueError("las rampas de la corta descendente con varios límites no se calculan todavía (T21c2b, DIFF-018f): una rampa baja por un solo límite")
+    face_of = _face_of(job, origin, -1)
     for source in job.sources:
-        descents.append((yield from _descend_limit(job, source, origin, notices, flags, fixed, n)))
+        descents.append((yield from _descend_limit(job, source, origin, notices, flags, fixed, n, ramps, face_of)))
     _unused(job, fixed, origin)
+    checked, ramp_notices = ramps.result()
+    notices.extend(ramp_notices)
     polylines: list[Polyline] = []
     for index in range(max(len(item.benches) for item in descents)):
         here = [item.benches[index] for item in descents if index < len(item.benches)]
@@ -771,7 +784,7 @@ def _descend_units(job: PitJob) -> Generator[None, None, Benches]:
     return Benches(
         tuple(polylines), chosen[0].stop, max(len(item.benches) for item in descents), tuple(notices), flags["reliable"],
         math.fsum(item.volume_m3 for item in descents), deepest, math.fsum(_area(ring) for ring in floors),
-        max(_useful_width(job, ring) for ring in floors))
+        max(_useful_width(job, ring) for ring in floors), ramps=checked)
 
 
 def descend_steps(job: PitJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:

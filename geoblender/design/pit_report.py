@@ -361,7 +361,7 @@ def _crest_findings(job: PitJob, polylines: Sequence[Polyline]) -> list[Finding]
 
 
 _RAMP_UNITS = {"des.pit_ramp_gradient": "%", "des.pit_ramp_mean_gradient": "%", "des.pit_ramp_radius_reduced": "m",
-               "des.pit_ramp_radius_below_min": "m"}
+               "des.pit_ramp_radius_below_min": "m", "des.pit_ramp_prolonged": "m"}
 
 
 def _ramp_findings(ramps: Sequence[Any]) -> list[Finding]:
