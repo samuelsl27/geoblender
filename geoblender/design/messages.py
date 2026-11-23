@@ -3864,6 +3864,14 @@ CATALOG: tuple[Message, ...] = (
         "El sector «{sector}» que toca la corta no tiene la búsqueda de intocables vigente; búsquelos antes de calcular.",
     ),
     Message(
+        "des.pit_above_envelope",
+        "Pit «{name}»: the ascending surface goes above the envelope of the benching (spec 013) in {count} cells, by up to {excess} m "
+        "(near x = {x} m, y = {y} m); the vector design cannot be steeper than the admissible envelope. Nothing is changed.",
+        "Corta «{name}»: la superficie ascendente supera la envolvente del escalonado (spec 013) en {count} celdas, hasta {excess} m "
+        "(cerca de x = {x} m, y = {y} m); el diseño vectorial no puede ser más empinado que la envolvente admisible. No se cambia nada.",
+        "warning",
+    ),
+    Message(
         "des.pit_holes",
         "Pit «{name}»: the offset of bench {bench} has {count} holes; each one is kept as its own polyline.",
         "Corta «{name}»: el desfase del banco {bench} tiene {count} huecos; cada uno se guarda como su propia polilínea.",
