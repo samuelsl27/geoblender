@@ -15,13 +15,13 @@ Ninguna entrada se modifica. Todo es determinista y sin ``set`` ni orden de hash
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
-__all__ = ["MARGIN_M", "Piece", "arrange", "band_polygon"]
+__all__ = ["MARGIN_M", "Piece", "arrange", "arrange_units", "band_polygon"]
 
 MARGIN_M: float = 0.05
 """El margen del polígono de la banda con el que se quita lo que cae bajo ella (m): lo que se aparta del borde la polilínea que corre pegada a él (``arc_tol`` 5 cm)."""
@@ -92,8 +92,9 @@ def _inside(points: np.ndarray, polygon: np.ndarray) -> np.ndarray:
     return out
 
 
-def _split(vertices: np.ndarray, polygons: Sequence[np.ndarray]) -> list[Piece]:
-    """El anillo ``vertices`` ``(k, 3)`` sin lo que cae dentro de algún polígono: el mismo anillo si no toca ninguno; si no, trozos abiertos cortados en el borde."""
+def _split_units(vertices: np.ndarray, polygons: Sequence[np.ndarray]) -> Generator[None, None, list[Piece]]:
+    """El anillo ``vertices`` ``(k, 3)`` sin lo que cae dentro de algún polígono: el mismo anillo si no toca ninguno; si no, trozos abiertos cortados en el borde. Cede
+    una unidad por polígono de banda en la búsqueda de cruces y otra en la de lo que cae dentro (T22b: RNF-018-06)."""
     ring = np.asarray(vertices, dtype=np.float64)
     nxt = np.roll(ring, -1, axis=0)
     cuts: list[list[float]] = [[] for _ in range(len(ring))]
@@ -104,6 +105,7 @@ def _split(vertices: np.ndarray, polygons: Sequence[np.ndarray]) -> list[Piece]:
             continue
         for index, values in zip(near, _crossings(ring[near, :2], nxt[near, :2], polygon), strict=True):
             cuts[int(index)].extend(values)
+        yield
     rows: list[np.ndarray] = []
     for index in range(len(ring)):
         rows.append(ring[index][None, :])
@@ -116,6 +118,7 @@ def _split(vertices: np.ndarray, polygons: Sequence[np.ndarray]) -> list[Piece]:
     drop = np.zeros(len(dense), dtype=bool)
     for polygon in polygons:
         drop |= _inside(mid, polygon)
+        yield
     if not drop.any():
         return [Piece(ring, True)]
     if drop.all():
@@ -136,10 +139,19 @@ def _split(vertices: np.ndarray, polygons: Sequence[np.ndarray]) -> list[Piece]:
     return pieces
 
 
-def arrange(polylines: Sequence[Any], bands: Sequence[Any], margin_m: float = MARGIN_M) -> tuple[Piece, ...]:
-    """**La disposición plana** (T21c2): los trozos de ``polylines`` (cada una con ``vertices`` ``(k, 3)`` y ``closed``) que quedan **fuera** de la banda de cada rampa de ``bands``
-    (cada una con ``breaklines``; :func:`band_polygon`), en el orden de las polilíneas. Sin bandas, las mismas polilíneas. Una polilínea abierta se corta igual
-    (sus trozos son abiertos)."""
+def _split(vertices: np.ndarray, polygons: Sequence[np.ndarray]) -> list[Piece]:
+    """:func:`_split_units` hasta el final."""
+    work = _split_units(vertices, polygons)
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            result: list[Piece] = done.value
+            return result
+
+
+def arrange_units(polylines: Sequence[Any], bands: Sequence[Any], margin_m: float = MARGIN_M) -> Generator[None, None, tuple[Piece, ...]]:
+    """:func:`arrange` por unidades (T22b; RNF-018-06): cede una por polilínea y por banda, para componerlas con ``pace_units``, y devuelve lo mismo, bit a bit."""
     polygons = [band_polygon(item, margin_m) for item in bands]
     if not polygons:
         return tuple(Piece(np.asarray(item.vertices, dtype=np.float64), bool(item.closed)) for item in polylines)
@@ -147,5 +159,18 @@ def arrange(polylines: Sequence[Any], bands: Sequence[Any], margin_m: float = MA
     for item in polylines:
         if not item.closed:
             raise ValueError("la disposición plana de una polilínea abierta no se calcula todavía")
-        pieces.extend(_split(item.vertices, polygons))
+        pieces.extend((yield from _split_units(item.vertices, polygons)))
     return tuple(pieces)
+
+
+def arrange(polylines: Sequence[Any], bands: Sequence[Any], margin_m: float = MARGIN_M) -> tuple[Piece, ...]:
+    """**La disposición plana** (T21c2): los trozos de ``polylines`` (cada una con ``vertices`` ``(k, 3)`` y ``closed``) que quedan **fuera** de la banda de cada rampa de ``bands``
+    (cada una con ``breaklines``; :func:`band_polygon`), en el orden de las polilíneas. Sin bandas, las mismas polilíneas. Una polilínea abierta se corta igual
+    (sus trozos son abiertos)."""
+    work = arrange_units(polylines, bands, margin_m)
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            result: tuple[Piece, ...] = done.value
+            return result

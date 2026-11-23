@@ -56,6 +56,9 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   los avisos con su lugar, la calzada que no queda en su rasante con la restricción o la entidad que lo impide y lo que quedará obsoleto) y **nada en el proyecto**: ni la base de datos, ni los ficheros, ni
   siquiera un temporal (la superficie entera la escribe «Crear», T21). Pide **dos confirmaciones expresas** antes de crearla: la **pendiente media por encima de pm** con un motivo (RF-017-17, que no bloquea)
   y la **calzada que no queda en su rasante** (RF-017-22): :attr:`Calculation.needs_mean_confirmation`, :attr:`~Calculation.needs_carriageway_confirmation` y :meth:`Calculation.confirm_road`.
+- :func:`pit_run` (spec 018, T22b; RF-018-03, RF-018-19, RF-018-35, RF-015-03, RF-015-29): «Calcular» una corta (``des.pit``, de una versión, con cadena y huella) del mismo modo: deja el cálculo
+  (:class:`~.pit_model.PitOutcome`), su resumen (:class:`~.preview.PitSummary`) y **nada escrito**; las rampas con la pendiente media por encima de pm piden su confirmación
+  (:attr:`Calculation.needs_mean_confirmation`, :meth:`Calculation.confirm_pit`). **«Crear» es la T23.**
 - :func:`road_propose_run` (spec 017, T33; RF-017-28, RF-015-03, RF-015-29, RF-017-30): «Calcular» una propuesta del trazado (``des.road_propose``, de una versión, **sin cadena, sin superficie y sin huella**: no es una
   entidad) del mismo modo: deja el **resultado** (``design.road_model.ProposalOutcome``: el eje, la rasante y las dos cifras) y el **resumen** (:class:`~.road_store.ProposalSummary`: la longitud, las pendientes, el radio
   mínimo y los avisos con su lugar; la pendiente media por encima de pm **avisa y no pide confirmación**) y **nada en el proyecto**. Crearla es :meth:`Calculation.create` o, por pasos, :meth:`Calculation.create_steps`: la
@@ -115,6 +118,8 @@ from . import (
     entity_store,
     fronts,
     pipeline,
+    pit_ramp,
+    pit_store,
     platform,
     preview,
     provenance,
@@ -142,9 +147,11 @@ from .model import (
     StockpileRequest,
 )
 from .params import ANTHROPIC_PRESENCE
+from .pit_model import PitOutcome, PitRequest
 from .preview import Notice
 from .road_model import AccessOutcome, AccessRequest, ProposalOutcome, RoadOutcome, RoadRequest
 from .seeds import SeedPlan, SeedSet, pace_progress
+from .surfaces import project_frame
 
 __all__ = [
     "Calculation",
@@ -156,6 +163,7 @@ __all__ = [
     "envelope_run",
     "excavation_area_run",
     "fill_only_run",
+    "pit_run",
     "platform_run",
     "preview_steps",
     "quarry_run",
@@ -177,6 +185,7 @@ _BODY_SUMMARY_PHASE = "body_summary"  # el resumen de un cuerpo apoyado (016, T2
 _BUTTRESS_SUMMARY_PHASE = "buttress_summary"  # el resumen de un contrafuerte (016, T27)
 _ACCESS_SUMMARY_PHASE = "access_summary"  # el resumen de una accesibilidad (017, T17)
 _ROAD_SUMMARY_PHASE = "road_summary"  # el resumen de una pista (017, T20b)
+_PIT_SUMMARY_PHASE = "pit_summary"  # el resumen de una corta (018, T22b)
 _PROPOSE_SUMMARY_PHASE = "propose_summary"  # el resumen de una propuesta del trazado (017, T33)
 _OUTSIDE_PHASE = "seeds_outside"  # la cantera parada por sus semillas fuera (T43; RF-014-03)
 _READY, _CREATED, _DISCARDED = "ready", "created", "discarded"
@@ -224,7 +233,8 @@ class Calculation:
     lo que anotará la operación) y ``summary`` (el :class:`~.preview.PlatformSummary`); **crearla** (T13) es
     :meth:`create`, que escribe además los parámetros de su entidad. De una **detección de acopios** (spec 016, T12) lleva
     en ``entity`` la :class:`~.stockpile_store.PreparedDetection` y en ``summary`` el :class:`~.preview.StockpileSummary`;
-    crearla es :meth:`create` o :meth:`create_steps` (T13). **De una pista** (spec 017, T20b) lleva en ``entity`` la :class:`~.road_store.PreparedRoad` y en ``summary`` el :class:`~.preview.RoadSummary`, con
+    crearla es :meth:`create` o :meth:`create_steps` (T13). **De una corta** (spec 018, T22b) lleva en ``outcome`` el :class:`~.pit_model.PitOutcome`, en ``entity`` la :class:`~.pit_store.PreparedPit` y en
+    ``summary`` el :class:`~.preview.PitSummary`, con la confirmación de la pendiente media de sus rampas (:meth:`confirm_pit`); **crearla es la T23**. **De una pista** (spec 017, T20b) lleva en ``entity`` la :class:`~.road_store.PreparedRoad` y en ``summary`` el :class:`~.preview.RoadSummary`, con
     sus dos confirmaciones (:meth:`confirm_road`): la pendiente media por encima de pm, con un motivo, y la calzada que no queda en su rasante. Mientras esté abierta
     (:attr:`open`), sus rejillas esperan en temporales junto a su destino: hay que crearla o
     descartarla."""
@@ -234,15 +244,15 @@ class Calculation:
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
                  | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome
                  | platform.PlatformOutcome | stockpiles.StockpileOutcome | removal.RemovalOutcome
-                 | thickness.BodyOutcome | buttress.ButtressOutcome | AccessOutcome | RoadOutcome | ProposalOutcome,
+                 | thickness.BodyOutcome | buttress.ButtressOutcome | AccessOutcome | RoadOutcome | ProposalOutcome | PitOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object],
                  entity: entity_store.PreparedPlatform | stockpile_store.PreparedDetection
                  | supported_store.PreparedRemoval | supported_store.PreparedBody | supported_store.PreparedButtress
-                 | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal | None = None,
+                 | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal | pit_store.PreparedPit | None = None,
                  summary: preview.PlatformSummary | preview.StockpileSummary | preview.RemovalSummary
-                 | preview.BodySummary | preview.ButtressSummary | access_store.AccessSummary | preview.RoadSummary | road_store.ProposalSummary | None = None) -> None:
+                 | preview.BodySummary | preview.ButtressSummary | access_store.AccessSummary | preview.RoadSummary | road_store.ProposalSummary | preview.PitSummary | None = None) -> None:
         self._project = project
         self._writer = writer
         self._start = start
@@ -258,6 +268,7 @@ class Calculation:
         self.summary = summary
         self._removal_confirmed = (False, False)
         self._road_confirmed: tuple[bool, bool, str | None] = (False, False, None)
+        self._pit_confirmed: tuple[provenance.RampConfirmation, ...] = ()
 
     def __repr__(self) -> str:
         return f"<Calculation {self.op_type} «{self.name}» {self.version} {self._state}>"
@@ -341,9 +352,44 @@ class Calculation:
     @property
     def needs_mean_confirmation(self) -> bool:
         """Si es una pista cuya pendiente media pasa de la pendiente media máxima de su perfil (RF-017-17) y la persona aún no la ha confirmado: no se podrá crear sin la confirmación expresa y un motivo
-        (que queda registrado y no la bloquea, D-6). Falso en cualquier otra."""
+        (que queda registrado y no la bloquea, D-6). **De una corta** (T22b, RF-018-19), si alguna de sus rampas tiene la media por encima de pm sin una confirmación que la cubra
+        (:attr:`mean_pending`). Falso en cualquier otra."""
         found = self.outcome
+        if isinstance(found, PitOutcome):
+            return bool(self.mean_pending)
         return isinstance(found, RoadOutcome) and found.mean_exceeded and not self._road_confirmed[0]
+
+    @property
+    def mean_pending(self) -> tuple[tuple[str, float, float], ...]:
+        """De una corta (T22b, RF-018-19): las rampas cuya pendiente media pasa de pm y **aún no cubre** ninguna de las confirmaciones dadas (:meth:`confirm_pit`), cada una
+        ``(código de la rampa, media %, pm %)``. Vacío en cualquier otra."""
+        found = self.outcome
+        if not isinstance(found, PitOutcome):
+            return ()
+        return pit_store.confirm_ramps(found.extra["checked_ramps"], self._pit_confirmed)[1]
+
+    @property
+    def pit_confirmed(self) -> tuple[provenance.RampConfirmation, ...]:
+        """Las confirmaciones de la pendiente media de las rampas de una corta que se han dado (:meth:`confirm_pit`)."""
+        return self._pit_confirmed
+
+    def confirm_pit(self, confirmations: Iterable[provenance.RampConfirmation]) -> None:
+        """La confirmación expresa de la pendiente media por encima de pm de las rampas de una corta (RF-018-19; ``provenance.ramp_confirmation``: la rampa, la media, el motivo, quién y
+        cuándo): queda dicha para la creación (T23) sin recalcular y **sustituye** a la anterior; la cubre si es de esa rampa y de una media no menor que la actual. ``TypeError`` si no es una corta."""
+        if not isinstance(self.entity, pit_store.PreparedPit):
+            raise TypeError(f"solo una corta tiene rampas con una pendiente media que confirmar, no «{self.op_type}»")
+        self._pit_confirmed = tuple(confirmations)
+
+    def ensure_pit_creatable(self) -> None:
+        """**No se crea la corta sin la confirmación expresa** de la pendiente media de sus rampas (RF-018-19; :func:`~.pit_ramp.confirm_mean`): con una por encima de pm sin una confirmación que
+        la cubra, ``des.pit_ramp_mean_over`` (con su motivo para crear); **antes de escribir nada y sin cerrar el cálculo**. ``TypeError`` si no es una corta."""
+        found = self.outcome
+        if not isinstance(found, PitOutcome):
+            raise TypeError(f"el cálculo «{self.name}» no es el de una corta, sino «{self.op_type}»")
+        pending = {code for code, _mean, _limit in self.mean_pending}
+        for checked in found.extra["checked_ramps"]:
+            if checked.code in pending:
+                pit_ramp.confirm_mean(checked)  # sin confirmación que la cubra: el rechazo con su motivo para crear
 
     @property
     def needs_carriageway_confirmation(self) -> bool:
@@ -425,6 +471,8 @@ class Calculation:
             return stored
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
+        if isinstance(self.entity, pit_store.PreparedPit):
+            raise NotImplementedError("«Crear» una corta es la T23 de la spec 018: «Calcular» (T22b) no la registra")
         if isinstance(self.entity, supported_store.PreparedRemoval):
             return self._create_removal(self.entity, decided_by)
         if isinstance(self.entity, supported_store.PreparedBody):
@@ -782,6 +830,22 @@ def road_run(project: StoreProject, request: RoadRequest, *, version: str | None
     return _road_steps(project, request, version, masks, code, supersedes, budget_s)
 
 
+def pit_run(project: StoreProject, request: PitRequest, *, version: str | None, masks: MaskSet | None = None, code: str | None = None, supersedes: str | None = None,
+            confirmed: Sequence[provenance.RampConfirmation] = (), budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**«Calcular»** la corta ``request`` en la versión ``version`` (uid o código) por pasos de ``budget_s`` como mucho (spec 018, T22b; RF-018-03, RF-018-19, RF-018-26, RF-018-31,
+    RF-018-35, RF-015-03, RF-015-29; RNF-018-06; «Nueva corta…»): el último ``Progress`` lleva la :class:`Calculation` de ``des.pit``, con su resultado (``Calculation.outcome``:
+    ``design.pit_model.PitOutcome``, con la superficie y la huella en su ventana, las polilíneas, las rampas, la línea de cielo, las cifras por banco, los hallazgos y los otros diseños que
+    difieren de la partida en la huella), su resumen (``Calculation.summary``: :class:`~.preview.PitSummary`: las cifras, los avisos y lo que quedará obsoleto al crearla) y **nada registrado
+    ni escrito en el proyecto**: ni la base de datos, ni las operaciones, los datos, los parámetros o los ficheros (ni un temporal: la superficie entera la escribe «Crear», T23). ``masks``,
+    como en :func:`envelope_run`. ``code`` y ``supersedes``, los de ``pit_store.prepare_pit_units`` (recalcular una corta que ya está en la versión y sustituir su operación). ``confirmed``:
+    las confirmaciones de la pendiente media de las rampas ya dadas (se pueden dar después con :meth:`Calculation.confirm_pit`, sin recalcular).
+
+    Los rechazos salen **al avanzar**, antes de escribir nada y con la capa, la corta, el campo y el valor: los de la preparación (RF-018-04, RF-015-06 a RF-015-09) y los del cálculo
+    (**un desfase que no se pudo verificar**, ``des.pit_offset_not_verified``, RF-018-10; la rampa que no cabe, RF-018-20…). Cerrar el generador a mitad (Esc) o un fallo no dejan nada
+    (RF-015-29, RF-018-35). Crearla es la T23 (:meth:`Calculation.create`), con :meth:`Calculation.confirm_pit` si pide confirmar la pendiente media de una rampa (RF-018-19)."""
+    return _pit_steps(project, request, version, masks, code, supersedes, tuple(confirmed), budget_s)
+
+
 def road_propose_run(project: StoreProject, request: RoadRequest, *, version: str | None, masks: MaskSet | None = None, supersedes: str | None = None,
                      budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
     """**«Calcular»** la propuesta del trazado ``request`` en la versión ``version`` (uid o código) por pasos de ``budget_s`` como mucho (spec 017, T33; RF-017-28, RF-017-17, RF-015-03, RF-015-29, RF-017-30;
@@ -1104,6 +1168,29 @@ def _road_steps(project: StoreProject, request: RoadRequest, version: str | None
         summary = road_store.road_summary(project, found, prepared, outcome, loaded, supersedes=supersedes)
         calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices, seeds=None, values=prepared.common,
                                   entity=prepared, summary=summary)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda nada
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _pit_steps(project: StoreProject, request: PitRequest, version: str | None, masks: MaskSet | None, code: str | None, supersedes: str | None,
+               confirmed: Sequence[provenance.RampConfirmation], budget_s: float) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.PIT)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: pit_store.PreparedPit = yield from _prepare_steps(
+        pit_store.prepare_pit_units(project, request, found, loaded, code=code, supersedes=supersedes), budget_s)
+    frame = project_frame(project)  # el CRS y la referencia vertical del proyecto: las de la superficie de la corta
+    writer = store.DesignWriter(project, provenance.PIT, request.name, version=found.uid, supersedes=supersedes)
+    try:
+        outcome: PitOutcome = yield from pit_store.compute_steps(prepared.job, prepared.window, prepared.common, crs=frame.crs, vertical=frame.vertical, confirmed=confirmed,
+                                                                 budget_s=budget_s)
+        outcome = yield from pit_store.compare_others(project, prepared, outcome, supersedes=supersedes)  # RF-017-05 (b) en la corta: lo que difiere de la partida en la huella
+        yield Progress(_PIT_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
+        summary = pit_store.pit_summary(project, prepared, outcome, supersedes=supersedes)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices, seeds=None, values=prepared.common,
+                                  entity=prepared, summary=summary)
+        calculation.confirm_pit(confirmed)
     except BaseException as error:  # un fallo o cerrar el generador: no queda nada
         writer.close(error)
         raise

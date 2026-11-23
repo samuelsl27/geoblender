@@ -9,7 +9,7 @@ rejilla del proyecto (ADR-0014, D-10):
    cruzan una cara en vez de seguirla) y sus vértices, sin repetir, con su Z, son los puntos de la triangulación; los lados, sus aristas
    obligatorias. Todo se triangula **en unidades de celda** (columna ``(X − oeste)/dx``, fila hacia el norte ``(Y − norte)/dy``), con la esquina
    de la rejilla restada antes de dividir (regla 4 de ``AGENTS.md``, ADR-0005).
-   Donde una rampa pisa un pie o una cresta, la **disposición plana** (:func:`design.pit_band.arrange`, T21c2) quita de la polilínea lo que cae bajo la banda y la corta en
+   Donde una rampa pisa un pie o una cresta, la **disposición plana** (:func:`design.pit_band.arrange_units`, T21c2 y T22b) quita de la polilínea lo que cae bajo la banda y la corta en
    su borde: la banda manda con su Z.
 2. **La triangulación.** El :class:`~geoblender.gis.cdt.PureTriangulator` por pasos (P-6: 17 µs por punto, cancelable, sin la llamada
    nativa). Los triángulos pasan a la rejilla con :func:`~geoblender.gis.tin.tin_to_raster` **por bandas de filas** (las de
@@ -51,7 +51,7 @@ from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.tin import Tin, tin_to_raster
 from .compose import compose
 from .model import BenchSense
-from .pit_band import arrange
+from .pit_band import arrange_units
 from .pit_model import PitJob, Polyline
 from .seeds import pace_progress
 from .thickness import _raster_bands, _row_costs
@@ -255,7 +255,8 @@ def _surface_units(job: PitJob, polylines: Sequence[Polyline], ramps: Sequence[A
     grid = job.grid
     step = (grid.dx, grid.dy)
     lines = _Lines([], [], [])
-    for item in arrange(polylines, [ramp.band for ramp in ramps]):  # lo que cae bajo la banda de una rampa lo sustituye la rampa (T21c2)
+    pieces = yield from arrange_units(polylines, [ramp.band for ramp in ramps])  # lo que cae bajo la banda de una rampa lo sustituye la rampa (T21c2); por unidades (T22b)
+    for item in pieces:
         cells, z = _densify(_to_cells(item.vertices, grid), np.asarray(item.vertices[:, 2], dtype=np.float64), item.closed, step)
         lines.add(cells, z, item.closed)
     for ramp in ramps:

@@ -346,6 +346,11 @@ def _united(rings: list[_Ring]) -> tuple[list[_Ring], list[np.ndarray]]:
     return outer, [loop for loop in loops if _area(loop) <= 0.0]
 
 
+OFFSET_EDGES_PER_STEP = 400
+"""Las aristas por bloque con que cede el desfase de una polilínea (T22b; RNF-018-06): el motor (``gis.offset``, 2.000 por defecto) tarda hasta ≈ 0,25 s por bloque con celdas de 1 m
+y una corta con rampa; con 400 cada unidad queda muy por debajo de los 0,2 s. No es una cifra minera: solo reparte el trabajo (el resultado no cambia)."""
+
+
 def _offset(job: PitJob, ring: _Ring, step: Step, origin: np.ndarray, *, side: int = 1, z_m: np.ndarray | None = None,
             anchor_m: float | None = None, extra_m: np.ndarray | None = None) -> Generator[None, None, PolylineOffset]:
     """Los pasos del desfase de ``ring`` (cada ``Progress`` del motor, una unidad) y el :class:`PolylineOffset`; ``side`` es ``+1`` hacia
@@ -353,7 +358,7 @@ def _offset(job: PitJob, ring: _Ring, step: Step, origin: np.ndarray, *, side: i
     steps = offset_polyline_steps(
         ring.points, step=step, side=side, tol=job.params.arc_tol_m, corner=str(job.params.corner), simplify_m=ring.slack_m,
         profile=job.profile, rose=job.rose, n_berm=_n_berm(job), sectors=job.sectors, origin=origin, az_window_m=job.params.az_window_m,
-        z_m=z_m, anchor_m=anchor_m, extra_m=extra_m)
+        z_m=z_m, anchor_m=anchor_m, extra_m=extra_m, edges_per_step=OFFSET_EDGES_PER_STEP)
     with closing(steps):
         for progress in steps:
             if progress.result is None:

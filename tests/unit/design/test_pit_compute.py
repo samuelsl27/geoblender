@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -25,12 +26,15 @@ pit_store = import_geoblender("design.pit_store")
 provenance = import_geoblender("design.provenance")
 messages = import_geoblender("design.messages")
 preview = import_geoblender("design.preview")
+steps = import_geoblender("design.steps")
 
 STEP_M = 4.0
 COMMON = {provenance.TOLERANCE_FACE: 1.0}
 STEP_LIMIT_S = 0.2
 """RNF-018-06: cada paso cede el hilo en ≤ 0,2 s."""
-RAMP_STEP_LIMIT_S = 1.0
+RAMP_STEP_LIMIT_S = 0.5
+"""T22b: con rampa, la cota del «verde», que corre en paralelo con carga (el paso más largo mide ≈ 0,11 s en reposo, ×2,5 con carga): el ≤ 0,2 s de RNF-018-06 se comprueba en reposo,
+con el mejor de tres intentos, en ``milestone_pit_compute.RampStepsTest``."""
 
 
 def window_of(job: object) -> tuple[slice, slice]:
@@ -173,8 +177,7 @@ class RampTest(unittest.TestCase):
         self.assertAlmostEqual(values["des.pit_ramp_gradient_max_pct"], 8.0, delta=0.3)
         self.assertGreater(values["des.pit_ramp_band_m3"], 0.0)
         self.assertEqual(out.extra["mean_pending"], ())
-        # Con rampa, los pasos largos son de los motores de T21 (el bucle de la rampa y la disposición bajo la banda, con celdas de 1 m: hasta ≈ 0,5 s);
-        # se reparten en la T36 (banco). Aquí solo se acota para que no crezca sin control.
+        # T22b: la disposición bajo la banda y el desfase ceden entre unidades más pequeñas; con rampa, cada paso también cede en ≤ 0,2 s.
         self.assertLessEqual(max(self.times), RAMP_STEP_LIMIT_S, [round(t, 3) for t in self.times])
 
     def test_mean_over_pm_is_pending_until_confirmed(self) -> None:
@@ -196,6 +199,166 @@ class RampTest(unittest.TestCase):
         less = provenance.ramp_confirmation("rampa", mean - 1.0, "Motivo", "Samuel", "2026-11-23T10:00:00Z")
         for wrong in (other, less):
             self.assertEqual(len(pit_store.confirm_ramps(pending.extra["checked_ramps"], (wrong,))[1]), 1)
+
+
+def prepared_of(job: object, name: str = "Corta 1") -> object:
+    """Una ``PreparedPit`` con lo justo para una ``Calculation`` sin proyecto (los campos que no usa el cálculo, vacíos)."""
+    start = SimpleNamespace(op_type="des.pit", name=name, version_code="V01", version_uid="uid-v01", settings={})
+    return pit_store.PreparedPit(job, start, job.code, SimpleNamespace(uid="uid-v01", code="V01"), "terreno", "terreno", None, "capa", (), {}, COMMON,
+                                 window_of(job), {})
+
+
+def spiral_over_pm() -> object:
+    job = rp.spiral_job()
+    profile = rp.road(min_radius_m=7.0, max_mean_gradient_pct=5.0)
+    return pit_store.replace(job, road_profiles=(profile,), ramps=(pit_store.replace(job.ramps[0], road_profile=profile.code),))
+
+
+class SummaryTest(unittest.TestCase):
+    """T22b (RF-018-03, RF-015-03): el resumen de «Calcular» una corta, **puro** (sin proyecto)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.job = h1.up_job(pd.grid_of(STEP_M))
+        cls.outcome, _times = run(cls.job)
+
+    def test_the_summary_has_the_figures_and_the_obsolete_notes(self) -> None:
+        obsolete = (preview.Obsolete(preview.ObsoleteKind.DEPENDENT, "Retirada 1", "des.stockpile_removal", "uid-1"),)
+        summary = pit_store.summary_of(self.outcome, version="V01", profile="expl_10_60_6", obsolete=obsolete)
+        self.assertIsInstance(summary, preview.PitSummary)
+        values = {item.key: item.value for item in self.outcome.figures}
+        self.assertEqual((summary.name, summary.code, summary.version, summary.mode, summary.profile), ("Corta 1", "PIT-001", "V01", "up", "expl_10_60_6"))
+        self.assertEqual(summary.figures, self.outcome.figures)
+        self.assertEqual((summary.benches, summary.findings), (5, len(self.outcome.findings)))
+        self.assertEqual(summary.cut_m3, values["des.pit_cut_m3"])
+        self.assertEqual(summary.area_m2, values["des.pit_area_m2"])
+        self.assertEqual((summary.needs_mean_confirmation, summary.mean_pending), (False, ()))
+        self.assertEqual(summary.obsolete, obsolete)
+        codes = [notice.code for notice in summary.notices]
+        self.assertEqual(codes[:len(self.outcome.notices)], [notice.code for notice in self.outcome.notices])
+        self.assertIn("des.entity_obsolete_dependents", codes[len(self.outcome.notices):])
+        self.assertEqual(summary.lines("es"), tuple(notice.text("es") for notice in summary.notices))
+        self.assertEqual(summary.warnings("en"), tuple(notice.text("en") for notice in summary.notices if notice.severity == "warning"))
+
+    def test_without_obsolete_the_notes_are_the_outcome_ones(self) -> None:
+        summary = pit_store.summary_of(self.outcome, version="V01", profile="x")
+        self.assertEqual(summary.notices, self.outcome.notices)
+        self.assertEqual(summary.obsolete, ())
+
+    def test_the_mean_over_pm_makes_the_summary_ask_for_the_confirmation(self) -> None:
+        outcome, _times = run(spiral_over_pm())
+        summary = pit_store.summary_of(outcome, version="V01", profile="x")
+        self.assertTrue(summary.needs_mean_confirmation)
+        self.assertEqual([item[0] for item in summary.mean_pending], ["rampa"])
+        self.assertEqual(summary.ramps, ("rampa",))
+
+
+class CalculationTest(unittest.TestCase):
+    """T22b (RF-018-19, RF-018-35): la ``Calculation`` tipada ``des.pit`` con la confirmación de la pendiente media de sus rampas."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.job = spiral_over_pm()
+        cls.outcome, _times = run(cls.job)
+        cls.mean = cls.outcome.extra["mean_pending"][0][1]
+
+    def calculation(self) -> object:
+        prepared = prepared_of(self.job)
+        summary = pit_store.summary_of(self.outcome, version="V01", profile="x")
+        return steps.Calculation(project=mock.Mock(), writer=mock.Mock(), start=prepared.start, outcome=self.outcome, notices=summary.notices, seeds=None,
+                                 values=COMMON, entity=prepared, summary=summary)
+
+    def test_it_is_a_typed_calculation_of_the_pit(self) -> None:
+        calculation = self.calculation()
+        self.assertEqual((calculation.op_type, calculation.name, calculation.version, calculation.open), ("des.pit", "Corta 1", "V01", True))
+        self.assertIs(calculation.figures, self.outcome.figures)
+        self.assertIn("calculada", calculation.message)
+        self.assertIsInstance(calculation.summary, preview.PitSummary)
+        self.assertTrue(calculation.needs_mean_confirmation)
+        self.assertEqual([item[0] for item in calculation.mean_pending], ["rampa"])
+
+    def test_the_confirmation_covers_the_mean_and_nothing_else_does(self) -> None:
+        calculation = self.calculation()
+        done = provenance.ramp_confirmation("rampa", self.mean, "Hay que cruzar el cauce", "Samuel", "2026-11-23T10:00:00Z")
+        calculation.confirm_pit((done,))
+        self.assertEqual(calculation.pit_confirmed, (done,))
+        self.assertFalse(calculation.needs_mean_confirmation)
+        calculation.ensure_pit_creatable()  # no lanza
+        less = provenance.ramp_confirmation("rampa", self.mean - 1.0, "Motivo", "Samuel", "2026-11-23T10:00:00Z")
+        calculation.confirm_pit((less,))  # sustituye a la anterior
+        self.assertTrue(calculation.needs_mean_confirmation)
+        with self.assertRaises(pit_store.DesignError) as caught:
+            calculation.ensure_pit_creatable()
+        self.assertEqual(caught.exception.code, "des.pit_ramp_mean_over")
+        self.assertTrue(calculation.open)  # sin cerrar el cálculo
+
+    def test_only_a_pit_has_ramps_to_confirm(self) -> None:
+        other = steps.Calculation(project=mock.Mock(), writer=mock.Mock(), start=prepared_of(self.job).start, outcome=SimpleNamespace(), notices=(), seeds=None,
+                                  values={}, entity=SimpleNamespace(), summary=None)
+        with self.assertRaises(TypeError):
+            other.confirm_pit(())
+        self.assertFalse(other.needs_mean_confirmation)
+
+    def test_creating_it_is_the_t23(self) -> None:
+        calculation = self.calculation()
+        with self.assertRaises(NotImplementedError):
+            calculation.create()
+        self.assertTrue(calculation.open)
+
+    def test_discarding_closes_the_writer(self) -> None:
+        calculation = self.calculation()
+        calculation.discard()
+        self.assertFalse(calculation.open)
+
+
+class OtherDesignsTest(unittest.TestCase):
+    """T22b: los otros diseños de la versión cuya superficie difiere de la partida en la huella (la lectura en la ventana, una a una)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.job = h1.up_job(pd.grid_of(STEP_M))
+        cls.outcome, _times = run(cls.job)
+
+    def found(self, others: dict[str, np.ndarray], thickness: float = 0.1) -> tuple[tuple[str, ...], tuple[object, ...]]:
+        def read(name: str, window: tuple[slice, slice]) -> np.ndarray:
+            return others[name][window]
+
+        work = pit_store.other_designs_steps(self.job, self.outcome, list(others), read, thickness)
+        seen = 0
+        while True:
+            try:
+                next(work)
+                seen += 1
+            except StopIteration as done:
+                self.assertGreaterEqual(seen, len(others))
+                names, notices = done.value
+                return names, notices
+
+    def inside(self) -> tuple[int, int]:
+        rows, cols = np.nonzero(self.outcome.footprint)
+        return int(rows[len(rows) // 2]) + self.outcome.window[0].start, int(cols[len(cols) // 2]) + self.outcome.window[1].start
+
+    def test_a_design_that_differs_in_the_footprint_is_an_input_and_a_warning(self) -> None:
+        same = self.job.start.copy()
+        differs = self.job.start.copy()
+        differs[self.inside()] -= 3.0
+        names, notices = self.found({"des_a": same, "des_b": differs})
+        self.assertEqual(names, ("des_b",))
+        self.assertEqual([item.code for item in notices], ["des.pit_other_design_differs"])
+        self.assertEqual((notices[0].values["entity"], notices[0].values["other"]), ("Corta 1", "des_b"))
+        self.assertAlmostEqual(notices[0].values["difference"], 3.0)
+        self.assertEqual(messages.lookup("des.pit_other_design_differs").severity, "warning")
+
+    def test_a_difference_outside_the_footprint_or_under_the_thickness_is_nothing(self) -> None:
+        far = self.job.start.copy()
+        far[~np.isnan(far)] += 0.0
+        outside = np.argwhere(~np.pad(self.outcome.footprint, ((self.outcome.window[0].start, self.job.grid.nrows - self.outcome.window[0].stop),
+                                                              (self.outcome.window[1].start, self.job.grid.ncols - self.outcome.window[1].stop))))[0]
+        far[tuple(outside)] += 5.0
+        thin = self.job.start.copy()
+        thin[self.inside()] -= 0.01
+        names, notices = self.found({"des_far": far, "des_thin": thin})
+        self.assertEqual((names, notices), ((), ()))
 
 
 if __name__ == "__main__":

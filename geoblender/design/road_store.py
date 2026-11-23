@@ -1414,11 +1414,12 @@ def start_is_final_notice(entity: str, surface: str, grid: Grid, final: np.ndarr
     return Notice("des.road_start_is_final", {"entity": entity, "surface": surface, "z_final": "—" if z_final is None else round(z_final, 3), "z_pit": round(z_pit, 3)})
 
 
-def other_design_notices(entity: str, grid: Grid, footprint: np.ndarray, start: np.ndarray, others: Mapping[str, np.ndarray], min_thickness_m: float) -> tuple[Notice, ...]:
+def other_design_notices(entity: str, grid: Grid, footprint: np.ndarray, start: np.ndarray, others: Mapping[str, np.ndarray], min_thickness_m: float, *,
+                         code: str = "des.road_other_design_differs") -> tuple[Notice, ...]:
     """Los avisos de RF-017-05 (b): de cada diseño de la versión que no parte de la partida (``others``: su nombre → su superficie, de la forma de ``start`` y de ``footprint``), si
     **en la huella de la pista** (``footprint``: sección y borde) la partida difiere de él en más del espesor mínimo de la 012 (``min_thickness_m``), con el área (m²), la diferencia
     máxima (m) y el lugar de la mayor (el centro de su celda, absoluto): «un relleno que la pista no tiene en cuenta», que **no impide crearla**. Las celdas sin dato no cuentan. Uno por
-    diseño que difiere, en el orden de ``others``. ``grid`` es la rejilla de esos arrays."""
+    diseño que difiere, en el orden de ``others``. ``grid`` es la rejilla de esos arrays. ``code``: el del aviso (la corta, T22b, usa el suyo con los mismos valores)."""
     found: list[Notice] = []
     for name, values in others.items():
         with np.errstate(invalid="ignore"):
@@ -1429,7 +1430,7 @@ def other_design_notices(entity: str, grid: Grid, footprint: np.ndarray, start: 
         rows, columns = np.nonzero(differs)
         worst = int(np.argmax(difference[rows, columns]))
         row, column = int(rows[worst]), int(columns[worst])
-        found.append(Notice("des.road_other_design_differs", {
+        found.append(Notice(code, {
             "entity": entity, "other": name, "area": float(rows.size * grid.cell_area), "difference": float(difference[row, column]),
             "x": float(grid.west + (column + 0.5) * grid.dx), "y": float(grid.north - (row + 0.5) * grid.dy)}))
     return tuple(found)

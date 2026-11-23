@@ -65,6 +65,26 @@ class ArrangeTest(unittest.TestCase):
         mids = np.vstack([0.5 * (p.vertices[:-1, :2] + p.vertices[1:, :2]) for p in out])
         self.assertFalse(bool(pit_band._inside(mids, polygon).any()))
 
+    def test_the_units_give_the_same_pieces_and_yield_between_polylines(self) -> None:
+        """T22b (RNF-018-06): ``arrange_units`` cede entre polilíneas y da, bit a bit, lo que ``arrange``."""
+        rings = [square(100.0 + 10.0 * k, 5.0 + k) for k in range(4)]
+        bands = [band_of(-10.0, 50.0, 0.0, 4.0, 5.0, 8.0)]
+        work = pit_band.arrange_units(rings, bands)
+        yields = 0
+        while True:
+            try:
+                next(work)
+                yields += 1
+            except StopIteration as done:
+                units = done.value
+                break
+        self.assertGreaterEqual(yields, len(rings))
+        whole = pit_band.arrange(rings, bands)
+        self.assertEqual(len(units), len(whole))
+        for a, b in zip(units, whole, strict=True):
+            self.assertEqual(a.closed, b.closed)
+            self.assertTrue(np.array_equal(a.vertices, b.vertices))
+
     def test_deterministic(self) -> None:
         a = pit_band.arrange([square()], [band_of(-10.0, 50.0, 0.0, 4.0)])
         b = pit_band.arrange([square()], [band_of(-10.0, 50.0, 0.0, 4.0)])

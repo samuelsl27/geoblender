@@ -88,6 +88,7 @@ from .messages import DesignError
 from .model import BenchParam, BenchProfile
 from .params import (
     PERIMETER_SEGMENT,
+    VERIFY_MIN_THICKNESS,
     PitParam,
     PitRampParam,
     PitSectorParam,
@@ -117,18 +118,30 @@ from .pit_model import (
     RampStart,
     RoseRange,
 )
-from .preview import Notice
+from .platform import _project_number, _window_grid
+from .preview import Notice, Obsolete, ObsoleteKind, PitSummary, obsolete_notices
 from .road_model import Parts, Window
 from .road_profiles import RoadProfile
 from .road_section import sample_terrain
-from .road_store import _LINES_3D_PREFIXES, _ROUTE_PREFIX, read_lines_3d, untouchable_cells
+from .report import _thickness
+from .road_store import (
+    _LINES_3D_PREFIXES,
+    _ROUTE_PREFIX,
+    OtherReader,
+    other_design_notices,
+    other_designs,
+    other_reader,
+    read_lines_3d,
+    untouchable_cells,
+)
 from .sectors import design_sectors, refuse_pending
 from .seeds import pace_progress, sector_layout
 from .store import OperationStart, _loaded_masks, _start, require_version
 from .surfaces import project_frame, read_surface_steps
 from .zones import polygons_cells
 
-__all__ = ["OFFSET_NOT_VERIFIED", "PreparedPit", "compute", "compute_steps", "confirm_ramps", "prepare_pit", "prepare_pit_units", "source_sha256"]
+__all__ = ["OFFSET_NOT_VERIFIED", "OTHER_DESIGN_DIFFERS", "PreparedPit", "compare_others", "compute", "compute_steps", "confirm_ramps", "other_designs_steps", "pit_obsolete",
+           "pit_summary", "prepare_pit", "prepare_pit_units", "source_sha256", "summary_of"]
 
 _NUMERIC = frozenset({"INTEGER", "DOUBLE"})
 _NAME_FIELDS = ("nombre", "name")
@@ -1030,3 +1043,82 @@ def compute(job: PitJob, window: Window, common: Mapping[str, float], *, crs: An
         except StopIteration as done:
             result: PitOutcome = done.value
             return result
+
+
+# --- El resumen, lo que quedará obsoleto y los otros diseños (T22b) ----------------------------------------------------------------------
+
+OTHER_DESIGN_DIFFERS = "des.pit_other_design_differs"
+"""El aviso de un otro diseño de la versión cuya superficie difiere de la partida en la huella de la corta (RF-017-05 (b) llevado a la corta): no impide crearla."""
+_OTHERS_PHASE = "pit_others"
+
+
+def other_designs_steps(job: PitJob, outcome: PitOutcome, names: Sequence[str], read_other: OtherReader, min_thickness_m: float
+                        ) -> Generator[Progress, None, tuple[tuple[str, ...], tuple[Notice, ...]]]:
+    """Compara la partida de ``job`` con la superficie de cada otro diseño de ``names`` **en la huella de la corta** (``outcome.footprint``, en su ventana de trabajo) y devuelve
+    (valor de ``StopIteration``) los nombres de los que difieren en más de ``min_thickness_m`` (lo que «Crear», T23, registrará como entradas) y un aviso por cada uno
+    (:data:`OTHER_DESIGN_DIFFERS`, que no impide crearla). ``read_other(nombre, ventana)`` lee la superficie de **un** diseño **en la ventana** (de una en una: no se carga la
+    rejilla entera); cede un ``Progress`` por diseño. ``ValueError`` si una superficie no es de la forma de la ventana (error del programa)."""
+    window = outcome.window
+    here = job.start[window]
+    sub = _window_grid(job.grid, window)
+    differing: list[str] = []
+    found: list[Notice] = []
+    for index, other in enumerate(names):
+        values = np.asarray(read_other(other, window), dtype=np.float64)
+        if values.shape != here.shape:
+            raise ValueError(f"la superficie de «{other}» es de la forma {values.shape} y la ventana de trabajo de la corta, {here.shape}")
+        differs = other_design_notices(outcome.name, sub, outcome.footprint, here, {other: values}, min_thickness_m, code=OTHER_DESIGN_DIFFERS)
+        if differs:
+            differing.append(other)
+            found.extend(differs)
+        yield Progress(_OTHERS_PHASE, index + 1, len(names), f"Comparada la partida de «{outcome.name}» con «{other}»")
+    return tuple(differing), tuple(found)
+
+
+def compare_others(project: StoreProject, prepared: PreparedPit, outcome: PitOutcome, *, supersedes: str | None = None
+                   ) -> Generator[Progress, None, PitOutcome]:
+    """Los otros diseños de la versión de ``prepared`` (:func:`~design.road_store.other_designs`: los que no tienen a la partida como ancestro; ``supersedes``: la operación que se
+    recalcula, que no cuenta) frente a su partida en la huella (:func:`other_designs_steps`, con el espesor mínimo de ``prepared.common``): devuelve ``outcome`` con ``other_designs`` y,
+    tras sus avisos, el de cada uno que difiere. **Solo lee.** Sin otros diseños, el mismo ``outcome``."""
+    names = other_designs(project, prepared.version, prepared.start_surface, own=supersedes)
+    if not names:
+        return outcome
+    thickness = _thickness(_project_number(prepared.common, VERIFY_MIN_THICKNESS))
+    differing, notices = yield from other_designs_steps(prepared.job, outcome, names, other_reader(project, prepared.version), thickness)
+    if not differing:
+        return outcome
+    return replace(outcome, other_designs=differing, notices=(*outcome.notices, *notices))
+
+
+def pit_obsolete(project: StoreProject, prepared: PreparedPit, *, supersedes: str | None = None) -> tuple[Obsolete, ...]:
+    """**Lo que quedará obsoleto al crear** la corta ``prepared`` (RF-015-03, RF-015-16): una corta nueva no deja nada obsoleto (lo que se apoye después en ella sale de su vigencia,
+    no de su creación); la que **sustituye** una operación (``supersedes``: un recálculo) deja obsoleto lo que dependía de lo que escribió, en cascada (``DEPENDENT``). Solo lee."""
+    if supersedes is None:
+        return ()
+    with project.read() as conn:
+        written = [str(row[0]) for row in conn.execute(
+            "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'out' AND item_kind = 'dataset' ORDER BY fid", (supersedes,))]
+        found = entity_store._dependents(conn, written, prepared.version.uid, exclude=(supersedes,))
+    return tuple(entity_store._consumer(ObsoleteKind.DEPENDENT, uid, op_type, name) for uid, op_type, name in found)
+
+
+def summary_of(outcome: PitOutcome, *, version: str, profile: str, obsolete: Sequence[Obsolete] = ()) -> PitSummary:
+    """El resumen de «Calcular» la corta de ``outcome`` (RF-015-03, RF-018-03, RF-018-19; **puro**: sin proyecto) como :class:`~design.preview.PitSummary`: las cifras que se
+    registrarán, los bancos, el corte, el área, los hallazgos, las rampas con las **medias por encima de pm sin confirmar** (``outcome.extra["mean_pending"]``) y los avisos en
+    el orden en que se enseñan: los del cálculo y, al final, lo que quedará obsoleto (``obsolete``) con su causa. ``version``: el código de la versión; ``profile``: el del perfil base."""
+    found = {figure.key: figure.value for figure in outcome.figures}
+    pending = tuple((str(code), float(mean), float(limit)) for code, mean, limit in outcome.extra.get("mean_pending", ()))
+    kept = tuple(obsolete)
+    benches = found.get("des.pit_benches")
+    return PitSummary(
+        outcome.name, outcome.code, version, str(PitMode(outcome.mode).value), profile, outcome.figures, 0 if benches is None else int(benches), found.get("des.pit_cut_m3"),
+        found.get("des.pit_area_m2"), len(outcome.findings), tuple(item.code for item in outcome.ramps), pending, bool(pending),
+        (*outcome.notices, *obsolete_notices(outcome.name, version, kept)), kept)
+
+
+def pit_summary(project: StoreProject, prepared: PreparedPit, outcome: PitOutcome, *, supersedes: str | None = None) -> PitSummary:
+    """El resumen de «Calcular» la corta ``prepared`` (:func:`summary_of` con lo que quedará obsoleto al crearla: :func:`pit_obsolete`; ``supersedes``: la operación que sustituye).
+    **Solo lee.**"""
+    job = prepared.job
+    profile = "" if job.profile is None else job.profile.code
+    return summary_of(outcome, version=prepared.version.code, profile=profile, obsolete=pit_obsolete(project, prepared, supersedes=supersedes))

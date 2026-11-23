@@ -3982,6 +3982,15 @@ CATALOG: tuple[Message, ...] = (
         "warning",
     ),
     # T22 (RF-018-10): el cálculo se rechaza si algún desfase no se pudo verificar; nunca en silencio.
+    # T22b (RF-018-03): como el de la pista (RF-017-05 (b)), un aviso que no impide crearla.
+    Message(
+        "des.pit_other_design_differs",
+        "Pit «{entity}»: its start surface differs by more than the minimum thickness from that of «{other}», a design that does not start from it, over {area} m² "
+        "(largest difference {difference} m, at x = {x} m, y = {y} m): a fill that the pit does not take into account; it can still be created.",
+        "Corta «{entity}»: su superficie de partida difiere en más del espesor mínimo de la de «{other}», un diseño que no parte de ella, en {area} m² (diferencia "
+        "máxima {difference} m, en x = {x} m, y = {y} m): un relleno que la corta no tiene en cuenta; se puede crear igualmente.",
+        "warning",
+    ),
     Message(
         "des.pit_offset_not_verified",
         "Pit «{name}»: the offset of bench {bench} could not be verified (defect {value} m, over {limit} m); the calculation is rejected and nothing "

@@ -110,6 +110,7 @@ __all__ = [
     "Notice",
     "Obsolete",
     "ObsoleteKind",
+    "PitSummary",
     "PlatformSummary",
     "PreviewSummary",
     "QuarryPreview",
@@ -984,6 +985,43 @@ class ButtressSummary:
     height_max_y: float | None
     protect: bool
     guard_m: float | None
+    notices: tuple[Notice, ...]
+    obsolete: tuple[Obsolete, ...] = ()
+
+    def lines(self, language: str = "es") -> tuple[str, ...]:
+        """Todo lo que dice el resumen, línea a línea, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices)
+
+    def warnings(self, language: str = "es") -> tuple[str, ...]:
+        """Solo los avisos, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices if notice.severity == "warning")
+
+
+# --- El resumen de la corta (spec 018, T22b; RF-018-03, RF-018-19, RF-018-31, RF-015-03) ---------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class PitSummary:
+    """El resumen de «Calcular» una corta (RF-015-03, RF-018-03): su ``name`` y su ``code`` (``PIT-001``), la ``version`` (su código), el ``mode`` (``up`` o ``down``), el código
+    del ``profile`` base (vacío si todo sector lleva el suyo), las ``figures`` que se registrarán (CALCULADO, con su unidad y el ámbito de la entidad), los ``benches``, el ``cut_m3``
+    y el ``area_m2`` (``None`` si la cifra no está), el número de ``findings`` (RF-018-26: van en el informe y en su capa, no aquí), los códigos de las ``ramps``, **las rampas cuya
+    pendiente media pasa de pm y aún no tienen confirmación** (``mean_pending``: ``(código, media %, pm %)``; ``needs_mean_confirmation``: hay alguna, y sin confirmarlas «Crear» se
+    rechaza, RF-018-19), los ``notices`` en el orden en que se enseñan (los del cálculo y, al final, lo que quedará obsoleto) y ``obsolete``, lo que quedará obsoleto al crearla (si
+    sustituye a otra operación), con su lista entera."""
+
+    name: str
+    code: str
+    version: str
+    mode: str
+    profile: str
+    figures: tuple[FigureSpec, ...]
+    benches: int
+    cut_m3: float | None
+    area_m2: float | None
+    findings: int
+    ramps: tuple[str, ...]
+    mean_pending: tuple[tuple[str, float, float], ...]
+    needs_mean_confirmation: bool
     notices: tuple[Notice, ...]
     obsolete: tuple[Obsolete, ...] = ()
 
