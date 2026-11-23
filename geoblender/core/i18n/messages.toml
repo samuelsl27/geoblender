@@ -11709,3 +11709,78 @@ es = "Roseta de taludes de la corta de un sector"
 es = "Bancos entre bermas de un sector"
 
 # --- Fin del tipo corta (spec 018, T02)
+
+["Real face slope out of the limit: {value} {unit} (limit {limit} {unit})"]
+es = "Inclinación real de la cara fuera del límite: {value} {unit} (límite {limit} {unit})"
+
+["Real berm narrower than asked: {value} {unit} (limit {limit} {unit})"]
+es = "Berma real menor que la pedida: {value} {unit} (límite {limit} {unit})"
+
+["Floor narrower than the minimum: {value} {unit} (limit {limit} {unit})"]
+es = "Fondo más estrecho que el mínimo: {value} {unit} (límite {limit} {unit})"
+
+["Crest outside the perimeter of action: {value} {unit}"]
+es = "Cresta fuera del perímetro de actuación: {value} {unit}"
+
+["Crest over an untouchable area: {value} {unit}"]
+es = "Cresta sobre un área intocable: {value} {unit}"
+
+["Area not excavated because of a restriction: {value} {unit}"]
+es = "Área sin excavar por una restricción: {value} {unit}"
+
+["Ramp requirement not met: {detail}"]
+es = "Incumplimiento de la rampa: {detail}"
+
+["Bench without a profile"]
+es = "Banco sin perfil"
+
+["{text} · bench {bench}"]
+es = "{text} · banco {bench}"
+
+["Face towards {azimuth}° · α {face}° · B {berm} m ({start}° to {end}°)"]
+es = "Cara hacia {azimuth}° · α {face}° · B {berm} m ({start}° a {end}°)"
+
+["«{sector}»: {text}"]
+es = "«{sector}»: {text}"
+
+["Polygons the pit starts from (floors or limits)"]
+es = "Polígonos de los que parte la corta (fondos o límites)"
+
+["Face direction of each range of the rose: towards where it descends"]
+es = "Dirección de la cara de cada rango de la roseta: hacia donde baja"
+
+["Start of the ramps"]
+es = "Inicio de las rampas"
+
+["Zones without a ramp"]
+es = "Zonas sin rampa"
+
+["Fixed benches (lines of the user)"]
+es = "Bancos fijados (líneas de la persona)"
+
+["Foot of a bench"]
+es = "Pie de banco"
+
+["Crest of a bench"]
+es = "Cresta de banco"
+
+["Benches ({count}): one colour each; the colours repeat"]
+es = "Bancos ({count}): cada banco, de un color; los colores se repiten"
+
+["Skyline"]
+es = "Línea de cielo"
+
+["Axis of each ramp: the arrow shows its sense"]
+es = "Eje de cada rampa: la flecha muestra su sentido"
+
+["Findings ({count})"]
+es = "Hallazgos ({count})"
+
+["Start of «{ramp}»: {name}"]
+es = "Inicio de «{ramp}»: {name}"
+
+["Start of «{ramp}»"]
+es = "Inicio de «{ramp}»"
+
+["Ramp «{code}»: {length} m · {gradient} % mean"]
+es = "Rampa «{code}»: {length} m · {gradient} % de media"

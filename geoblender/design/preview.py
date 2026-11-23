@@ -110,6 +110,13 @@ __all__ = [
     "Notice",
     "Obsolete",
     "ObsoleteKind",
+    "PitArrow",
+    "PitAsk",
+    "PitLine",
+    "PitPreview",
+    "PitRampLine",
+    "PitShape",
+    "PitStart",
     "PitSummary",
     "PlatformSummary",
     "PreviewSummary",
@@ -126,6 +133,7 @@ __all__ = [
     "StockpileLine",
     "StockpilePreview",
     "StockpileSummary",
+    "pit_preview_steps",
     "buttress_preview_steps",
     "entity_preview_steps",
     "gradient_stretches",
@@ -162,6 +170,7 @@ _CODE_DECIMALS: Mapping[str, Mapping[str, int]] = MappingProxyType({
     "des.stockpile_candidate_item": MappingProxyType({"level": 2, "slope": 2}),
     "des.body_sections_large": MappingProxyType({"limit": 0}),
     "des.preview_buttress_crown": MappingProxyType({"crown": 2}),
+    "des.preview_pit_calculated": MappingProxyType({"cut": 0}),
     "des.removal_kept": MappingProxyType({"volume": 0}),
     "des.road_mean_gradient": MappingProxyType({"mean": 2, "limit": 2}),
     "des.propose_mean_gradient": MappingProxyType({"mean": 2, "limit": 2}),
@@ -1877,3 +1886,147 @@ def road_preview_steps(project: StoreProject, ask: RoadAsk, version_uid: str, *,
 
     return pace_progress(road_store.preview_road_units(project, ask, version_uid, budget_s=budget_s), budget_s, phase=_ROAD_PHASE, running="Preparando la vista previa de la pista…",
                          finished="Vista previa de la pista lista", total=10)
+
+
+# --- La vista previa de la corta (spec 018, T29; HU-018-1, HU-018-4; RF-018-32, RF-015-26; plan 018 §5.5) ------------------------------------------------------------------------------------
+
+_PIT_PHASE = "preview_pit"
+PIT_COLOR_BY = ("bench", "type")
+"""Cómo se colorean las polilíneas de una corta tras calcular: por banco o por tipo (pie, cresta)."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PitAsk:
+    """De qué corta se pide la vista previa (RF-018-32; una sola cosa): la que **se prepara** (``request``, la ``design.pit_model.PitRequest`` de «Nueva corta…») o **una de la versión** (``code``, su
+    código). Con ``request`` puede traer lo que ya hizo «Calcular»: la preparación (``prepared``, la ``design.pit_store.PreparedPit``: con ella no se repite) y el resultado (``outcome``, la
+    ``design.pit_model.PitOutcome``: la vista previa es la de **tras calcular**). ``by``: ``bench`` o ``type``, cómo se colorean las polilíneas. Lo que no cuadra: ``ValueError``."""
+
+    request: Any = None
+    code: str | None = None
+    prepared: Any = None
+    outcome: Any = None
+    by: str = "bench"
+
+    def __post_init__(self) -> None:
+        if (self.request is None) == (self.code is None):
+            raise ValueError("la vista previa de una corta es de la que se prepara (su petición) o de una de la versión (su código), no de las dos ni de ninguna")
+        if self.code is not None and (self.prepared is not None or self.outcome is not None):
+            raise ValueError("lo que ya hizo «Calcular» es de la corta que se prepara, no de una de la versión")
+        if self.by not in PIT_COLOR_BY:
+            raise ValueError(f"las polilíneas se colorean por {' o '.join(PIT_COLOR_BY)}, no por {self.by!r}")
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PitShape:
+    """Un polígono de la vista previa de una corta: su ``name``, sus anillos (``(k, 2)`` absolutos) y su cota ``level_m`` si la lleva."""
+
+    name: str
+    rings: tuple[np.ndarray, ...]
+    level_m: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PitArrow:
+    """La flecha de un rango de la roseta (RF-018-32): sale de ``(x, y)`` (absolutos) hacia el ``azimuth_deg`` (el medio del rango, desde el norte hacia el este: **hacia donde baja la cara**) y mide
+    ``length_m`` m; lleva el rango (``from_deg``, ``to_deg``), la inclinación de cara ``face_deg``, la berma ``berm_m`` y el ``sector`` (``""``: la roseta de la corta)."""
+
+    x: float
+    y: float
+    azimuth_deg: float
+    length_m: float
+    from_deg: float
+    to_deg: float
+    face_deg: float
+    berm_m: float
+    sector: str = ""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PitLine:
+    """Una línea con su Z de la vista previa de una corta: su ``kind`` (``foot``, ``crest``, ``fixed`` o ``sky``), el ``bench`` (``None`` si no es de uno) y sus ``vertices`` ``(k, 3)`` absolutos."""
+
+    kind: str
+    bench: int | None
+    vertices: np.ndarray
+    closed: bool = False
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PitRampLine:
+    """El eje de una rampa (``axis`` ``(k, 3)``), con su código, el banco de arriba, su longitud en planta (m) y su pendiente media y máxima (%)."""
+
+    code: str
+    bench: int
+    axis: np.ndarray
+    length_m: float
+    gradient_mean_pct: float
+    gradient_max_pct: float
+
+
+@dataclass(frozen=True, slots=True)
+class PitStart:
+    """El punto de inicio de una rampa leído de su capa (``x``, ``y`` absolutos)."""
+
+    ramp: str
+    x: float
+    y: float
+    name: str = ""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PitPreview:
+    """Lo que enseña la vista previa de una corta (RF-018-32): su ``name`` y su ``code``, la ``version``, el estado de las máscaras, el ``mode``, la superficie de partida (``start_surface``), el
+    ``profile`` y el lado de las celdas (``cell_m``).
+
+    **Antes de calcular**: los polígonos de fondo o de límite (``sources``), los de cada sector (``sectors``), una flecha por rango de roseta (``arrows``), el inicio de las rampas (``starts``), las zonas
+    sin rampa (``noramp``: anillos) y los bancos fijados (``fixed``). **Tras calcular** (``calculated``): las ``polylines`` por banco o por tipo (``by``), la línea de cielo (``skyline``), el eje de
+    cada rampa (``ramps``), los ``findings`` (``design.pit_model.Finding``, cada uno en su lugar), los números de banco (``bench_numbers``), el criterio que paró y el corte (``cut_m3``).
+
+    Con las máscaras sin estar al día, o con el rechazo de «Calcular» (``refusal``), no hay dibujo, solo el aviso."""
+
+    name: str
+    code: str
+    version: str
+    masks: MaskState
+    mode: str = ""
+    start_surface: str = ""
+    profile: str = ""
+    cell_m: float = 0.0
+    by: str = "bench"
+    sources: tuple[PitShape, ...] = ()
+    sectors: tuple[PitShape, ...] = ()
+    arrows: tuple[PitArrow, ...] = ()
+    starts: tuple[PitStart, ...] = ()
+    noramp: tuple[np.ndarray, ...] = ()
+    fixed: tuple[PitLine, ...] = ()
+    calculated: bool = False
+    polylines: tuple[PitLine, ...] = ()
+    skyline: tuple[PitLine, ...] = ()
+    ramps: tuple[PitRampLine, ...] = ()
+    findings: tuple[Any, ...] = ()
+    bench_numbers: tuple[int, ...] = ()
+    stop: str | None = None
+    cut_m3: float | None = None
+    notices: tuple[Notice, ...] = ()
+    refusal: GeoblenderError | None = None
+
+    @property
+    def drawable(self) -> bool:
+        """Si hay algo que dibujar: sin máscaras al día, sin resultado o rechazada, no."""
+        return bool(self.sources or self.sectors or self.arrows or self.starts or self.noramp or self.fixed or self.polylines or self.skyline or self.ramps)
+
+    def lines(self, language: str = "es") -> tuple[tuple[str, bool], ...]:
+        """Todo lo que dice la vista previa en ``language``, línea a línea con si va en alerta."""
+        return _preview_lines(self.refusal, self.notices, language)
+
+
+def pit_preview_steps(project: StoreProject, ask: PitAsk, version_uid: str, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """El :class:`PitPreview` de ``ask`` (:class:`PitAsk`) para la versión ``version_uid``, por pasos de ``budget_s`` como mucho: el último ``Progress`` lleva el resumen. **Solo lee** (RF-015-26): la
+    preparación entera de la corta (``design.pit_store.prepare_pit_units``) o, tras calcular, lo que dejó «Calcular»; no calcula ni escribe nada. Un rechazo de la preparación no es un error: es
+    ``PitPreview.refusal``. Cerrar los pasos a mitad no deja nada."""
+    if not isinstance(ask, PitAsk):
+        raise TypeError(f"la vista previa de una corta se pide con PitAsk, no con {ask!r}")
+    from . import pit_preview  # al usarlo: pit_preview importa Notice de aquí y es un módulo pesado
+
+    return pace_progress(pit_preview.preview_pit_units(project, ask, version_uid), budget_s, phase=_PIT_PHASE, running="Preparando la vista previa de la corta…",
+                         finished="Vista previa de la corta lista", total=10)

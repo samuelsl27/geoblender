@@ -183,13 +183,14 @@ class EntityPlan:
     stockpile: Any = None
     buttress: Any = None
     road: Any = None
+    pit: Any = None
 
     def __post_init__(self) -> None:
-        asked = [name for name in ("request", "code", "stockpile", "buttress", "road") if getattr(self, name) is not None]
+        asked = [name for name in ("request", "code", "stockpile", "buttress", "road", "pit") if getattr(self, name) is not None]
         if len(asked) != 1:
             raise ValueError("la vista previa de una entidad es de una sola cosa: la plataforma que se prepara (su petición), una "
                              "entidad de la versión (su código), las marcas de una detección de acopios, la zona de coronación "
-                             "de un contrafuerte o una pista, no de dos ni de ninguna")
+                             "de un contrafuerte, una pista o una corta, no de dos ni de ninguna")
         if self.insert_before is not None and self.request is None:
             raise ValueError("una inserción se previsualiza con la plataforma que se prepara (su petición), no con una "
                              "entidad que ya está en la versión")
@@ -203,6 +204,8 @@ class EntityPlan:
             return "buttress"
         if self.road is not None:
             return "road"
+        if self.pit is not None:
+            return "pit"
         return "platform" if self.request is not None else "entity"
 
 
@@ -357,6 +360,10 @@ def _build(request: Request, budget_s: float) -> Generator[None, None, tuple[des
         return (yield from _build_buttress(request, budget_s))
     if kind == "road":
         return (yield from _build_road(request, budget_s))
+    if kind == "pit":
+        from . import pit as pit_draw  # al usarlo: pit importa de aquí
+
+        return (yield from pit_draw.build_pit(request, budget_s))
     return (yield from _build_platform(request, budget_s))
 
 

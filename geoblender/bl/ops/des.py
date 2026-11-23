@@ -5938,7 +5938,7 @@ class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperat
         que recalcularía: ``design.provenance.stockpile_request`` y ``buttress_request``). Una retirada y un cuerpo apoyado no tienen vista
         previa (RF-016-23 solo pide las marcas y la zona de coronación). :class:`ValueError` si no la tiene o la entidad no está calculada."""
         from ...design import entities, entity_store  # al usarlo: habilitar no carga el cálculo
-        from ...design.preview import RoadAsk
+        from ...design.preview import PitAsk, RoadAsk
 
         preview = _entity_preview()
         record = entry.record
@@ -5946,6 +5946,8 @@ class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperat
             return preview.EntityPlan(code=record.code)
         if record.kind == entities.EntityKind.ROAD:  # su eje guardado, con la rasante por tramos y lo que se le apoya (spec 017, T28; RF-017-26); sin calcular, lo dice la vista previa
             return preview.EntityPlan(road=RoadAsk(code=record.code))
+        if record.kind == entities.EntityKind.PIT:  # sus polilíneas, su línea de cielo, sus rampas y sus hallazgos guardados (spec 018, T29; RF-018-32); sin calcular, lo dice la vista previa
+            return preview.EntityPlan(pit=PitAsk(code=record.code))
         label = entities.entity_type(record.kind).params.label
         if record.kind not in (entities.EntityKind.STOCKPILE, entities.EntityKind.BUTTRESS):
             raise ValueError(tr("«{name}» ({kind}) has no preview: only a platform, a detection of stockpiles (its marks), a buttress "

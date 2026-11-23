@@ -2298,6 +2298,35 @@ CATALOG: tuple[Message, ...] = (
         "(la media máxima del perfil, {limit} %); sección de {section} m (calzada de {carriageway} m).",
         "note",
     ),
+    # La vista previa de la corta por bancos (spec 018, T29; RF-018-32): lo que dice antes de calcular, tras calcular y de una corta de la versión.
+    Message(
+        "des.preview_pit_before",
+        "Preview of «{entity}» ({code}) in {version}: pit on «{surface}»; polygons: {sources}, face direction arrows: {arrows}, ramp starts: {starts}, no-ramp zones: {noramp}, fixed benches: {fixed}; "
+        "nothing is calculated or written.",
+        "Vista previa de «{entity}» ({code}) en {version}: corta sobre «{surface}»; polígonos: {sources}, flechas de la dirección de la cara: {arrows}, inicios de rampa: {starts}, zonas sin rampa: "
+        "{noramp}, bancos fijados: {fixed}; no se calcula ni se escribe nada.",
+        "note",
+    ),
+    Message(
+        "des.preview_pit_calculated",
+        "Preview of «{entity}» ({code}) in {version}, as left by «Calculate»: {benches} benches, {cut} m³ of cut, ramps: {ramps}, findings: {findings}; nothing is written.",
+        "Vista previa de «{entity}» ({code}) en {version}, tal como la dejó «Calcular»: {benches} bancos, {cut} m³ de corte, rampas: {ramps}, hallazgos: {findings}; no "
+        "se escribe nada.",
+        "note",
+        "benches",
+        "Preview of «{entity}» ({code}) in {version}, as left by «Calculate»: {benches} bench, {cut} m³ of cut, ramps: {ramps}, findings: {findings}; nothing is written.",
+        "Vista previa de «{entity}» ({code}) en {version}, tal como la dejó «Calcular»: {benches} banco, {cut} m³ de corte, rampas: {ramps}, hallazgos: {findings}; no "
+        "se escribe nada.",
+    ),
+    Message(
+        "des.preview_pit_stored",
+        "Preview of «{entity}» ({code}) in {version}: {benches} benches stored in the version, ramps: {ramps}, findings: {findings}.",
+        "Vista previa de «{entity}» ({code}) en {version}: {benches} bancos guardados en la versión, rampas: {ramps}, hallazgos: {findings}.",
+        "note",
+        "benches",
+        "Preview of «{entity}» ({code}) in {version}: {benches} bench stored in the version, ramps: {ramps}, findings: {findings}.",
+        "Vista previa de «{entity}» ({code}) en {version}: {benches} banco guardado en la versión, rampas: {ramps}, hallazgos: {findings}.",
+    ),
     # La vista previa de «Proponer el trazado…» (T44, D-1; RF-017-26, RF-017-28): una propuesta no es una entidad (sin código) y no tiene sección ni borde: lo que dice antes de calcular y tras calcular.
     Message(
         "des.preview_propose_trace",
