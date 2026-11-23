@@ -87,10 +87,11 @@ COLORS: dict[str, tuple[float, float, float, float]] = {
     "buttress": (0.5, 0.4, 0.8, 1.0),
     "body": (0.3, 0.55, 0.85, 1.0),
     "road": (0.9, 0.82, 0.15, 1.0),
+    "pit": (0.62, 0.42, 0.28, 1.0),
 }
 """El color (RGBA, 0 a 1) del objeto de cada tipo de entidad (``design.entities.EntityKind``): una ayuda para
 distinguirlo en la vista, no un dato; los cuatro de la 016 (T33) son los de la detección, la retirada, el contrafuerte y el cuerpo y el de la 017 (T31),
-el de la pista. La accesibilidad no tiene: no es un objeto de entidad (lo alcanzable se carga como una rejilla de un diseño, ``bl.scene.des_views``)."""
+el de la pista y el de la 018 (T34), el de la corta por bancos. La accesibilidad no tiene: no es un objeto de entidad (lo alcanzable se carga como una rejilla de un diseño, ``bl.scene.des_views``)."""
 OTHER_COLOR = (0.6, 0.6, 0.6, 1.0)
 """El de un tipo de entidad que aún no tiene color."""
 _CORNER_ROWS = np.array([-1, -1, 0, 0], dtype=np.int64)

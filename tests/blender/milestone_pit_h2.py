@@ -464,6 +464,16 @@ class PitH2Test(unittest.TestCase):
     def hashes(self, *names: str) -> dict[str, tuple[str, ...]]:
         return {name: tuple(self.rows("SELECT content_sha256, status FROM gb_dataset WHERE name = ? AND status = 'current'", name)[0]) for name in names}
 
+    def card(self, code: str, version: Any = None) -> Any:
+        """La ficha de la barra N «Entidad» de ``code`` (``des_panels.entity_card``), en una instantánea de lectura (spec 018, T34)."""
+        panels = _module("bl.ui.des_panels")
+        with self.project.read() as conn:
+            conn.execute("BEGIN")
+            try:
+                return panels.entity_card(self.project, (version or self.v01).uid, code, conn=conn)
+            finally:
+                conn.execute("ROLLBACK")
+
     def run_recompute(self) -> Any:
         """«Recalcular lo obsoleto» con lo que registra la extensión (cada recálculo, en la cola de ``des``: en ``blender -b`` la mueve ``des_tick``)."""
         work = self.recompute.recompute_steps(self.project)
@@ -557,6 +567,29 @@ class PitH2Test(unittest.TestCase):
         self.assertLess(abs(contrast.volume_diff_pct) / 100.0, 1e-2)
         self.assertLess(contrast.above_max_m, HEIGHT)
         REPORT.append(f"E5 contraste con la 013: {contrast.volume_diff_pct:+.3f} % en volumen; por encima, a lo sumo {contrast.above_max_m:.2f} m")
+
+    def test_bb_the_sidebar_of_the_circular_pit_says_what_the_project_stored(self) -> None:
+        """T34 (RF-018-26, RF-018-31, RF-015-25; M5): la barra N de la corta circular, **leída de lo guardado**, dice «Al día», su modo y sus cinco bancos, el volumen de corte de la
+        operación, el volumen de **cada banco** (los de ``des_pbk_``), la línea de cielo, que no tiene rampas y los hallazgos con su número, cada uno con su «Ir a»."""
+        found = self.made["circle"].found
+        card = self.card(found.code)
+        texts = [line.text for line in card.lines]
+        n = self.i18n.format_number
+        figures = {item.key: item.value for item in found.figures}
+        self.assertEqual(texts[0], "Al día")
+        self.assertIn("Corta", texts)
+        self.assertIn("Modo «Ascendente» · bancos: 5", texts)
+        self.assertIn(f"Volumen de corte: {n(figures['des.pit_cut_m3'], 0)} m³", texts)
+        for item in found.benches:
+            self.assertIn(f"Banco {item.bench}: cota de {n(item.z_foot_m, 2)} a {n(item.z_crest_m, 2)} m · corte {n(item.cut_m3, 0)} m³", texts)
+        self.assertIn("Rampas (0)", texts)
+        self.assertTrue(any(text.startswith("Línea de cielo: partes ") for text in texts) or "La corta no tiene línea de cielo" in texts)
+        self.assertIn(f"Hallazgos ({len(found.findings)})", texts)
+        places = [line for line in card.lines if line.kind == "place"]
+        self.assertEqual(len(places), len(found.findings))
+        self.assertTrue(all(line.alert for line in places))
+        self.assertFalse([text for text in texts if "{" in text])
+
 
     def cubicate(self, start: str, final: str) -> Any:
         """La cubicación de la 011 de ``start`` frente a ``final`` (dos rejillas registradas): su ``KernelResult``."""
@@ -876,6 +909,24 @@ class PitH2Test(unittest.TestCase):
         REPORT.append(f"CE-018-08: la esquina, 0 m³ fuera del perímetro y en el intocable; hallazgos {sorted(set(kinds))}; CE-018-09: banco fijado con hash igual")
         type(self).made["fixed"] = SimpleNamespace(uid=uid)
 
+    def test_ib_the_findings_of_the_corner_pit_each_with_its_go_to(self) -> None:
+        """T34 (RF-018-26, CE-018-08; M5): la corta de la esquina (perímetro e intocable) lista **sus hallazgos guardados** en el orden del cálculo, cada uno en alerta y con su «Ir a»: el lugar de
+        su hallazgo (``place_of``; el área sin excavar, con su área para el radio), la longitud de cresta fuera del perímetro y el área sin excavar con su valor."""
+        found = self.made["corner"].found
+        panels = _module("bl.ui.des_panels")
+        card = self.card(found.code)
+        places = [line for line in card.lines if line.kind == panels.ROW_PLACE]
+        wanted = []
+        for item in found.findings[:panels.LIST_LIMIT]:
+            area = float(item.value) if str(item.kind) == "unexcavated" else 0.0
+            wanted.append(";".join(panels.constraint_panels.place_of(item.place[0], item.place[1], area)))
+        self.assertEqual([line.uid for line in places], wanted)
+        self.assertTrue(all(line.alert for line in places))
+        texts = [line.text for line in places]
+        self.assertTrue(any(text.startswith("Cresta fuera del perímetro de actuación") for text in texts), texts)
+        self.assertTrue(any(text.startswith("Área sin excavar por una restricción") for text in texts), texts)
+        self.assertIn(f"Hallazgos ({len(found.findings)})", [line.text for line in card.lines])
+
     def surface_start(self, label: str, values: np.ndarray) -> np.ndarray:
         return values
 
@@ -1048,6 +1099,10 @@ class PitH2Test(unittest.TestCase):
         for entity in ("PLT-001", "RDW-001", code2):
             self.assertTrue(self.stale_causes(self.current(self.v02, entity)), f"{entity} queda obsoleta en cascada")
         self.assertEqual([self.stale_causes(self.current(self.v01, "PIT-001"))][0], set(), "lo de V01 no cambia: el valor es de V02")
+        stale = self.card(code, self.v02)  # T34: la corta obsoleta dice su causa, en alerta, y sigue enseñando lo que guardó
+        self.assertTrue(stale.lines[0].alert)
+        self.assertNotEqual(stale.lines[0].text, "Al día")
+        self.assertIn("Corta", [line.text for line in stale.lines])
         outcome = self.run_recompute()
         made = [str(uid) for result in outcome.results for uid in result.operations]
         types = [self.rows("SELECT op_type FROM gb_operation WHERE uid = ?", uid)[0][0] for uid in made[:3]]
@@ -1082,6 +1137,9 @@ class PitH2Test(unittest.TestCase):
         outcome = self.run_recompute()
         self.assertEqual(sum(len(result.operations) for result in outcome.results if str(result.status) == "done"), 0, "no rehace lo que perdió su apoyo")
         self.assertEqual(self.rows("SELECT uid FROM gb_operation ORDER BY fid"), before)
+        discarded, removed_card = self.card(code, self.v02), self.card(code2, self.v02)  # T34: el estado de la corta descartada y de la de «apoyo retirado»
+        self.assertTrue(discarded.lines[0].text.startswith("Descartada") and discarded.lines[0].alert, discarded.lines[0].text)
+        self.assertTrue(removed_card.lines[0].text.startswith("Apoyo retirado") and removed_card.lines[0].alert, removed_card.lines[0].text)
         retired = {row.entity: row for row in self.entities.retired_supports(self.project, self.v02.uid)}
         self.assertEqual((retired["PLT-001"].releasable, retired[code2].releasable), (False, True))
         with self.assertRaises(self.messages.DesignError) as caught:

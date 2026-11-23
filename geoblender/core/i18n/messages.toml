@@ -9310,8 +9310,8 @@ es = "Zona de una restricción declarada por una entidad"
 ["Design entity"]
 es = "Entidad de diseño"
 
-["A design entity (a platform, a haul road, the removal of a stockpile, a buttress or a supported body) or a stockpile detection, drawn by its footprint (a haul road, also by its 3D axis)"]
-es = "Una entidad de diseño (una plataforma, una pista, la retirada de un acopio, un contrafuerte o un cuerpo apoyado) o una detección de acopios, dibujada por su huella (una pista, también por su eje 3D)"
+["A design entity (a platform, a haul road, the removal of a stockpile, a buttress, a supported body or a pit by benches) or a stockpile detection, drawn by its footprint (a haul road, also by its 3D axis)"]
+es = "Una entidad de diseño (una plataforma, una pista, la retirada de un acopio, un contrafuerte, un cuerpo apoyado o una corta por bancos) o una detección de acopios, dibujada por su huella (una pista, también por su eje 3D)"
 
 ["Discarded: it stays in the project as a record and is not used"]
 es = "Descartada: queda en el proyecto como registro y no se usa"
@@ -12503,3 +12503,72 @@ es = "Los hallazgos de la corta, con su lugar, como fichero CSV para Excel"
 
 ["Create, when you ask for it, the TIN or the solid of the excavation of a pit as a view (with the warning before creating more triangles than the limit of a view) or write its surface to a GeoTIFF or its findings to a CSV; it writes nothing in the project"]
 es = "Crea, a petición, el TIN o el sólido de excavación de una corta como vista (con el aviso antes de crear más triángulos que el límite de una vista) o escribe su superficie a GeoTIFF o sus hallazgos a CSV; no escribe nada en el proyecto"
+
+["The project has no report of this pit"]
+es = "El proyecto no tiene el informe de esta corta"
+
+["Mode «{mode}» · benches: {benches}"]
+es = "Modo «{mode}» · bancos: {benches}"
+
+["Stopped by: {criterion}"]
+es = "Parada por: {criterion}"
+
+["it comes out to the surface"]
+es = "sale a la superficie"
+
+["it reaches the top elevation"]
+es = "llega a la cota de coronación"
+
+["the floor reaches the minimum width"]
+es = "el fondo llega al ancho mínimo"
+
+["it reaches the bottom elevation"]
+es = "llega a la cota de fondo"
+
+["it reaches the maximum number of benches"]
+es = "llega al número máximo de bancos"
+
+["Bottom elevation {bottom} m · top elevation {top} m"]
+es = "Cota de fondo {bottom} m · cota de coronación {top} m"
+
+["Length of the toes {foot} m · of the crests {crest} m"]
+es = "Longitud de pies {foot} m · de crestas {crest} m"
+
+["Area: berms {berm} m² · floor {floor} m² · moved {moved} m²"]
+es = "Áreas: bermas {berm} m² · fondo {floor} m² · con movimiento {moved} m²"
+
+["Cut volume: {cut} m³"]
+es = "Volumen de corte: {cut} m³"
+
+["Volume by bench"]
+es = "Volumen por banco"
+
+["Bench {bench}: elevation from {foot} to {crest} m · cut {cut} m³"]
+es = "Banco {bench}: cota de {foot} a {crest} m · corte {cut} m³"
+
+["… and {more} more benches (all of them are in the table of the pit)"]
+es = "… y {more} bancos más (todos están en la tabla de la corta)"
+
+["Skyline: parts {parts} · length {length} m · encloses {area} m² · elevation from {low} to {high} m"]
+es = "Línea de cielo: partes {parts} · longitud {length} m · encierra {area} m² · cota de {low} a {high} m"
+
+["Distance from the skyline to the legal limit: {distance} m"]
+es = "Distancia de la línea de cielo al límite legal: {distance} m"
+
+["Distance from the skyline to the perimeter of the works: {distance} m"]
+es = "Distancia de la línea de cielo al perímetro de actuación: {distance} m"
+
+["The pit has no skyline"]
+es = "La corta no tiene línea de cielo"
+
+["Ramp «{code}» · bench {bench}: length {length} m · mean gradient {mean} % · maximum {max} %"]
+es = "Rampa «{code}» · banco {bench}: longitud {length} m · pendiente media {mean} % · máxima {max} %"
+
+["Findings"]
+es = "Hallazgos"
+
+["No findings: everything that was measured is within its limits"]
+es = "Sin hallazgos: todo lo medido está dentro de sus límites"
+
+["… and {more} more findings (the whole list is in the findings of the pit)"]
+es = "… y {more} hallazgos más (la lista entera está en los hallazgos de la corta)"

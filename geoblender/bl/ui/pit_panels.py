@@ -30,6 +30,7 @@ from ...design.params import BenchParam, PitRampParam, RoadProfileParam, RosePar
 from ..scene import versions as scene_versions
 from . import des_panels, labels, provenance
 from .res_panels import NOT_SHOWN
+from .view_panels import ROW_FIELD, ROW_HEADING, ROW_NONE, CardLine
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
 TRANSLATION_CONTEXT = "Geoblender"
@@ -442,6 +443,86 @@ class GEOBLENDER_PT_des_pit_ramps(bpy.types.Panel):
 
     def draw(self, context: Any) -> None:
         draw_ramps(self.layout, context)
+
+
+# --- La barra N «Entidad» y «Elemento activo» de una corta (spec 018, T34; RF-018-26, RF-015-25; M5) ------------------------------------------------
+
+
+_MODE_TEXT = {"up": "Ascending", "down": "Descending"}
+_STOP_TEXT = {"surface": "it comes out to the surface", "top_level": "it reaches the top elevation", "floor_width": "the floor reaches the minimum width",
+              "bottom_level": "it reaches the bottom elevation", "max_benches": "it reaches the maximum number of benches"}
+"""El texto (``msgid``) de cada modo de la corta y de cada criterio que la paró (``design.pit_model.PitMode`` y ``StopCriterion``)."""
+
+
+def _num(value: float | None, decimals: int = 0) -> str:
+    return des_panels._number(value, decimals)
+
+
+def _place_line(text: str, place: tuple[float, float], area_m2: float, *, alert: bool) -> CardLine:
+    """Una fila con su «Ir a» (``ROW_PLACE``: ``x;y;radio`` de ``place_of``, el de las listas de la accesibilidad)."""
+    return CardLine(des_panels.ROW_PLACE, text, alert=alert, uid=";".join(des_panels.constraint_panels.place_of(place[0], place[1], area_m2)))
+
+
+def _finding_line(found: Any) -> CardLine:
+    """Un hallazgo (``design.pit_model.Finding``) en la barra N: su texto (el de la leyenda de la vista previa, con su banco), siempre en alerta, con su «Ir a»; el área sin excavar da el radio."""
+    from ..draw import pit as pit_draw  # el texto de un hallazgo es uno: el de su leyenda en la vista
+
+    unit = str(getattr(found.kind, "value", found.kind))
+    area = float(found.value) if unit == "unexcavated" and found.value is not None else 0.0
+    return _place_line(pit_draw._finding_text(found), found.place, area, alert=True)
+
+
+def pit_card_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any, stored: Any) -> list[CardLine]:
+    """Lo que dice la barra N de una **corta** (spec 018, T34; RF-018-26, RF-018-29, RF-018-31, RF-015-25; M5), **leído de lo guardado** de su operación vigente (``design.pit_card``; nada se calcula):
+    su **modo y sus bancos**, por qué paró, las cotas de fondo y de coronación, la longitud de pies y de crestas, las áreas de bermas, de fondo y con movimiento, el volumen de corte y **el de cada banco**
+    (los primeros ``LIST_LIMIT``), la **línea de cielo** con sus distancias al límite legal y al perímetro, las **rampas** (longitud, pendiente media y máxima, con su «Ir a» al inicio), los avisos del
+    cálculo y **la lista de hallazgos, cada uno en alerta y con su «Ir a»**. El estado de la corta con su causa es el de cualquier entidad (:func:`des_panels._entity_state_line`)."""
+    from ...design import pit_card
+
+    shown = language()
+    mode = stored.get("mode") if hasattr(stored, "get") else None
+    mode_text = NOT_SHOWN if mode is None or mode.value is None else translate(shown, _MODE_TEXT.get(str(mode.value), str(mode.value)))
+    lines = [CardLine(ROW_HEADING, tr("Pit"))]
+    facts = pit_card.read_pit_facts(conn, str(entry.operation_uid))
+    if facts is None:
+        return [*lines, CardLine(ROW_NONE, tr("The project has no report of this pit"))]
+    got = facts.figures.get
+    lines.append(CardLine(ROW_FIELD, tr("Mode «{mode}» · benches: {benches}", mode=mode_text, benches=_num(got("benches")))))
+    if facts.stop in _STOP_TEXT:
+        lines.append(CardLine(ROW_FIELD, tr("Stopped by: {criterion}", criterion=translate(shown, _STOP_TEXT[str(facts.stop)]))))
+    lines += [CardLine(ROW_FIELD, tr("Bottom elevation {bottom} m · top elevation {top} m", bottom=_num(got("z_bottom_m"), 2), top=_num(got("z_top_m"), 2))),
+              CardLine(ROW_FIELD, tr("Length of the toes {foot} m · of the crests {crest} m", foot=_num(got("len_foot_m"), 1), crest=_num(got("len_crest_m"), 1))),
+              CardLine(ROW_FIELD, tr("Area: berms {berm} m² · floor {floor} m² · moved {moved} m²", berm=_num(got("area_berm_m2")), floor=_num(got("area_floor_m2")),
+                                     moved=_num(got("area_m2")))),
+              CardLine(ROW_FIELD, tr("Cut volume: {cut} m³", cut=_num(got("cut_m3"))))]
+    limit = des_panels.LIST_LIMIT
+    if facts.benches:
+        lines.append(CardLine(ROW_HEADING, tr("Volume by bench")))
+        lines += [CardLine(ROW_FIELD, tr("Bench {bench}: elevation from {foot} to {crest} m · cut {cut} m³", bench=row.bench, foot=_num(row.z_foot_m, 2), crest=_num(row.z_crest_m, 2),
+                                         cut=_num(row.cut_m3))) for row in facts.benches[:limit]]
+        if len(facts.benches) > limit:
+            lines.append(CardLine(ROW_NONE, tr("… and {more} more benches (all of them are in the table of the pit)", more=len(facts.benches) - limit)))
+    if got("sky_parts"):
+        lines.append(CardLine(ROW_FIELD, tr("Skyline: parts {parts} · length {length} m · encloses {area} m² · elevation from {low} to {high} m", parts=_num(got("sky_parts")),
+                                            length=_num(got("sky_len_m")), area=_num(got("sky_area_m2")), low=_num(got("sky_z_min_m"), 2), high=_num(got("sky_z_max_m"), 2))))
+        if got("sky_dist_legal_m") is not None:
+            lines.append(CardLine(ROW_FIELD, tr("Distance from the skyline to the legal limit: {distance} m", distance=_num(got("sky_dist_legal_m"), 1))))
+        if got("sky_dist_perimeter_m") is not None:
+            lines.append(CardLine(ROW_FIELD, tr("Distance from the skyline to the perimeter of the works: {distance} m", distance=_num(got("sky_dist_perimeter_m"), 1))))
+    else:
+        lines.append(CardLine(ROW_FIELD, tr("The pit has no skyline")))
+    lines.append(CardLine(ROW_HEADING, f"{tr('Ramps')} ({len(facts.ramps)})"))
+    lines += [_place_line(tr("Ramp «{code}» · bench {bench}: length {length} m · mean gradient {mean} % · maximum {max} %", code=ramp.code, bench=ramp.bench, length=_num(ramp.length_m, 1),
+                             mean=_num(ramp.gradient_mean_pct, 2), max=_num(ramp.gradient_max_pct, 2)), (ramp.x, ramp.y), 0.0, alert=False) for ramp in facts.ramps] or [
+        CardLine(ROW_NONE, tr("Nothing to list"))]
+    lines += [CardLine(ROW_FIELD, notice.text(shown), alert=notice.severity == "warning") for notice in facts.notices]
+    lines.append(CardLine(ROW_HEADING, f"{tr('Findings')} ({len(facts.findings)})"))
+    if not facts.findings:
+        return [*lines, CardLine(ROW_NONE, tr("No findings: everything that was measured is within its limits"))]
+    lines += [_finding_line(found) for found in facts.findings[:limit]]
+    if len(facts.findings) > limit:
+        lines.append(CardLine(ROW_NONE, tr("… and {more} more findings (the whole list is in the findings of the pit)", more=len(facts.findings) - limit)))
+    return lines
 
 
 # En orden de registro (las listas, antes de la ventana que las dibuja).

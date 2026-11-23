@@ -3575,7 +3575,7 @@ LIST_LIMIT = 30
 """Cuántos acopios y cuántos candidatos enseña como mucho la barra N de una detección (spec 016, T33): el resto, en una línea («… y 70 acopios
 más»). Una lista de cientos de filas no cabe en una barra; todos están en la tabla del proyecto y en la capa de entidades (T34)."""
 _CHOICES_TEXT = {
-    "mode": {"cut": "In cut", "cut_fill": "In cut and fill", "trace": "Trace", "on_axis": "Over an axis", "axis_3d": "3D axis"},
+    "mode": {"cut": "In cut", "cut_fill": "In cut and fill", "trace": "Trace", "on_axis": "Over an axis", "axis_3d": "3D axis", "up": "Ascending", "down": "Descending"},
     "metric": {"exact": "Exact Euclidean", "chamfer5": "Chamfer 5×5"},
     "sense": {"on_base": "On a base", "under_roof": "Under a roof"},
     "data_from": {"field": "A field", "z": "The Z of the vertices", "m": "The M of the vertices"},
@@ -4037,6 +4037,10 @@ def _type_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any
         return _road_card_lines(project, conn, version, entry, stored)
     if kind == entities.EntityKind.ACCESS:
         return _access_card_lines(project, conn, version, entry)
+    if kind == entities.EntityKind.PIT:  # la corta por bancos (spec 018, T34): su ficha, de lo guardado
+        from . import pit_panels
+
+        return pit_panels.pit_card_lines(project, conn, version, entry, stored)
     report = entity_store.read_entity_report(conn, entry.operation_uid)
     if kind == entities.EntityKind.REMOVAL:
         return _removal_card_lines(project, conn, version, entry, stored, report)

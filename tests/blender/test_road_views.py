@@ -61,7 +61,7 @@ class RoadViewsRegistrationTest(unittest.TestCase):
         self.assertEqual(self.i18n.untranslated([kinds[KIND][1], kinds[KIND][2]]), [])
         self.assertIn("pista", self.i18n.translate("es", kinds[KIND][2]))
         colors = self.entity_views.COLORS
-        self.assertEqual(colors.keys(), {"platform", "stockpile", "removal", "buttress", "body", "road"})
+        self.assertEqual(colors.keys(), {"platform", "stockpile", "removal", "buttress", "body", "road", "pit"})
         self.assertEqual(len(set(colors.values())), len(colors), "cada tipo, su color")
         self.assertNotEqual(colors["road"], self.entity_views.OTHER_COLOR)
         self.assertIn("road", {kind.value for kind in _module("design.entities").EntityKind}, "es el tipo que dice la tabla de la pista")

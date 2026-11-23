@@ -219,8 +219,9 @@ OBJECT_KINDS: list[tuple[str, str, str]] = [
     # huella y su eje. Spec 016 (T33; RF-016-14; plan 016 §5.5): también la retirada de un acopio, el contrafuerte
     # y el cuerpo apoyado, y la detección de acopios (la de una versión o la del proyecto), con la huella de cada acopio.
     # Spec 017 (T31; RF-015-25, RF-017-23; plan 017 §5.1): también la pista, con su huella y su eje 3D (la rasante en la Z).
+    # Spec 018 (T34; RF-018-34; plan 018 §5.5): también la corta por bancos, con su huella (el área con movimiento).
     ("DESIGN_ENTITY", "Design entity",
-     "A design entity (a platform, a haul road, the removal of a stockpile, a buttress or a supported body) or a "
+     "A design entity (a platform, a haul road, the removal of a stockpile, a buttress, a supported body or a pit by benches) or a "
      "stockpile detection, drawn by its footprint (a haul road, also by its 3D axis)"),
 ]
 # El estado del dato al cargarlo (gb_dataset.status de un dato vivo, en mayúsculas).

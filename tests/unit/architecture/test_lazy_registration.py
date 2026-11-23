@@ -126,6 +126,8 @@ HEAVY: frozenset[str] = frozenset({
     # Los hallazgos, las cifras y el contraste con la 013 de la corta (spec 018, T20).
     "design.pit_report",
     "design.pit_check013",
+    # Lo que la barra N lee de una corta (spec 018, T34): la barra N lo importa al usarla, no habilitar.
+    "design.pit_card",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 
