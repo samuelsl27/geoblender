@@ -346,10 +346,11 @@ class MainNamesTest(unittest.TestCase):
         nuevos del plan, aún no."""
         entities = import_geoblender("design.entities")
         self.assertIn("pit", {str(getattr(item, "value", item)) for item in entities._TYPES})
-        for module in ("pit_sky", "pit_report", "pit_check013", "pit_store", "pit_layer"):
+        for module in ("pit_report", "pit_check013", "pit_store", "pit_layer"):
             self.assertFalse((EXTENSION_DIR / "design" / f"{module}.py").exists(), module)
         self.assertTrue((EXTENSION_DIR / "gis" / "offset.py").exists())  # T06
         self.assertTrue((EXTENSION_DIR / "design" / "pit_offset.py").exists())  # T08
+        self.assertTrue((EXTENSION_DIR / "design" / "pit_sky.py").exists())  # T19
         self.assertTrue((EXTENSION_DIR / "design" / "pit_bench.py").exists())  # T10
         self.assertTrue((EXTENSION_DIR / "design" / "pit_ramp.py").exists())  # T15
         self.assertTrue((EXTENSION_DIR / "design" / "pit_surface.py").exists())  # T18
