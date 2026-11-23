@@ -12281,3 +12281,120 @@ es = "Longitud mínima de la plataforma de retorno de una rampa en zig-zag en me
 
 ["Why the ramp has these values (recorded in its history)"]
 es = "Por qué la rampa tiene estos valores (queda en su historial)"
+
+["Expanded bench «{name}» in {version}"]
+es = "Banco expandido «{name}» en {version}"
+
+["Expanded bench «{name}»: {kind} at elevation {level} m · 1 line of {length} m"]
+es = "Banco expandido «{name}»: {kind} a la cota {level} m · 1 línea de {length} m"
+
+["Expanded bench «{name}»: {kind} at elevation {level} m · {count} lines, {length} m"]
+es = "Banco expandido «{name}»: {kind} a la cota {level} m · {count} líneas, {length} m"
+
+["crest"]
+es = "cresta"
+
+["foot"]
+es = "pie"
+
+["Face inclination {slope}° (profile: {limit}°)"]
+es = "Inclinación de la cara {slope}° (perfil: {limit}°)"
+
+["Narrowest berm {berm} m (profile: {limit} m)"]
+es = "Berma más estrecha {berm} m (perfil: {limit} m)"
+
+["There are no layers of 3D lines in the project"]
+es = "No hay capas de líneas con Z en el proyecto"
+
+["Polylines of a pit of the active version"]
+es = "Polilíneas de una corta de la versión activa"
+
+["Expanded bench"]
+es = "Banco expandido"
+
+["Write the name of the expanded bench"]
+es = "Escriba el nombre del banco expandido"
+
+["Choose the line to expand: there is no layer of 3D lines in the project"]
+es = "Elija la línea que se expande: no hay ninguna capa de líneas con Z en el proyecto"
+
+["Bench «{name}» expanded in {version}: the layer «{layer}» is editable in QGIS"]
+es = "Banco «{name}» expandido en {version}: la capa «{layer}» se edita en QGIS"
+
+["Saving the expanded bench… {percent} % · Esc: cancel"]
+es = "Guardando el banco expandido… {percent} % · Esc: cancelar"
+
+["Expanding the bench… {percent} % · Esc: cancel"]
+es = "Expandiendo el banco… {percent} % · Esc: cancelar"
+
+["Creation cancelled: the bench has not been expanded and the calculation has been discarded; nothing has been left half-done"]
+es = "Creación cancelada: el banco no se ha expandido y el cálculo se ha descartado; no ha quedado nada a medias"
+
+["Expand bench…"]
+es = "Expandir banco…"
+
+["Expand one bench of a pit of the active version into the next one with its profile: its foot into its crest or the other way round, as a layer of 3D lines that you can edit in QGIS and use as a fixed bench; it changes no surface and is not an entity"]
+es = "Expande un banco de una corta de la versión activa al siguiente con su perfil: su pie en su cresta o al revés, como una capa de líneas con Z que se edita en QGIS y vale como banco fijado; no cambia ninguna superficie ni es una entidad"
+
+["The line says what it is (a layer of polylines of a pit) or it is taken as a foot"]
+es = "La línea dice lo que es (una capa de polilíneas de una corta) o se toma como un pie"
+
+["Foot"]
+es = "Pie"
+
+["Crest"]
+es = "Cresta"
+
+["The line is the foot of a bench: the bench that follows is its crest"]
+es = "La línea es el pie de un banco: el banco que sigue es su cresta"
+
+["The line is the crest of a bench: the bench that follows is its foot"]
+es = "La línea es la cresta de un banco: el banco que sigue es su pie"
+
+["Name of the expanded bench, unique in the active version: the layer of 3D lines is called after it"]
+es = "Nombre del banco expandido, único en la versión activa: la capa de líneas con Z se llama como él"
+
+["Source line"]
+es = "Línea de partida"
+
+["Layer of 3D lines the bench is taken from: the polylines of a pit of the active version, an expanded bench, a proposed route or a breakline of the project"]
+es = "Capa de líneas con Z de la que sale el banco: las polilíneas de una corta de la versión activa, un banco expandido, una ruta propuesta o una línea de rotura del proyecto"
+
+["Field of the layer with the name of each line (empty: the field «nombre» or «name» or, without it, the number (fid))"]
+es = "Campo de la capa con el nombre de cada línea (vacío: el campo «nombre» o «name» y, sin él, el número (fid))"
+
+["Name or number (fid) of the line of the layer to expand (empty: the bench, kind and part below, if the layer has them)"]
+es = "Nombre o número (fid) de la línea de la capa que se expande (vacío: el banco, el tipo y la parte de abajo, si la capa los tiene)"
+
+["Whole number of the bench to expand, when the layer says it (the polylines of a pit) or when you say it (empty: bench 1)"]
+es = "Número entero del banco que se expande, cuando la capa lo dice (las polilíneas de una corta) o cuando usted lo dice (vacío: el banco 1)"
+
+["Kind of line"]
+es = "Tipo de línea"
+
+["Whether the line is the foot or the crest of a bench, if its layer does not say it"]
+es = "Si la línea es el pie o la cresta de un banco, si su capa no lo dice"
+
+["Part"]
+es = "Parte"
+
+["Whole number of the part of the bench, when it has several (empty: the first, 0)"]
+es = "Número entero de la parte del banco, cuando tiene varias (vacío: la primera, 0)"
+
+["Ascending: the benches rise outwards. Descending: they go down inwards"]
+es = "Ascendente: los bancos suben hacia fuera. Descendente: bajan hacia dentro"
+
+["Bench profile of the expansion: its height, face angle, berm and anchor; create or complete them with «Bench profiles…»"]
+es = "Perfil de banco de la expansión: su altura, ángulo de cara, berma y ancla; se crean y se completan con «Perfiles de banco…»"
+
+["Surface the bench starts from: by default, the last of the chain of the active version and, without it, the ground"]
+es = "Superficie de la que parte el banco: por defecto, la última de la cadena de la versión activa y, sin ella, el terreno"
+
+["Bench profile of each design sector, written sector=profile and separated by «;»"]
+es = "Perfil de banco de cada sector de diseño, escrito sector=perfil y separado por «;»"
+
+["Benches per berm of each design sector, written sector=number and separated by «;»"]
+es = "Bancos por berma de cada sector de diseño, escritos sector=número y separados por «;»"
+
+["How the corners of the offset are made: rounded with arcs or mitred"]
+es = "Cómo son las esquinas del desfase: redondeadas con arcos o a inglete"

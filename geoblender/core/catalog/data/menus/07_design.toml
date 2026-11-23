@@ -227,12 +227,12 @@ frequency = 1
 
 [[menu.group.item.item]]
 key = "geoblender.des_expand_bench"
-label.en = "Expand bench"
-label.es = "Expandir banco"
-description.en = "Expand a bench to the next one with its profile"
-description.es = "Expande un banco al siguiente con su perfil"
+label.en = "Expand bench…"
+label.es = "Expandir banco…"
+description.en = "Expand one bench of a pit into the next one with its profile, as a layer of 3D lines that you can edit in QGIS"
+description.es = "Expande un banco de una corta al siguiente con su perfil, como una capa de líneas con Z que se edita en QGIS"
 entry = "R-35"
-action = "H"
+action = "D"
 frequency = 1
 
 [[menu.group.item.item]]

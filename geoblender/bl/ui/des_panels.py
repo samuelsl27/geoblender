@@ -2135,6 +2135,25 @@ def _pit_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     return lines
 
 
+def _expand_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de un banco expandido calculado (``design.pit_expand.ExpandSummary``; spec 018, T32b; RF-018-22, RF-018-26): el banco que sigue (su tipo, su cota, sus líneas y su longitud), **su
+    comprobación** —la inclinación de la cara frente a la del perfil, o la berma mínima— en ámbar si no cumple, y que es **una capa de líneas con Z editable en QGIS que no toca ninguna
+    superficie**. Los avisos los añade :func:`summary_lines` (son los ``notices`` del cálculo)."""
+    summary = calculation.summary
+    kind = tr("crest") if summary.kind == "crest" else tr("foot")  # type: ignore[union-attr]
+    count, length = summary.lines, _number(summary.length_m, 1)  # type: ignore[union-attr]
+    head = (tr("Expanded bench «{name}»: {kind} at elevation {level} m · 1 line of {length} m", name=calculation.name, kind=kind, level=_number(summary.level_m, 2), length=length) if _one(count)
+            else tr("Expanded bench «{name}»: {kind} at elevation {level} m · {count} lines, {length} m", name=calculation.name, kind=kind, level=_number(summary.level_m, 2),
+                    count=_number(count), length=length))
+    lines = [(head, False)]
+    if summary.slope_deg is not None:  # type: ignore[union-attr]
+        lines.append((tr("Face inclination {slope}° (profile: {limit}°)", slope=_number(summary.slope_deg, 2), limit=_number(summary.slope_limit_deg, 2)), not summary.slope_ok))  # type: ignore[union-attr]
+    if summary.berm_min_m is not None:  # type: ignore[union-attr]
+        lines.append((tr("Narrowest berm {berm} m (profile: {limit} m)", berm=_number(summary.berm_min_m, 2), limit=_number(summary.berm_limit_m, 2)), not summary.berm_ok))  # type: ignore[union-attr]
+    lines.append((tr("It is created as a layer of 3D lines that you can edit in QGIS: it changes no surface and is not an entity"), False))
+    return lines
+
+
 def _road_notices(calculation: Calculation) -> tuple[Any, ...]:
     """Los avisos del cálculo de una pista que siguen a su resumen en el diálogo: **sin el de los tramos más empinados de la media por encima de pm cuando pide confirmarla** (lo dice, con los
     tramos, :func:`_mean_confirmation_text`: T51, H3-6). Lo demás, tal cual y en su orden."""
@@ -2344,6 +2363,8 @@ def summary_lines(calculation: Calculation, *, dialog: bool = False) -> list[tup
         lines.extend(_propose_lines(calculation))
     elif calculation.op_type == design_provenance.PIT:
         lines.extend(_pit_lines(calculation))
+    elif calculation.op_type == design_provenance.PIT_EXPAND:
+        lines.extend(_expand_lines(calculation))
     elif calculation.op_type == design_provenance.ROAD_ACCESS:  # sus avisos ya son su resumen (sin lo que no se comunica, que dicen las listas): la cabecera no se recorta
         notices = [notice for notice in calculation.notices if notice.code not in _ACCESS_ITEM_NOTICES]
         protect = len(list(takewhile(lambda notice: notice.code in _ACCESS_HEAD_NOTICES, notices)))
@@ -2512,6 +2533,8 @@ def show_summary(calculation: Calculation | None) -> None:
         title = tr("Accessibility «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.PIT:
         title = tr("Pit «{name}» in {version}", name=calculation.name, version=calculation.version)
+    elif calculation.op_type == design_provenance.PIT_EXPAND:
+        title = tr("Expanded bench «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.STOCKPILE_DETECT:
         title = tr("Detection of stockpiles «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.STOCKPILE_DETECT_PROJECT:  # D-15: del proyecto, sin versión (spec 016, T35)

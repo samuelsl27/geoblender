@@ -12,16 +12,18 @@ Los valores decimales, en ``StringProperty`` (regla 4: nada de float32). Los per
 asignaciones por sector se escriben ``sector=valor`` separadas por «;». Lo que se deja vacío lo resuelve el dominio: el valor por defecto de su parámetro o, si no lo tiene, el rechazo de
 RF-015-08 con su nombre. Un diálogo a medias no activa la vista previa ni escribe nada.
 
-**«Roseta de taludes…» y «Rampa…»** (T32; RF-018-07, RF-018-15; plan 018 H-5): :class:`GEOBLENDER_OT_des_edit_pit_rose` y :class:`GEOBLENDER_OT_des_edit_pit_ramp` abren sus ventanas
+**«Expandir banco…»** (T32b; RF-018-22, RF-018-23): :class:`GEOBLENDER_OT_des_expand_bench` calcula **un paso** sobre una polilínea con ``design.steps.pit_expand_run`` y, al confirmar,
+deja la capa ``des_pxb_`` editable en QGIS (el patrón de «Proponer el trazado…» de la 017: no es una entidad). **«Roseta de taludes…» y «Rampa…»** (T32; RF-018-07, RF-018-15; plan 018 H-5): :class:`GEOBLENDER_OT_des_edit_pit_rose` y :class:`GEOBLENDER_OT_des_edit_pit_ramp` abren sus ventanas
 (``bl.ui.pit_panels``) y las internas :class:`GEOBLENDER_OT_des_save_pit_rose` y :class:`GEOBLENDER_OT_des_save_pit_ramp` crean, completan y renombran con
 ``design.pit_rose.edit_pit_roses`` y ``design.pit_ramp_def.edit_pit_ramps`` (``des.edit_pit_roses`` y ``des.edit_pit_ramps``: operaciones **de proyecto**, una transacción cada una;
-la copia, para la corta, de «Perfil de pista…» de la 017). Las demás órdenes de la corta («Expandir banco…», «Línea de cielo…» y «Superficie y sólido…») son de las tareas
-siguientes; las provisionales del catálogo (``des_expand_bench``, ``des_compute_daylight``) las sustituyen ellas."""
+la copia, para la corta, de «Perfil de pista…» de la 017). Las demás órdenes de la corta («Línea de cielo…» y «Superficie y sólido…») son de las tareas siguientes; la provisional
+del catálogo (``des_compute_daylight``) la sustituye ella."""
 
 from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -1154,8 +1156,352 @@ class GEOBLENDER_OT_des_save_pit_ramp(_CodedSave, DesignCommandAware, Provenance
         return self._run(pit_ramp_def.edit_pit_ramps, said, after)
 
 
-classes: tuple[type, ...] = (GEOBLENDER_OT_des_create_pit, GEOBLENDER_OT_des_edit_pit_rose, GEOBLENDER_OT_des_save_pit_rose, GEOBLENDER_OT_des_edit_pit_ramp,
+# --- Expandir banco… (T32b; HU-018-2; RF-018-22, RF-018-23, RF-018-34, RF-015-28; plan 018 §5.3.3) -----------------------------------------------------
+
+EXPAND_BENCH = provenance.PIT_EXPAND_COMMAND
+EXPAND_KIND_ITEMS = [(_NOT_CHOSEN, "Not chosen", "The line says what it is (a layer of polylines of a pit) or it is taken as a foot"),
+                     ("foot", "Foot", "The line is the foot of a bench: the bench that follows is its crest"),
+                     ("crest", "Crest", "The line is the crest of a bench: the bench that follows is its foot")]
+"""Lo que **es** la línea de partida si su capa no lo dice (RF-018-22)."""
+_EXPAND_FIELDS = ("name", "source", "name_field", "feature", "bench", "kind", "part", "mode", "start", "profile", "rose", "n_berm", "sector_profiles", "sector_roses", "sector_n_berm", "corner",
+                  "arc_tol", "simplify", "az_window")
+_EXPAND_LAYERS: list[tuple[str, str, str]] = []
+"""Las líneas de partida que ofrece el diálogo de «Expandir banco…» (una lista viva del módulo)."""
+
+
+def expand_source_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las capas de líneas con Z de las que parte «Expandir banco…» (una lista viva del módulo): las polilíneas de las cortas calculadas de la versión activa, los bancos ya expandidos, las
+    rutas propuestas y las líneas de rotura del proyecto; sin ninguna, «—»."""
+    if not _EXPAND_LAYERS:
+        _EXPAND_LAYERS.append((_NONE, NOT_SHOWN, tr("There are no layers of 3D lines in the project")))
+    return _EXPAND_LAYERS
+
+
+def refresh_expand_choices(project: Any) -> None:
+    """Vuelve a leer de ``project`` las líneas de partida del diálogo de «Expandir banco…» (RF-018-22): las polilíneas ``des_pbl_`` de las cortas de la versión activa, los bancos expandidos
+    ``des_pxb_``, las rutas propuestas ``des_rpl_`` y las líneas de rotura ``gis_brk_``. Si no se puede leer, el error sigue."""
+    from ...gis import provenance as gis_provenance
+    from ...gis import store as gis_store
+
+    found: list[tuple[str, str, str]] = []
+    version = scene_versions.active()
+    if version is not None:
+        for code, about in ((provenance.PIT_POLYLINES_TABLE, tr("Polylines of a pit of the active version")),
+                            (provenance.PIT_EXPANDED_TABLE, tr("Expanded bench of the active version (3D lines)")),
+                            (provenance.ROUTE_LAYER_TABLE, tr("Proposed route of the active version (3D lines)"))):
+            prefix = provenance.FAMILIES_BY_CODE[code].prefix
+            found.extend((name, name.removeprefix(prefix), about) for name in _version_layers(project, version.uid, prefix))
+    found.extend((record.name, constraint_panels.layer_label(record.name), tr("Layer of 3D lines"))
+                 for record in gis_store.list_gis_datasets(project, families=(gis_provenance.BREAKLINES,)))
+    _EXPAND_LAYERS[:] = found or [(_NONE, NOT_SHOWN, tr("There are no layers of 3D lines in the project"))]
+
+
+def _pit_defaults(project: Any, source: str) -> dict[str, str]:
+    """Lo que de la corta de la que sale la línea ``source`` (``des_pbl_<corta>``, de una corta de la versión activa) rellena el diálogo (RF-018-22): su perfil de banco, su roseta, los
+    bancos por berma, lo de cada sector, la esquina y las tolerancias del desfase, en el texto del diálogo. Una línea que no es de una corta, o una corta sin esos valores, nada."""
+    from ...design import entities, pit_store
+
+    version = scene_versions.active()
+    if version is None or not source.startswith(provenance.FAMILIES_BY_CODE[provenance.PIT_POLYLINES_TABLE].prefix):
+        return {}
+    for entry in entities.registry(project, version.uid):
+        record = entry.record
+        if record.kind is not entities.EntityKind.PIT or provenance.dataset_name(provenance.PIT_POLYLINES_TABLE, record.name) != source:
+            continue
+        values = pit_store.pit_parameters(project, version, record.code)
+        found: dict[str, str] = {}
+        for prop, key in (("profile", "profile"), ("rose", "rose"), ("corner", "corner")):
+            if values.get(key):
+                found[prop] = str(values[key])
+        for prop, key in (("n_berm", "n_berm"), ("arc_tol", "arc_tol_m"), ("simplify", "simplify_m"), ("az_window", "az_window_m")):
+            if values.get(key) is not None:
+                found[prop] = str(values[key])
+        for prop, key in (("sector_profiles", "profile"), ("sector_roses", "rose"), ("sector_n_berm", "n_berm")):
+            pairs = [f"{short.partition('.')[2]}={value}" for short, value in sorted(values.items()) if short.startswith(f"{key}.")]
+            if pairs:
+                found[prop] = ";".join(pairs)
+        return found
+    return {}
+
+
+class GEOBLENDER_OT_des_expand_bench(_CreatesInSteps, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal, bpy.types.Operator):
+    """Expand one bench of a pit of the active version into the next one with its profile: its foot into its crest or the other way round, as a layer of 3D lines that you can edit in QGIS and use as a fixed bench; it changes no surface and is not an entity"""
+
+    bl_idname = EXPAND_BENCH
+    bl_label = "Expand bench…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.PIT_EXPAND
+    COMMAND = EXPAND_BENCH
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the expanded bench, unique in the active version: the layer of 3D lines is called after it", options=_FIELD)
+    source: EnumProperty(  # type: ignore[valid-type]
+        name="Source line", description="Layer of 3D lines the bench is taken from: the polylines of a pit of the active version, an expanded bench, a proposed route or a breakline of the project",
+        items=expand_source_items, options=_FIELD)
+    name_field: StringProperty(  # type: ignore[valid-type]
+        name="Name field", description="Field of the layer with the name of each line (empty: the field «nombre» or «name» or, without it, the number (fid))", options=_FIELD)
+    feature: StringProperty(  # type: ignore[valid-type]
+        name="Line", description="Name or number (fid) of the line of the layer to expand (empty: the bench, kind and part below, if the layer has them)", options=_FIELD)
+    bench: StringProperty(  # type: ignore[valid-type]
+        name="Bench", description="Whole number of the bench to expand, when the layer says it (the polylines of a pit) or when you say it (empty: bench 1)", options=_FIELD)
+    kind: EnumProperty(  # type: ignore[valid-type]
+        name="Kind of line", description="Whether the line is the foot or the crest of a bench, if its layer does not say it", items=EXPAND_KIND_ITEMS, default=_NOT_CHOSEN, options=_FIELD)
+    part: StringProperty(  # type: ignore[valid-type]
+        name="Part", description="Whole number of the part of the bench, when it has several (empty: the first, 0)", options=_FIELD)
+    mode: EnumProperty(  # type: ignore[valid-type]
+        name="Mode", description="Ascending: the benches rise outwards. Descending: they go down inwards", items=PIT_MODE_ITEMS, default="UP", options=_FIELD)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface", description="Surface the bench starts from: by default, the last of the chain of the active version and, without it, the ground",
+        items=des_panels.platform_start_items, options=_FIELD)
+    profile: EnumProperty(  # type: ignore[valid-type]
+        name="Bench profile", description="Bench profile of the expansion: its height, face angle, berm and anchor; create or complete them with «Bench profiles…»", items=pit_profile_items,
+        options=_FIELD)
+    rose: EnumProperty(  # type: ignore[valid-type]
+        name="Rose of slopes", description="Rose of design slopes: the face angle and the berm by the direction of the face of each stretch of the bench (none: the bench profile alone)",
+        items=pit_rose_items, options=_FIELD)
+    n_berm: StringProperty(  # type: ignore[valid-type]
+        name="Benches per berm", description="Whole number of benches between two berms (empty: the default value, one bench)", options=_FIELD)
+    sector_profiles: StringProperty(  # type: ignore[valid-type]
+        name="Profiles by sector", description="Bench profile of each design sector, written sector=profile and separated by «;»", options=_FIELD)
+    sector_roses: StringProperty(  # type: ignore[valid-type]
+        name="Roses by sector", description="Rose of design slopes of each design sector, written sector=rose and separated by «;»", options=_FIELD)
+    sector_n_berm: StringProperty(  # type: ignore[valid-type]
+        name="Benches per berm by sector", description="Benches per berm of each design sector, written sector=number and separated by «;»", options=_FIELD)
+    corner: EnumProperty(  # type: ignore[valid-type]
+        name="Corner of the offset", description="How the corners of the offset are made: rounded with arcs or mitred", items=PIT_CORNER_ITEMS, default="DEFAULT", options=_FIELD)
+    arc_tol: StringProperty(  # type: ignore[valid-type]
+        name="Arc tolerance (m)", description="Most the arcs of the rounded corners may separate from the circle, in metres; a hypothesis without default value", options=_FIELD)
+    simplify: StringProperty(  # type: ignore[valid-type]
+        name="Simplification tolerance (m)", description="Most a simplified bench line may separate from the offset, in metres; a hypothesis without default value", options=_FIELD)
+    az_window: StringProperty(  # type: ignore[valid-type]
+        name="Azimuth window (m)", description="Length in metres along the bench over which the azimuth of the face is averaged to choose the range of the rose; a hypothesis without default value",
+        options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez. Un banco expandido
+    # no pide confirmación: no graba ninguna superficie.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    _saved = False
+    """Si lo que llega al modal es lo guardado del banco (y no el cálculo)."""
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué. Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las listas leídas de nuevo,
+        la propuesta (un nombre, la primera línea, y **del perfil, la roseta, los sectores y las tolerancias de la corta de la que sale**) y el diálogo del cálculo: Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            des_panels.refresh_platform_choices(project)
+            refresh_pit_choices(project)
+            refresh_expand_choices(project)
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=command_text(catalog().commands[command_idname(self.COMMAND)].label), confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio: un nombre que no repite el de ningún banco expandido de la versión («Banco expandido 1»…), la primera línea de partida, la
+        partida (la última de la cadena y, sin ella, el terreno: como «Nueva corta…») y, **si la línea es de una corta de la versión, el perfil, la roseta, los bancos por berma, los sectores,
+        la esquina y las tolerancias de esa corta** (RF-018-22). Lo que ya dio quien lo lanza no cambia. Ninguna cifra minera se inventa."""
+        given = self.properties.is_property_set
+        if not self.name.strip():
+            version = scene_versions.active()
+            prefix = provenance.FAMILIES_BY_CODE[provenance.PIT_EXPANDED_TABLE].prefix
+            taken = set() if version is None else set(_version_layers(project, version.uid, prefix))
+            number = 1
+            while provenance.dataset_name(provenance.PIT_EXPANDED_TABLE, f"{tr('Expanded bench')} {number}") in taken:
+                number += 1
+            self.name = f"{tr('Expanded bench')} {number}"
+        offered = [item[0] for item in expand_source_items(self, None) if item[0] != _NONE]
+        if offered and not given("source"):
+            self.source = offered[0]
+        if not given("start"):
+            offered_starts = {item[0] for item in des_panels.platform_start_items(None, None)}
+            start = des_panels.platform_default_start()
+            if start is None or start not in offered_starts:
+                grids = [identifier for identifier in offered_starts if identifier != _NONE and not identifier.startswith("entity:")]
+                start = surface_proposal.ground_item(context, project, sorted(grids), des_panels.surface_choice) if grids else None
+            if start is not None:
+                self.start = start
+        for prop, text in _pit_defaults(project, self.source).items():
+            if given(prop):
+                continue
+            if prop in ("profile", "rose"):
+                if text not in {item[0] for item in (pit_profile_items if prop == "profile" else pit_rose_items)(self, None)}:
+                    continue
+                setattr(self, prop, text)
+            elif prop == "corner":
+                if text.upper() in {item[0] for item in PIT_CORNER_ITEMS}:
+                    self.corner = text.upper()
+            else:
+                setattr(self, prop, text)
+
+    def draw(self, context: Any) -> None:
+        """Arriba el nombre; la línea de partida —su capa, el campo del nombre, la línea o el banco, su tipo y su parte—; el sentido y la partida; el perfil, la roseta y los bancos por berma y lo
+        de cada sector; y las tolerancias del desfase, **cada una con su tipo**. En la confirmación de crear, el resumen."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        origin = layout.box()
+        origin.prop(self, "source", text=tr("Source line"), translate=False)
+        origin.prop(self, "name_field", text=tr("Name field"), translate=False)
+        origin.prop(self, "feature", text=tr("Line"), translate=False)
+        origin.prop(self, "bench", text=tr("Bench"), translate=False)
+        origin.prop(self, "kind", text=tr("Kind of line"), translate=False)
+        origin.prop(self, "part", text=tr("Part"), translate=False)
+        layout.prop(self, "mode", text=tr("Mode"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        benches = layout.box()
+        benches.prop(self, "profile", text=tr("Bench profile"), translate=False)
+        benches.prop(self, "rose", text=tr("Rose of slopes"), translate=False)
+        benches.prop(self, "n_berm", text=tr("Benches per berm"), translate=False)
+        sectors = layout.box()
+        sectors.prop(self, "sector_profiles", text=tr("Profiles by sector"), translate=False)
+        sectors.prop(self, "sector_roses", text=tr("Roses by sector"), translate=False)
+        sectors.prop(self, "sector_n_berm", text=tr("Benches per berm by sector"), translate=False)
+        tolerances = layout.box()
+        tolerances.prop(self, "corner", text=tr("Corner of the offset"), translate=False)
+        for prop, param, label in (("arc_tol", "arc_tol_m", tr("Arc tolerance (m)")), ("simplify", "simplify_m", tr("Simplification tolerance (m)")),
+                                   ("az_window", "az_window_m", tr("Azimuth window (m)"))):
+            tolerances.prop(self, prop, text=label, translate=False)
+            tolerances.label(text=_pit_param_text(param), translate=False)  # el tipo de cada tolerancia (RF-018-10, D-14)
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _request(self) -> Any:
+        """Lo pedido en el diálogo como la ``design.pit_expand.ExpandRequest`` (RF-018-22), comprobado sin escribir ni calcular nada: la capa de líneas con el campo de los nombres, la línea por su
+        nombre o su número o por su banco, su tipo y su parte, el sentido, la partida, el perfil, la roseta, los bancos por berma, los sectores y las tolerancias, tecleados con coma o con punto
+        decimal. Lo que se deja vacío lo resuelve el dominio: el valor por defecto o el rechazo con su nombre (RF-015-08). :class:`ComputeFormError` si falta algo que el diálogo necesita."""
+        from ...design import pit_expand, road_model  # al usarlo: habilitar no carga el cálculo
+
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the expanded bench"))
+        if self.source in ("", _NONE):
+            raise ComputeFormError(tr("Choose the line to expand: there is no layer of 3D lines in the project"))
+
+        def chosen(value: str) -> str | None:
+            return None if value in ("", _NONE) else value
+
+        return pit_expand.ExpandRequest(
+            name, road_model.LayerFields(self.source, self.name_field.strip() or None), self.mode.lower(), self.start if self.start != _NONE else "",
+            kind=None if self.kind == _NOT_CHOSEN else self.kind, feature=self.feature.strip() or None, bench=_whole(self.bench, tr("Bench")), part=_whole(self.part, tr("Part")) or 0,
+            profile=chosen(self.profile), rose=chosen(self.rose), n_berm=_whole(self.n_berm, tr("Benches per berm")),
+            sector_profiles=_pairs(self.sector_profiles, tr("Profiles by sector"), _text), sector_roses=_pairs(self.sector_roses, tr("Roses by sector"), _text),
+            sector_n_berm=_pairs(self.sector_n_berm, tr("Benches per berm by sector"), _whole), corner=None if self.corner == "DEFAULT" else self.corner.lower(),
+            arc_tol_m=typed_number(self.arc_tol, tr("Arc tolerance (m)")), simplify_m=typed_number(self.simplify, tr("Simplification tolerance (m)")),
+            az_window_m=typed_number(self.az_window, tr("Azimuth window (m)")))
+
+    # --- Calcular y crear ---------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido (sin escribir nada si falta algo), pasa por la puerta de la 008 y calcula el banco por pasos
+        con ``design.steps.pit_expand_run`` —compila las máscaras antes si no están al día—, sin registrar nada (RF-015-03): desde la interfaz, en el modal con el avance y Esc (RF-018-35);
+        desde un guion, de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos (la capa, la línea, el perfil, la roseta, las tolerancias, el nombre
+        repetido, la partida, un sector con la búsqueda pendiente…) y todas las cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.pit_expand_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _finished(self, context: Any, opened: Any) -> set[str]:
+        """Con lo guardado llegando (:meth:`_creation_steps`), acaba: el banco ya está creado. Si no, como las demás (:meth:`_CalculateAndCreate._finished`): deja el cálculo abierto con su
+        resumen y pide confirmar."""
+        if self._saved:
+            self._saved = False
+            return {"FINISHED"}
+        return _CalculateAndCreate._finished(self, context, opened)
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear» (RF-018-22, RF-015-02): registra el banco expandido —**la capa de líneas con Z editable en QGIS** y la operación, en una transacción— sin más confirmación que el botón (no
+        graba ninguna superficie). Desde la interfaz, **por pasos** con el avance y Esc (:class:`_CreatesInSteps`); desde un guion, de una vez, con el mismo resultado. **No es una entidad**: no
+        encadena la capa de entidades ni declara nada."""
+        opened = calculation()
+        if opened is None or opened.op_type != self.provenance_op_type:
+            self.report({"ERROR"}, tr("There is no open calculation: compute first"))
+            return {"CANCELLED"}
+        started = self._create_in_steps(context, opened)
+        if started is not None:  # desde la interfaz, por pasos
+            return started
+        return _CalculateAndCreate._create(self, context)
+
+    def _creation_steps(self, project: Any, opened: Calculation) -> Iterator[Progress]:
+        """Los pasos de «Crear» ``opened`` en el modal: los de ``Calculation.create_steps`` (la capa, montada y escrita en su temporal por pasos; la transacción final, el último) y, en cuanto lo
+        guardado llega, lo registrado; **nada más**: no es una entidad. Cerrar los pasos antes (Esc) o un fallo no dejan nada: ``create_steps`` descarta el cálculo y borra sus temporales."""
+        creating = opened.create_steps(budget_s=self.STEP_BUDGET_S)
+        saved = None
+        try:
+            for step in creating:
+                if step.result is not None:
+                    saved = step
+                    break
+                yield step
+        finally:
+            creating.close()
+        assert saved is not None  # los pasos acaban siempre con lo guardado
+        self._registered(opened)
+        self._creating, self._saved = False, True
+        yield saved
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Bench «{name}» expanded in {version}: the layer «{layer}» is editable in QGIS", name=opened.name, version=opened.version,
+                  layer=provenance.dataset_name(provenance.PIT_EXPANDED_TABLE, opened.name))
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Expandiendo el banco… 40 % · Esc: cancelar» o «Guardando el banco expandido… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if self._creating:
+            return tr("Saving the expanded bench… {percent} % · Esc: cancel", percent=percent)
+        return tr("Expanding the bench… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if self._creating:
+            return tr("Creation cancelled: the bench has not been expanded and the calculation has been discarded; nothing has been left half-done")
+        return _CalculateAndCreate._cancelled_text(self)
+
+
+classes: tuple[type, ...] = (GEOBLENDER_OT_des_create_pit, GEOBLENDER_OT_des_expand_bench, GEOBLENDER_OT_des_edit_pit_rose, GEOBLENDER_OT_des_save_pit_rose, GEOBLENDER_OT_des_edit_pit_ramp,
                              GEOBLENDER_OT_des_save_pit_ramp)
 """Las órdenes de la corta por bancos (T31: «Nueva corta…»; T32: «Roseta de taludes…» y «Rampa…» con sus internas; las demás las ponen las tareas siguientes)."""
 
-__all__ = ["CREATE_PIT", "EDIT_PIT_RAMP", "EDIT_PIT_ROSE", "GEOBLENDER_OT_des_create_pit", "classes", "refresh_pit_choices", "refresh_ramp_choices"]
+__all__ = ["CREATE_PIT", "EDIT_PIT_RAMP", "EDIT_PIT_ROSE", "EXPAND_BENCH", "GEOBLENDER_OT_des_create_pit", "classes", "refresh_expand_choices", "refresh_pit_choices", "refresh_ramp_choices"]
