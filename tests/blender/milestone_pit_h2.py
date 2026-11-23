@@ -28,11 +28,15 @@ Una sola historia, en el orden de las letras (el proyecto es de la clase; cada p
 - **h** (CE-018-07): sobre el terreno inclinado, la línea de cielo tiene la cota del terreno y la distancia al límite legal es la de la cuenta a mano.
 - **i** (E4, parte; CE-018-08, 09): el perímetro y el intocable; el banco 2 fijado con una capa (hash igual, capa editada = obsoleta); la lista de hallazgos.
 - **j** (E5; CE-018-11, RF-018-27): la verificación por recinto de la 012 cumple; el contraste con la 013.
+- **ia** (E4, parte; RF-018-22, P-12): «Expandir banco…» sobre el pie del banco 1 de la corta circular (la capa ``des_pbl_``): da la cresta del banco 1, y crearla deja la capa
+  ``des_pxb_`` editable con la operación ``des.pit_expand`` y su cifra, sin entidad ni superficie.
 - **k** (CE-018-10, RF-018-25, RF-009-11): congelar V01, reproducir sin escribir y traer una corta a otra versión.
+- **kb** (RF-018-22, RF-009-11): la expansión de **ia**, reproducida de lo congelado, da la misma capa (hash) y la misma cifra.
 
 **V02**: **l** y **m** (E5; CE-018-10): la corta, la plataforma, la pista y otra corta que declara su apoyo; la cascada en «Recalcular lo obsoleto» (con la
-cola real) y descartar la corta («apoyo retirado»). El ensayo con el ratón, la vista previa, el TIN, las capas de QGIS y «Expandir banco…» son de las
-fases G y H (T27 a T35) y del H3.
+cola real) y descartar la corta («apoyo retirado»). **n** (E4, la capa editada en QGIS; P-12): la capa de la expansión de **ia** editada fuera de Geoblender no
+se bloquea, deja obsoleta la expansión que parte de ella y repetir la primera no la sobrescribe. El ensayo con el ratón, la vista previa, el TIN y la orden
+de «Expandir banco…» son de las fases G y H (T29 a T35) y del H3.
 
 Se ejecuta con ``tools/run_blender_tests.py`` (paso «hito» de ``tools/check.py --completo``).
 """
@@ -190,6 +194,8 @@ class PitH2Test(unittest.TestCase):
         cls.pit_model = _module("design.pit_model")
         cls.pit_lines = _module("design.pit_lines")
         cls.pit_store = _module("design.pit_store")
+        cls.pit_expand = _module("design.pit_expand")
+        cls.external = _module("core.datasets.external")
         cls.pit_rose = _module("design.pit_rose")
         cls.pit_ramp_def = _module("design.pit_ramp_def")
         cls.road_model = _module("design.road_model")
@@ -783,6 +789,36 @@ class PitH2Test(unittest.TestCase):
     def surface_start(self, label: str, values: np.ndarray) -> np.ndarray:
         return values
 
+    def test_ia_expanding_a_bench_from_the_calculated_pit_leaves_the_editable_layer(self) -> None:
+        """E4 (parte), RF-018-22, P-12: «Expandir banco…» sobre el pie del banco 1 de la corta circular (sus polilíneas, ``des_pbl_``) da la **cresta del banco 1** de la
+        corta, a la misma cota; crearlo deja **una** operación ``des.pit_expand`` con la capa ``des_pxb_`` **editable en QGIS** y su cifra (la longitud de la cresta), y no
+        crea ninguna entidad ni superficie."""
+        source = self.dprov.dataset_name(self.dprov.PIT_POLYLINES_TABLE, "Corta circular")
+        asked = self.pit_expand.ExpandRequest("Cresta 1 expandida", self.road_model.LayerFields(source, None), "up", self.terrain["llano"], bench=1, kind="foot",
+                                              profile=EXPL.lower(), arc_tol_m=ARC_M, simplify_m=SIMPLIFY_M)
+        before = (self.counts(), [entry.record.code for entry in self.entities.registry(self.project, self.v01.uid)])
+        calculation = None
+        for step in self.steps.pit_expand_run(self.project, asked, version=self.v01.uid, masks=self.masks[self.v01.uid]):
+            calculation = step.result
+        assert calculation is not None
+        self.assertEqual((self.counts(), [entry.record.code for entry in self.entities.registry(self.project, self.v01.uid)]), before, "«Calcular» no escribe")
+        crest = next(poly for poly in self.made["circle"].found.polylines if (poly.bench, str(poly.kind)) == (1, "crest")).vertices
+        (found,) = calculation.outcome.polylines
+        self.assertAlmostEqual(found.z_m, float(crest[0, 2]), delta=1e-9)
+        self.assertEqual(len(found.vertices), len(crest))
+        self.assertTrue(calculation.summary.slope_ok)
+        stored = calculation.create()
+        uid = str(stored.handle.uid)
+        self.assertEqual(self.rows("SELECT op_type, status FROM gb_operation WHERE uid = ?", uid), [(self.dprov.PIT_EXPAND, "done")])
+        table = self.dprov.dataset_locator(self.dprov.PIT_EXPANDED_TABLE, "Cresta 1 expandida", "V01")
+        dataset = self.dprov.dataset_name(self.dprov.PIT_EXPANDED_TABLE, "Cresta 1 expandida")
+        self.assertEqual(self.rows("SELECT qgis_editable, status FROM gb_dataset WHERE name = ?", dataset), [(1, "current")])
+        self.assertEqual(len(self.rows(f'SELECT fid FROM "{table}"')), 1)
+        self.assertEqual([key for (key,) in self.rows("SELECT key FROM gb_figure WHERE operation_uid = ?", uid)], ["des.pit_len_crest_m"])
+        self.assertEqual([entry.record.code for entry in self.entities.registry(self.project, self.v01.uid)], before[1])
+        type(self).made["expand"] = SimpleNamespace(uid=uid, table=table, dataset=dataset)
+        REPORT.append("RF-018-22: «Expandir banco…» da la cresta del banco 1 de la corta y deja la capa des_pxb_ editable")
+
     # --- j: la verificación por recinto -------------------------------------------------------------------------------------
 
     def test_j_the_verification_by_enclosure_complies(self) -> None:
@@ -866,6 +902,15 @@ class PitH2Test(unittest.TestCase):
         nombre libre de la rampa (``Espiral``) sale en el detalle de los hallazgos y en el informe, y lo congelado solo tiene su código (``espiral``)."""
         uid = next(key for key, name in self.made["pits"].items() if name == "Corta con espiral")
         self.same_as_frozen(self.made["report"], uid, "Corta con espiral")
+
+    def test_kb_the_expansion_reproduces_the_same_layer(self) -> None:
+        """RF-018-22, RF-009-11: la expansión de ``ia``, reproducida de lo congelado en ``V01.r1`` (sin proyecto), da el mismo hash de su capa ``des_pxb_`` y la misma cifra."""
+        uid = self.made["expand"].uid
+        mine = [check for check in self.made["report"].outputs if check.operation_uid == uid]
+        self.assertEqual([check.role for check in mine], ["pit_expanded"])
+        self.assertTrue(all(check.same for check in mine), mine)
+        found = [check for check in self.made["report"].figures if check.operation_uid == uid]
+        self.assertTrue(found and all(check.same for check in found), found)
 
     # --- l y m: la cadena y la cascada (V02) -------------------------------------------------------------------------------------
 
@@ -957,6 +1002,43 @@ class PitH2Test(unittest.TestCase):
             self.des_ops.des_tick()
         self.assertEqual(self.states(self.v02)[code2], self.entities.EntityState.CURRENT)
         REPORT.append("CE-018-10: descartar la corta deja «apoyo retirado» en la plataforma y en la corta declarada; la segunda se da por buena")
+
+    def test_n_the_layer_edited_in_qgis_is_not_blocked_and_is_not_overwritten(self) -> None:
+        """E4 (la capa editada en QGIS), RF-018-22, P-12, RF-008-21: una segunda expansión parte de la capa de ``ia``; **editar la capa fuera de Geoblender** no la bloquea
+        (vigente, con el contenido nuevo, editable), **deja obsoleta** la segunda expansión con su causa y **repetir la primera no la sobrescribe**
+        (``des.pit_expand_layer_edited``)."""
+        import sqlite3
+
+        first = self.made["expand"]
+        asked = self.pit_expand.ExpandRequest("Pie 2 expandido", self.road_model.LayerFields(first.dataset, "name"), "up", self.terrain["llano"], bench=1, kind="crest",
+                                              profile=EXPL.lower(), arc_tol_m=ARC_M, simplify_m=SIMPLIFY_M)
+        calculation = None
+        for step in self.steps.pit_expand_run(self.project, asked, version=self.v01.uid, masks=self.masks[self.v01.uid]):
+            calculation = step.result
+        assert calculation is not None
+        second = str(calculation.create().handle.uid)
+        self.assertEqual(self.stale_causes(second), set())
+        before = self.hashes(first.dataset)
+        conn = sqlite3.connect(self.project.database_path, isolation_level=None)
+        try:
+            conn.execute(f'UPDATE "{first.table}" SET name = ? WHERE fid = 1', ("Cresta 1 (editada en QGIS)",))
+            conn.execute("UPDATE gpkg_contents SET last_change = ? WHERE table_name = ?", ("2031-01-01T00:00:01.000Z", first.table))
+        finally:
+            conn.close()
+        for _step in self.external.external_check_steps(self.project):
+            pass
+        after = self.hashes(first.dataset)
+        self.assertEqual(after[first.dataset][1], "current")
+        self.assertNotEqual(after[first.dataset][0], before[first.dataset][0])
+        self.assertTrue(self.stale_causes(second), "la expansión que parte de la capa queda obsoleta")
+        settings = json.loads(self.rows("SELECT settings FROM gb_operation WHERE uid = ?", first.uid)[0][0])
+        request_ = self.recompute.RecomputeRequest(self.project, first.uid, self.dprov.PIT_EXPAND, settings, (), (), version=self.v01.uid)
+        with self.assertRaises(self.messages.DesignError) as caught:
+            handle, work = self.dstore.recompute_run(request_)
+            for _step in work:
+                pass
+        self.assertEqual(caught.exception.code, "des.pit_expand_layer_edited")
+        REPORT.append("P-12: la capa des_pxb_ editada en QGIS no se bloquea, deja obsoleta la expansión que parte de ella y no se sobrescribe")
 
 
 def tearDownModule() -> None:

@@ -124,7 +124,7 @@ from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, read_shapes, z
 from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
-from . import access_store, entities, entity_store, fronts, pipeline, pit_lines, pit_store, provenance, quarry, removal, road_layer, road_store, stockpile_store, store, supported_store
+from . import access_store, entities, entity_store, fronts, pipeline, pit_expand, pit_layer, pit_lines, pit_store, provenance, quarry, removal, road_layer, road_store, stockpile_store, store, supported_store
 from .compose import admitted, admitted_in
 from .model import BenchSense, BodySense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
 from .params import (
@@ -1434,8 +1434,31 @@ def _reproduce_pit(request: ReproduceRequest, budget_s: float) -> Iterator[Progr
 
 
 def reproduce_pit_expand(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """Reproduce ``des.pit_expand`` (spec 018, T03; RF-018-22, RF-009-11): sin comportamiento todavía (la tarea que crea la operación)."""
-    return _not_yet(request, provenance.PIT_EXPAND, "la tarea que crea la operación", "018")
+    """Reproduce ``des.pit_expand`` (spec 018, T28; RF-018-22, RF-009-11) con la capa de partida, la superficie de partida y las máscaras congeladas, los valores congelados del perfil y de la roseta y los
+    ajustes de su operación (la petición entera; no es una entidad), **sin el proyecto**: el mismo paso (``pit_expand.expand_compute_steps`` sobre el mismo ``PitJob``). El último ``Progress`` lleva el
+    ``ReproducedResult`` con la capa ``des_pxb_`` y las dos cifras."""
+    return _reproduce_pit_expand(_check(request, provenance.PIT_EXPAND), budget_s)
+
+
+def _reproduce_pit_expand(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    asked = pit_expand.expand_request(request.settings)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    refs, _labels = frozen.sector_layout(masks)
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida").values
+    polyline = pit_expand.source_polyline(frozen.lines_3d(asked.layer), asked)
+    job, _values, _counts = pit_expand.expand_job(_FrozenPit(frozen), asked, frozen.grid, start, masks, refs, polyline)
+    outcome = yield from pit_expand.expand_compute_steps(job, polyline, budget_s=budget_s)
+    found = provenance.FAMILIES_BY_CODE[provenance.PIT_EXPANDED_TABLE]
+    table = provenance.dataset_locator(provenance.PIT_EXPANDED_TABLE, asked.name, "V01")
+    path = Path(request.workdir) / f"{found.role}.gpkg"
+    check_path_length(path, obj=_OBJ)
+    with GpkgConnection.open_write(path, create=True) as gpkg, gpkg.transaction() as conn:
+        create_base(conn, frozen.crs)
+        pit_layer.write_expanded_layer(conn, table, pit_expand.expand_layer_rows(outcome), srs_id=frozen.crs.epsg, name=asked.name)
+    made = ReproducedOutput(found.role, found.reader, {"main": path}, {"layer": table})
+    yield Progress(_PHASE, 1, 1, "Banco reproducido", result=ReproducedResult((made,), tuple(outcome.figures)))
 
 
 REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({

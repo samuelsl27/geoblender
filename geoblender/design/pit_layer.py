@@ -43,6 +43,9 @@ from .messages import DesignError
 from .store import _STORE_PHASE, DesignWriter, OperationStart, Stored, _start, _store_steps, require_version
 
 __all__ = [
+    "EXPANDED_COLUMN_NAMES",
+    "EXPANDED_COLUMN_TITLES",
+    "ExpandedRow",
     "KINDS",
     "PIT_COLUMN_NAMES",
     "PIT_COLUMN_TITLES",
@@ -53,8 +56,10 @@ __all__ = [
     "PitSource",
     "PreparedPitLayer",
     "SkyLayerRow",
+    "create_expanded_table",
     "create_pit_layer_table",
     "create_sky_layer_table",
+    "expanded_table",
     "layer_differences",
     "marked_pits",
     "pit_heads",
@@ -65,11 +70,13 @@ __all__ = [
     "pit_layer_table",
     "pit_sources",
     "prepare_pit_layer",
+    "read_expanded_layer",
     "read_pit_layer",
     "read_sky_layer",
     "recompute_pit_layer",
     "run_pit_layer",
     "sky_layer_table",
+    "write_expanded_layer",
     "write_pit_layer",
     "write_sky_layer",
     "written_rows",
@@ -377,6 +384,116 @@ def read_sky_layer(conn: sqlite3.Connection, table: str) -> tuple[SkyLayerRow, .
         if blob is None:
             raise ValueError(f"la fila {fid} de «{table}» no tiene geometría")
         found.append(SkyLayerRow(code, name, state, part, length_m, _line(blob), table, int(fid)))
+    return tuple(found)
+
+
+# --- La capa propuesta de «Expandir banco…» (T28; RF-018-22, P-12) --------------------------------------------
+
+
+EXPANDED_IDENTIFIER = "Banco expandido"
+EXPANDED_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("name", "TEXT", True), ColumnDef("bench", "INTEGER", True), ColumnDef("kind", "TEXT", True), ColumnDef("part", "INTEGER", True), ColumnDef("z_m", "DOUBLE", True),
+    ColumnDef("length_m", "DOUBLE", True))
+EXPANDED_COLUMN_NAMES: tuple[str, ...] = tuple(column.name for column in EXPANDED_COLUMNS)
+"""Las columnas de ``des_pxb_<nombre>_<vNN>`` además de ``fid`` y ``geom``: el ``name`` de la línea, su ``bench`` y su ``kind`` (``foot`` o ``crest``, como en ``des_pbl_``: la capa se usa como
+banco fijado por el campo ``bench``), la ``part`` (desde 0), su cota (``z_m``) y su longitud en planta (``length_m``)."""
+EXPANDED_COLUMN_TITLES: Mapping[str, str] = MappingProxyType({"name": "Nombre", "bench": "Banco", "kind": "Tipo", "part": "Parte", "z_m": "Cota (m)", "length_m": "Longitud (m)"})
+_EXPANDED_KINDS: tuple[str, ...] = KINDS[:2]
+
+
+def expanded_table(name: str, version_code: str) -> str:
+    """La tabla de la capa propuesta del banco expandido ``name`` en la versión ``version_code`` («V01»): ``des_pxb_<nombre>_<vNN>``."""
+    return provenance.dataset_locator(provenance.PIT_EXPANDED_TABLE, name, version_code)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ExpandedRow:
+    """Una línea de la capa propuesta de «Expandir banco…» (fila de ``des_pxb_``): ``name`` (único en la capa), ``bench``, ``kind`` (``foot`` o ``crest``) y ``part``; ``points`` ``(n, 3)`` absolutas, planas
+    y **cerradas sin repetir** el primer vértice (se cierra al escribirla). La cota y la longitud salen de los vértices. ``layer`` y ``fid``: de una leída. Errores del programa (``TypeError``/``ValueError``)."""
+
+    name: str
+    bench: int
+    kind: str
+    points: object
+    part: int = 0
+    layer: str = ""
+    fid: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _text(self.name, "el nombre de una línea del banco expandido"))
+        object.__setattr__(self, "bench", _whole(self.bench, "el banco"))
+        if self.kind not in _EXPANDED_KINDS:
+            raise ValueError(f"el tipo de una línea del banco expandido es uno de {_EXPANDED_KINDS}, no {self.kind!r}")
+        object.__setattr__(self, "part", _whole(self.part, "la parte"))
+        points = _points(self.points, "una línea del banco expandido")
+        if points.shape[0] < 3:
+            raise ValueError("una línea del banco expandido es un anillo de al menos tres vértices")
+        object.__setattr__(self, "points", points)
+        object.__setattr__(self, "layer", str(self.layer))
+        object.__setattr__(self, "fid", int(self.fid))
+
+    @property
+    def z_m(self) -> float:
+        """La cota (m): la Z de su primer vértice."""
+        return float(np.asarray(self.points)[0, 2])
+
+    @property
+    def length_m(self) -> float:
+        """La longitud en planta (m), con el cierre."""
+        xy = _closed(np.asarray(self.points)[:, :2], True)
+        return float(np.hypot(*np.diff(xy, axis=0).T).sum())
+
+
+def create_expanded_table(conn: sqlite3.Connection, table: str, srs_id: int, name: str = "") -> bool:
+    """Crea la capa de líneas ``table`` de un banco expandido (``LINESTRING`` con Z, CRS ``srs_id``) con sus títulos; ``True`` si la creó. **Del usuario desde que se crea** (P-12)."""
+    _check_table(table)
+    if _exists(conn, table):
+        return False
+    label = f"{EXPANDED_IDENTIFIER} {name}".strip() if name else f"{EXPANDED_IDENTIFIER} ({table})"
+    create_feature_table(conn, table, GEOMETRY_TYPE, srs_id, True, EXPANDED_COLUMNS, label,
+                         f"{EXPANDED_IDENTIFIER}, de Geoblender: el banco siguiente con su cota en la Z, editable a mano en QGIS y usable como banco fijado")
+    set_column_titles(conn, table, EXPANDED_COLUMN_TITLES)
+    return True
+
+
+def write_expanded_layer(conn: sqlite3.Connection, table: str, rows: Iterable[ExpandedRow], *, srs_id: int | None = None, name: str = "") -> tuple[int, ...]:
+    """Reescribe ``table`` con ``rows`` (entera, en su orden, ``fid`` desde 1; anillos cerrados, float64 absoluto) y devuelve sus ``fid`` (RF-018-22). Al crear la operación o repetirla la escribe la
+    operación; después es de la persona. ``ValueError`` si dos filas repiten el nombre; ``TypeError`` si una fila no es :class:`ExpandedRow`. No confirma la transacción."""
+    found = tuple(rows)
+    _check_table(table)
+    for item in found:
+        if not isinstance(item, ExpandedRow):
+            raise TypeError(f"una fila de la capa del banco expandido es una ExpandedRow, no {item!r}")
+    names = [item.name for item in found]
+    if len(set(names)) != len(names):
+        raise ValueError(f"dos líneas de la capa del banco expandido repiten el nombre: {sorted(each for each in set(names) if names.count(each) > 1)}")
+    srs = _srs_for_write(conn, table, srs_id)
+    create_expanded_table(conn, table, srs, name)
+    conn.execute(f'DELETE FROM "{table}"')
+    conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
+    columns = ", ".join(("geom", *EXPANDED_COLUMN_NAMES))
+    marks = ", ".join("?" for _ in range(len(EXPANDED_COLUMN_NAMES) + 1))
+    fids: list[int] = []
+    for item in found:
+        blob = encode_geometry(GEOMETRY_TYPE, _closed(np.asarray(item.points), True), srs, True)
+        cursor = conn.execute(f'INSERT INTO "{table}" ({columns}) VALUES ({marks})', (blob, item.name, item.bench, item.kind, item.part, item.z_m, item.length_m))
+        fids.append(int(cursor.lastrowid or 0))
+    return tuple(fids)
+
+
+def read_expanded_layer(conn: sqlite3.Connection, table: str) -> tuple[ExpandedRow, ...]:
+    """Las líneas de ``table`` por ``fid`` (ninguna si no existe). **Solo lee**: la tabla es de la persona. ``ValueError`` si una fila no es un anillo cerrado con su Z."""
+    _check_table(table)
+    if not _exists(conn, table):
+        return ()
+    found = []
+    for fid, blob, name, bench, kind, part in conn.execute(f'SELECT fid, geom, name, bench, kind, part FROM "{table}" ORDER BY fid'):
+        if blob is None:
+            raise ValueError(f"la fila {fid} de «{table}» no tiene geometría")
+        points = _line(blob)
+        if len(points) < 4 or not bool((points[0] == points[-1]).all()):
+            raise ValueError(f"la fila {fid} de «{table}» no es un anillo cerrado")
+        found.append(ExpandedRow(name, bench, kind, points[:-1], part, table, int(fid)))
     return tuple(found)
 
 

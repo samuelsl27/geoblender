@@ -4009,6 +4009,24 @@ CATALOG: tuple[Message, ...] = (
         "Capa «{layer}», corta «{entity}»: el banco fijado «{value}» no es válido: {reason}{place}; corríjalo en QGIS; la línea del "
         "usuario no se cambia; no se crea nada.",
     ),
+    # T28 («Expandir banco…»; RF-018-22, P-12): la línea de partida, el paso vacío y la capa que la persona editó.
+    Message(
+        "des.pit_expand_source",
+        "Layer «{layer}», bench expansion «{entity}»: the line «{value}» cannot be expanded: {reason}; nothing is created.",
+        "Capa «{layer}», expansión de banco «{entity}»: la línea «{value}» no se puede expandir: {reason}; no se crea nada.",
+    ),
+    Message(
+        "des.pit_expand_empty",
+        "Bench expansion «{entity}»: the next bench of «{layer}» is empty (the offset leaves no line); nothing is created.",
+        "Expansión de banco «{entity}»: el banco siguiente de «{layer}» queda vacío (el desfase no deja ninguna línea); no se crea nada.",
+    ),
+    Message(
+        "des.pit_expand_layer_edited",
+        "The layer «{table}» of the bench expansion «{operation}» was edited outside Geoblender (it is yours: it is edited by hand in QGIS) and repeating the expansion would overwrite what you drew: keep it, "
+        "or discard the expansion and expand the bench again with another name.",
+        "La capa «{table}» de la expansión de banco «{operation}» se editó fuera de Geoblender (es suya: se edita a mano en QGIS) y repetir la expansión sobrescribiría lo que usted dibujó: consérvela, o "
+        "descarte la expansión y expanda el banco otra vez con otro nombre.",
+    ),
     Message(
         "des.pit_offset_unreliable",
         "Pit «{name}»: the offset of bench {bench} could not be verified (defect {value} m, over {limit} m); the result is not reliable.",

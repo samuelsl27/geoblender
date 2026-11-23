@@ -118,6 +118,7 @@ from . import (
     entity_store,
     fronts,
     pipeline,
+    pit_expand,
     pit_ramp,
     pit_store,
     platform,
@@ -163,6 +164,7 @@ __all__ = [
     "envelope_run",
     "excavation_area_run",
     "fill_only_run",
+    "pit_expand_run",
     "pit_run",
     "platform_run",
     "preview_steps",
@@ -244,15 +246,15 @@ class Calculation:
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
                  | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome
                  | platform.PlatformOutcome | stockpiles.StockpileOutcome | removal.RemovalOutcome
-                 | thickness.BodyOutcome | buttress.ButtressOutcome | AccessOutcome | RoadOutcome | ProposalOutcome | PitOutcome,
+                 | thickness.BodyOutcome | buttress.ButtressOutcome | AccessOutcome | RoadOutcome | ProposalOutcome | PitOutcome | pit_expand.ExpandOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object],
                  entity: entity_store.PreparedPlatform | stockpile_store.PreparedDetection
                  | supported_store.PreparedRemoval | supported_store.PreparedBody | supported_store.PreparedButtress
-                 | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal | pit_store.PreparedPit | None = None,
+                 | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal | pit_store.PreparedPit | pit_expand.PreparedExpand | None = None,
                  summary: preview.PlatformSummary | preview.StockpileSummary | preview.RemovalSummary
-                 | preview.BodySummary | preview.ButtressSummary | access_store.AccessSummary | preview.RoadSummary | road_store.ProposalSummary | preview.PitSummary | None = None) -> None:
+                 | preview.BodySummary | preview.ButtressSummary | access_store.AccessSummary | preview.RoadSummary | road_store.ProposalSummary | preview.PitSummary | pit_expand.ExpandSummary | None = None) -> None:
         self._project = project
         self._writer = writer
         self._start = start
@@ -467,7 +469,7 @@ class Calculation:
         una sola transacción registra los parámetros de la entidad, la operación, los datos y las cifras. Es
         :meth:`create_steps` llevado hasta el final. ``decided_by``: el decisor de los parámetros de la entidad (por defecto,
         quien tiene abierto el proyecto)."""
-        if isinstance(self.entity, stockpile_store.PreparedDetection | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal | pit_store.PreparedPit):
+        if isinstance(self.entity, stockpile_store.PreparedDetection | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal | pit_store.PreparedPit | pit_expand.PreparedExpand):
             stored: store.Stored | None = None
             for step in self.create_steps(decided_by=decided_by):
                 if step.result is not None:
@@ -566,7 +568,7 @@ class Calculation:
         sola transacción (:func:`~.road_store.create_propose_steps`: **ninguna superficie, ningún parámetro de entidad**; sin confirmaciones). **Una pista** sin la confirmación expresa de la pendiente media o de la calzada
         (:meth:`ensure_road_creatable`) se rechaza **antes de escribir nada y sin cerrar el cálculo**: se confirma (:meth:`confirm_road`) y se vuelve a crear."""
         found = self.entity
-        if not isinstance(found, stockpile_store.PreparedDetection | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal | pit_store.PreparedPit):
+        if not isinstance(found, stockpile_store.PreparedDetection | access_store.PreparedAccess | road_store.PreparedRoad | road_store.PreparedProposal | pit_store.PreparedPit | pit_expand.PreparedExpand):
             raise TypeError(f"solo una detección de acopios, una accesibilidad, una pista, una corta o una propuesta del trazado se crea por pasos, no «{self.op_type}»")
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
@@ -587,6 +589,10 @@ class Calculation:
                 assert isinstance(outcome, PitOutcome)
                 stored = yield from pit_store.create_pit_steps(self._project, self._writer, found, outcome, confirmed=self._pit_confirmed, decided_by=decided_by, budget_s=budget_s)
                 done = f"Corta «{self.name}» guardada"
+            elif isinstance(found, pit_expand.PreparedExpand):
+                assert isinstance(outcome, pit_expand.ExpandOutcome)
+                stored = yield from pit_expand.create_expand_steps(self._project, self._writer, found, outcome, budget_s=budget_s)
+                done = f"Banco «{self.name}» guardado"
             elif isinstance(found, road_store.PreparedProposal):
                 assert isinstance(outcome, ProposalOutcome)
                 stored = yield from road_store.create_propose_steps(self._project, self._writer, found, outcome, budget_s=budget_s)
@@ -853,6 +859,15 @@ def pit_run(project: StoreProject, request: PitRequest, *, version: str | None, 
     (**un desfase que no se pudo verificar**, ``des.pit_offset_not_verified``, RF-018-10; la rampa que no cabe, RF-018-20…). Cerrar el generador a mitad (Esc) o un fallo no dejan nada
     (RF-015-29, RF-018-35). Crearla es la T23 (:meth:`Calculation.create`), con :meth:`Calculation.confirm_pit` si pide confirmar la pendiente media de una rampa (RF-018-19)."""
     return _pit_steps(project, request, version, masks, code, supersedes, tuple(confirmed), budget_s)
+
+
+def pit_expand_run(project: StoreProject, request: pit_expand.ExpandRequest, *, version: str | None, masks: MaskSet | None = None, supersedes: str | None = None,
+                   budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**«Calcular»** «Expandir banco…» ``request`` en la versión ``version`` por pasos de ``budget_s`` como mucho (spec 018, T28; RF-018-22, RF-015-03, RF-015-29): el último ``Progress`` lleva la
+    :class:`Calculation` de ``des.pit_expand``, con su resultado (``Calculation.outcome``: :class:`~.pit_expand.ExpandOutcome`, el banco siguiente con su comprobación), su resumen
+    (:class:`~.pit_expand.ExpandSummary`) y **nada registrado ni escrito en el proyecto**. **No es una entidad**: ninguna superficie ni parámetro de entidad. Crearla es :meth:`Calculation.create` o
+    :meth:`Calculation.create_steps` (deja la capa ``des_pxb_``, editable en QGIS); descartarla no deja nada. Los rechazos salen al avanzar y antes de escribir."""
+    return _expand_steps(project, request, version, masks, supersedes, budget_s)
 
 
 def road_propose_run(project: StoreProject, request: RoadRequest, *, version: str | None, masks: MaskSet | None = None, supersedes: str | None = None,
@@ -1219,6 +1234,22 @@ def _propose_steps(project: StoreProject, request: RoadRequest, version: str | N
         summary = road_store.propose_summary(outcome, version=found.code, profile=prepared.profile)
         calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices, seeds=None, values=road_store.propose_values(prepared),
                                   entity=prepared, summary=summary)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda nada
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _expand_steps(project: StoreProject, request: pit_expand.ExpandRequest, version: str | None, masks: MaskSet | None, supersedes: str | None,
+                  budget_s: float) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.PIT_EXPAND)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: pit_expand.PreparedExpand = yield from _prepare_steps(pit_expand.prepare_expand_units(project, request, found, loaded, supersedes=supersedes), budget_s)
+    writer = store.DesignWriter(project, provenance.PIT_EXPAND, request.name, version=found.uid, supersedes=supersedes)
+    try:
+        outcome: pit_expand.ExpandOutcome = yield from pit_expand.expand_compute_steps(prepared.job, prepared.polyline, budget_s=budget_s)
+        summary = pit_expand.expand_summary(outcome, version=found.code)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices, seeds=None, values=prepared.values, entity=prepared, summary=summary)
     except BaseException as error:  # un fallo o cerrar el generador: no queda nada
         writer.close(error)
         raise

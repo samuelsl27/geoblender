@@ -1839,6 +1839,27 @@ class DesignWriter:
         self._vectors[provenance.ROUTE_LAYER_TABLE] = _Declared(provenance.ROUTE_LAYER_TABLE, planned, rows)
         return planned
 
+    def pit_expanded_layer_steps(self, rows: Iterable[Any]) -> Generator[None, None, DatasetSpec]:
+        """Prepara la capa propuesta de «Expandir banco…» (``pxb``; spec 018, T28; RF-018-22, P-12) con ``rows`` (:class:`~.pit_layer.ExpandedRow`), **sin registrar nada**: una capa de líneas con Z del
+        GeoPackage del proyecto **editable a mano en QGIS** (``DatasetSpec.qgis_editable``), como :meth:`route_layer_steps`. Devuelve su ``DatasetSpec``. ``ValueError`` si la operación no la produce;
+        ``TypeError`` si una fila no es una ``ExpandedRow``."""
+        from .pit_layer import ExpandedRow  # al usarlo: ``pit_layer`` importa este módulo
+
+        self._produces(provenance.PIT_EXPANDED_TABLE, "vector")
+        chosen = tuple(rows)
+        for item in chosen:
+            if not isinstance(item, ExpandedRow):
+                raise TypeError(f"una fila de la capa del banco expandido es una ExpandedRow, no {item!r}")
+        return self._pit_expanded_steps(chosen)
+
+    def _pit_expanded_steps(self, rows: tuple[Any, ...]) -> Generator[None, None, DatasetSpec]:
+        planned = provenance.dataset_spec(provenance.PIT_EXPANDED_TABLE, self.name, self.version_code, crs_epsg=self.crs.epsg)
+        with self.project.read() as conn:
+            self._check_place(conn, planned)
+        yield
+        self._vectors[provenance.PIT_EXPANDED_TABLE] = _Declared(provenance.PIT_EXPANDED_TABLE, planned, rows)
+        return planned
+
     def pit_lines_steps(self, family: str, rows: Iterable[Any]) -> Generator[None, None, DatasetSpec]:
         """Prepara las líneas con Z de una corta (``pbl``, las polilíneas, o ``psk``, la línea de cielo; spec 018, T23; RF-018-01, RF-018-25) con ``rows`` (:class:`~.pit_lines.LineRow`; la tabla se escribe
         **entera** al registrar la operación, ``design.pit_lines.write_pit_lines``), **sin registrar nada**: una capa de líneas del GeoPackage del proyecto, no editable a mano, cuyo hash calcula la operación
@@ -1933,6 +1954,11 @@ class DesignWriter:
             from .road_layer import write_route_layer  # al usarlo: ``road_layer`` importa este módulo
 
             write_route_layer(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg, name=self.name)
+            return
+        if declared.family == provenance.PIT_EXPANDED_TABLE:
+            from .pit_layer import write_expanded_layer  # al usarlo: ``pit_layer`` importa este módulo
+
+            write_expanded_layer(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg, name=self.name)
             return
         if declared.family == provenance.PIT_LAYER_TABLE:
             from .pit_layer import write_pit_layer  # al usarlo: ``pit_layer`` importa este módulo
@@ -4227,6 +4253,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import pit_layer  # al usarlo: pit_layer importa este módulo
 
         return pit_layer.recompute_pit_layer(request, budget_s=budget_s)
+    if request.op_type == provenance.PIT_EXPAND:  # «Expandir banco…» (T28); nunca cae en un escalonado
+        from . import pit_expand  # al usarlo: pit_expand importa este módulo
+
+        return pit_expand.recompute_expand(request, budget_s=budget_s)
     if request.op_type in provenance.PIT_VERSION_TYPES:
         # El resto de tipos de la 018 (T02): sin cálculo todavía; las tareas que crean la operación lo ponen aquí. Nunca cae en un escalonado.
         raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 018 que crea su operación")

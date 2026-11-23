@@ -434,6 +434,11 @@ def noramp_parts(layer: FeatureLayer) -> Parts | None:
 # --- Los bancos fijados, la roseta, las rampas y su inicio (T21b) -----------------------------------------------------------
 
 
+_EXPANDED_PREFIX = provenance.FAMILIES_BY_CODE[provenance.PIT_EXPANDED_TABLE].prefix
+_FIXED_PREFIXES = (*_LINES_3D_PREFIXES, _EXPANDED_PREFIX)
+"""Las capas de líneas con Z que valen como bancos fijados: las líneas de rotura, la capa propuesta de la 017 y, desde la T28, la del banco expandido (``des_pxb_``)."""
+_VERSION_PREFIXES = (_ROUTE_PREFIX, _EXPANDED_PREFIX)
+"""Las que son un dato de **una versión** (el resto es del proyecto)."""
 _BENCH_START = re.compile(r"banco\s+(\d+)", re.IGNORECASE)
 
 
@@ -452,10 +457,10 @@ def _fixed_benches(project: StoreProject, version: Version, request: PitRequest,
     if request.fixed is None:
         return ()
     name = request.fixed.layer
-    if not name.startswith(_LINES_3D_PREFIXES):
-        raise _fixed_error(request, code, name, name, "no es una línea de rotura (gis_brk_…) ni una capa propuesta (des_rpl_…): una capa de entidades no guarda la Z")
+    if not name.startswith(_FIXED_PREFIXES):
+        raise _fixed_error(request, code, name, name, "no es una línea de rotura (gis_brk_…), una capa propuesta (des_rpl_…) ni un banco expandido (des_pxb_…): una capa de entidades no guarda la Z")
     with project.read() as conn:
-        record = dataset_registry.get(conn, name, version_uid=version.uid if name.startswith(_ROUTE_PREFIX) else "")
+        record = dataset_registry.get(conn, name, version_uid=version.uid if name.startswith(_VERSION_PREFIXES) else "")
         if record is None:
             raise GisError("gis.dataset_unknown", obj="Dato de topografía", field="dato", value=name)
         lines = read_lines_3d(conn, record.locator)
