@@ -1907,7 +1907,7 @@ class DesignWriter:
         if declared.family in (provenance.PIT_POLYLINES_TABLE, provenance.PIT_SKYLINE_TABLE):
             from .pit_lines import write_pit_lines  # al usarlo
 
-            write_pit_lines(conn, declared.spec.locator, declared.family, declared.rows, srs_id=self.crs.epsg, label=self.name)
+            write_pit_lines(conn, declared.spec.locator, declared.family, declared.rows, srs_id=self.crs.epsg, label=f"{self.name} {self.version_code}")
             return
         write = write_entity_layer if declared.family == provenance.ENTITY_MAP_TABLE else write_declared
         write(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
@@ -4179,8 +4179,12 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import road_store  # al usarlo: road_store importa este módulo
 
         return road_store.recompute_propose(request, budget_s=budget_s)
+    if request.op_type == provenance.PIT:  # la corta (T24); nunca cae en un escalonado
+        from . import pit_store  # al usarlo: pit_store importa este módulo
+
+        return pit_store.recompute_pit(request, budget_s=budget_s, released=released)
     if request.op_type in provenance.PIT_VERSION_TYPES:
-        # El tipo de la 018 (T02): sin cálculo todavía; las tareas que crean la operación lo ponen aquí. Nunca cae en un escalonado.
+        # El resto de tipos de la 018 (T02): sin cálculo todavía; las tareas que crean la operación lo ponen aquí. Nunca cae en un escalonado.
         raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 018 que crea su operación")
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,

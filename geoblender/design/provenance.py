@@ -253,6 +253,7 @@ from .params import (
     ButtressParam,
     PitParam,
     PitRampParam,
+    PitSectorParam,
     PlatformParam,
     RemovalParam,
     RoadParam,
@@ -613,6 +614,7 @@ __all__ = [
     "pit_expand_figures",
     "pit_figures",
     "pit_operation_defs",
+    "pit_request",
     "ramp_confirmation",
     "ramp_confirmed",
     "propose_figures",
@@ -4398,8 +4400,69 @@ def pit_settings(request: PitRequest, code: str) -> dict[str, Any]:
     if not isinstance(request, _PitRequest):
         raise TypeError(f"los ajustes de una corta salen de una PitRequest, no {request!r}")
     _typed_code(code, "pit", "una corta")
-    return {"name": request.name, "code": code,
-            "fields": {"name_field": request.fields.name_field, "level_field": request.level_field, "fixed_field": request.fixed_field}}
+    fields: dict[str, Any] = {"name_field": request.fields.name_field, "level_field": request.level_field, "fixed_field": request.fixed_field}
+    if request.fixed is not None:  # el campo de los nombres de la capa de fijados y de la de zonas sin rampa: solo si hay capa (T24: un recálculo los nombra igual)
+        fields["fixed_name_field"] = request.fixed.name_field
+    if request.noramp is not None:
+        fields["noramp_name_field"] = request.noramp.name_field
+    return {"name": request.name, "code": code, "fields": fields}
+
+
+_PIT_NUMBERS = ("top_level_m", "bottom_level_m", "min_floor_width_m", "arc_tol_m", "simplify_m", "close_radius_m", "az_window_m")
+"""Los valores decimales de la corta (el nombre del parámetro y el del campo de ``PitRequest`` coinciden)."""
+
+
+def pit_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]) -> PitRequest:
+    """La corta que repiten los ajustes ``settings`` de una operación ``des.pit`` (los de :func:`pit_settings`) con los valores de los parámetros de su entidad ``parameters`` (por último
+    segmento: :func:`supported_values`): al recalcularla, al reproducirla y al calcular una traída (spec 018, T24; RF-018-01, RF-015-01, RF-015-02). Es la inversa de :func:`pit_settings` junto
+    con los valores de la entidad (:func:`~.pit_store.pit_values`). **Los valores por sector** (``profile.talud_norte``, ``rose.…``, ``n_berm.…``) también están en ``parameters``. El nombre y los
+    campos de las capas salen de los ajustes; lo que no tiene valor queda ``None``. **No** lleva ``protect`` ni ``guard_m``. ``ValueError`` si no son los de una corta (nombrando el campo)."""
+    from .pit_model import PitRequest as _PitRequest  # al usarlo: habilitar no la crea (RNF-001-03)
+    from .road_model import LayerFields
+    what = "los ajustes de una corta"
+    values_what = "los valores de una corta"
+    data = _mapping(settings, what)
+    fields_what = f"{what}, «fields»,"
+    fields = _mapping(data.get("fields"), fields_what)
+    sector_names = {item.value for item in PitSectorParam}
+    plain: dict[str, Any] = {}
+    by_sector: dict[str, dict[str, Any]] = {name: {} for name in sector_names}
+    for key, value in _mapping(parameters, values_what).items():
+        name, dot, segment = key.partition(".")
+        if not dot:
+            plain[key] = value
+        elif name in sector_names and segment and "." not in segment:
+            by_sector[name][segment] = value
+        else:
+            raise ValueError(f"{values_what} son de los de una corta o de un sector («valor.sector»), no «{key}»")
+    values = _values_of(PitParam, plain, values_what)
+    layer = _value_text(values, "layer", values_what, required=True)
+    mode = _value_text(values, "mode", values_what, required=True)
+    start = _value_text(values, "start", values_what, required=True)
+    assert layer is not None and mode is not None and start is not None
+    fixed_layer, noramp_layer = _value_text(values, "fixed_layer", values_what), _value_text(values, "noramp_layer", values_what)
+    ramps = _value_text(values, "ramps", values_what)
+    numbers_found = {name: _number(values, name, values_what) for name in _PIT_NUMBERS}
+
+    def pairs(name: str, integer: bool) -> tuple[tuple[str, Any], ...]:
+        found = sorted(by_sector[name].items())
+        for segment, value in found:
+            if integer and (isinstance(value, bool) or not isinstance(value, numbers.Integral)):
+                raise ValueError(f"{values_what} llevan «{name}.{segment}» como un número entero, no {value!r}")
+            if not integer and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{values_what} llevan «{name}.{segment}» como un texto, no {value!r}")
+        return tuple(found)
+
+    return _PitRequest(
+        name=_required_text(data, "name", what), fields=LayerFields(layer, _optional_text(fields, "name_field", fields_what)), mode=mode, start=start,
+        level_field=_optional_text(fields, "level_field", fields_what), support=_value_text(values, "support", values_what),
+        fixed=None if fixed_layer is None else LayerFields(fixed_layer, _optional_text(fields, "fixed_name_field", fields_what)),
+        fixed_field=_optional_text(fields, "fixed_field", fields_what),
+        noramp=None if noramp_layer is None else LayerFields(noramp_layer, _optional_text(fields, "noramp_name_field", fields_what)),
+        profile=_value_text(values, "profile", values_what), rose=_value_text(values, "rose", values_what), n_berm=_value_integer(values, "n_berm", values_what),
+        sector_profiles=pairs("profile", False), sector_roses=pairs("rose", False), sector_n_berm=pairs("n_berm", True),
+        ramps=() if ramps is None else tuple(part.strip() for part in ramps.split(",") if part.strip()),
+        max_benches=_value_integer(values, "max_benches", values_what), corner=_value_text(values, "corner", values_what), **numbers_found)
 
 
 PIT_RAMP_CONFIRMED = "ramp_confirmed"

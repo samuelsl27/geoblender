@@ -264,6 +264,7 @@ from .model import (
 from .params import (
     PLATFORM_PARAMS,
     BodyParam,
+    PitSectorParam,
     PlatformParam,
     RoadParam,
     check_entity_param,
@@ -1427,6 +1428,9 @@ def _row_kind(row: EntityParamRow) -> str:
     clave (``des.<tipo>.{e}.<valor>``). ``ValueError`` si no es la clave de un valor de una entidad."""
     found = parse_entity_key(row.key)
     if found is None:
+        parts = row.key.split(".")
+        if len(parts) == 5 and parts[:2] == ["des", "pit"] and parts[3] in {item.value for item in PitSectorParam}:  # un valor por sector de una corta (ADR-0029; T24)
+            return "ADOPTADO"
         raise ValueError(f"«{row.key}» no es la clave de un valor de una entidad (des.<tipo>.<código>.<valor>)")
     return entity_params(found[1]).template(found[2]).kind
 
@@ -4513,7 +4517,7 @@ _POINT_REFERENCES: Mapping[str, tuple[tuple[RoadParam, str], ...]] = MappingProx
 """Los valores que son **un texto con el código de otra entidad**, por tipo (spec 017, T22b; hallazgo C-4 con la pista), con el aviso de lo que se pierde: el origen de una pista
 (``RDW-001@100,5``, un punto del eje de otra pista) y su destino (``entity:PLT-001``, una entidad). Traer las entidades de otra versión los re-apunta como la partida y el apoyo
 (:func:`bring_entities`); el nombre de un punto de la capa no es una referencia y se conserva."""
-_NAME_ROW_KINDS = frozenset({"road"})
+_NAME_ROW_KINDS = frozenset({"road", "pit"})
 """Los tipos cuya operación **no lee el nombre** de la entidad ni nada que lo lea lo declara (la pista: no declara, D-15) y que, por eso, no tienen la fila del proyecto de su nombre que pide
 «Cambiar parámetro…» para renombrarla (spec 017, T29c): la crea quien las crea o las trae (``road_store.ensure_name_row``; aquí, :func:`bring_entities`)."""
 
@@ -4709,6 +4713,18 @@ def _entity_rows(store: ParameterStore, conn: sqlite3.Connection, source: Versio
         if found.kind is ParamKind.CALCULADO:
             why += f"; era CALCULADO en {source.code}: se trae su valor, no la cifra"
         rows.append(_BringRow(entity_key(fresh, param), found, value, why))
+    if record.kind == EntityKind.PIT:  # los valores por sector de una corta (ADR-0029; spec 018, T24): no son nombres de la familia de su tipo
+        prefix = entity_key(record.code, PlatformParam.NAME)[:-len("name")]
+        sectors = {item.value for item in PitSectorParam}
+        stored = sorted({str(row[0]) for row in conn.execute("SELECT key FROM gb_parameter WHERE key LIKE ? AND scope_uid = ?", (prefix + "%", source.uid))})
+        for key in stored:
+            rest = key[len(prefix):]
+            if not key.startswith(prefix) or rest.count(".") != 1 or rest.partition(".")[0] not in sectors:
+                continue
+            found = store.get(key, version=source.uid, conn=conn)
+            if found is None or found.value is None:
+                continue
+            rows.append(_BringRow(entity_key(fresh, PlatformParam.NAME)[:-len("name")] + rest, found, found.value, _BROUGHT.format(label=label)))
     return rows
 
 

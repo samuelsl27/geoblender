@@ -56,7 +56,8 @@ from ..core.constraints import store as constraint_store
 from ..core.constraints.model import ConstraintType
 from ..core.datasets import registry as dataset_registry
 from ..core.project.model import Progress
-from ..core.provenance.operations import Use
+from ..core.provenance.operations import OperationHandle, Use
+from ..core.provenance.recompute import RecomputeRequest
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.versions.model import Version
 from ..gis import polygons
@@ -156,7 +157,7 @@ from .store import (
 from .surfaces import project_frame, read_surface_steps
 from .zones import polygons_cells
 
-__all__ = ["OFFSET_NOT_VERIFIED", "OTHERS_SEEN", "OTHER_DESIGN_DIFFERS", "PreparedPit", "compare_others", "compute", "compute_steps", "confirm_ramps", "create_pit", "create_pit_steps",
+__all__ = ["ensure_name_row", "entity_pit_request", "pit_parameters", "recompute_pit", "run_pit", "OFFSET_NOT_VERIFIED", "OTHERS_SEEN", "OTHER_DESIGN_DIFFERS", "PreparedPit", "compare_others", "compute", "compute_steps", "confirm_ramps", "create_pit", "create_pit_steps",
            "other_designs_steps", "pit_bench_rows", "pit_entity_rows", "pit_finding_rows", "pit_obsolete", "pit_operation_start", "pit_polyline_rows", "pit_ramp_rows", "pit_report_rows",
            "pit_skyline_rows", "pit_summary", "prepare_pit", "prepare_pit_units", "source_sha256", "summary_of"]
 
@@ -1299,6 +1300,7 @@ def create_pit_steps(project: StoreProject, writer: DesignWriter, prepared: Prep
                 raise ValueError(f"la entidad {prepared.code} no tiene sus parámetros en su versión: no está en ella (se prepara sin su código)")
         else:
             entity_store.set_entity_params(project, prepared.rows, version=prepared.version_uid, decided_by=decided_by, conn=conn)
+            ensure_name_row(project, prepared.code, conn=conn)  # T24: la fila del proyecto del nombre, que pide «Cambiar parámetro…»
         if handle is not None:
             late.register(conn, handle)
 
@@ -1315,3 +1317,128 @@ def create_pit(project: StoreProject, writer: DesignWriter, prepared: PreparedPi
         except StopIteration as stop:
             result: Stored = stop.value
             return result
+
+
+# --- Recalcular, la petición de una traída y el nombre (T24) -----------------------------------------------------------------------------
+
+
+def pit_parameters(project: StoreProject, version: Version, code: str) -> dict[str, Any]:
+    """Los parámetros vigentes de la corta ``code`` en ``version`` (:func:`~.entity_store.entity_parameters`: versión → proyecto) **y sus valores por sector**
+    (spec 018, T24; ADR-0029; RF-018-06 a 09), por último segmento de su clave: los de sector, como ``profile.talud_norte``. Es la definición de la entidad (RF-015-01)
+    con la que se recalcula y se calcula una traída. Solo lee."""
+    values = entity_store.entity_parameters(project, code, version=version)
+    prefix = entity_key(code, PitParam.NAME)[:-len("name")]
+    names = {item.value for item in PitSectorParam}
+    with project.read() as conn:
+        found = sorted({str(row[0]) for row in conn.execute("SELECT key FROM gb_parameter WHERE key LIKE ? AND scope_uid IN ('', ?)", (prefix + "%", version.uid))})
+    keys = {key: key[len(prefix):] for key in found
+            if key.startswith(prefix) and key[len(prefix):].count(".") == 1 and key[len(prefix):].partition(".")[0] in names}
+    with project.read() as conn:
+        resolved = ParameterStore(project).resolve_many(conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid) if keys else {}
+    for key, short in keys.items():
+        item = resolved.get(key)
+        if item is not None and item.value is not None:
+            values[short] = item.value
+    return values
+
+
+DEFAULT_LEVEL_FIELD = "cota_m"
+"""El campo de la cota del fondo de una corta ascendente traída (decisión por defecto de la T24, revisable): ni el campo de la cota ni el de los nombres son parámetros de la entidad y una
+traída no los trae; el de la cota es el que nombra la spec (``cota_m``) y, si la capa no lo tiene, el cálculo lo dice."""
+
+
+def entity_pit_request(project: StoreProject, version: Version | str, code: str) -> PitRequest:
+    """**La petición de una corta sin calcular** de la versión editable ``version`` (spec 018, T24; RF-015-18, RF-018-01, RF-015-04): la que dejan «Traer las entidades de…» y la versión
+    que parte de otra, con sus parámetros y **ningún resultado**: lo que ya tiene la versión (:func:`pit_parameters`) con :func:`~.provenance.pit_request`, la misma que repite el recálculo.
+    **El campo de los nombres de las capas** no es un parámetro y una corta traída no lo trae (el de la cota, en la ascendente, es :data:`DEFAULT_LEVEL_FIELD`). Es lo que se da a :func:`~.steps.pit_run` con ``code=`` para calcularla: con su
+    **código**, sin crear otra entidad. Solo lee. Rechazos: los de ``require_version``, ``des.entity_already_discarded``, ``des.entity_calculate_done`` y ``des.entity_calculate_missing``
+    (sin capa, modo o partida); ``ValueError`` si la versión no tiene la entidad o no es una corta."""
+    found = require_version(project, version.uid if isinstance(version, Version) else version, provenance.PIT)
+    entry = entities.registry(project, found.uid).get(code)
+    if entry is None:
+        raise ValueError(f"la versión {found.code} no tiene ninguna entidad con el código o el nombre {code!r}")
+    record = entry.record
+    if record.kind is not EntityKind.PIT:
+        raise ValueError(f"{record.code} no es el código de una corta, sino de una entidad de tipo {record.kind}")
+    obj = entity_store._entity_object(record.code, record.name)
+    if record.state is EntityState.DISCARDED:
+        raise DesignError("des.entity_already_discarded", obj=obj, field="estado", value=str(record.state), entity=record.name, version=found.code)
+    if record.state is not EntityState.UNCALCULATED:
+        raise DesignError("des.entity_calculate_done", obj=obj, field="estado", value=str(record.state), entity=record.name, code=record.code, version=found.code)
+    values = pit_parameters(project, found, record.code)
+    for param in (PitParam.LAYER, PitParam.MODE, PitParam.START):
+        text = values.get(param.value)
+        if not isinstance(text, str) or not text.strip():
+            raise DesignError("des.entity_calculate_missing", obj=obj, field=entity_key(record.code, param), value=None, entity=record.name, code=record.code, version=found.code)
+    level = DEFAULT_LEVEL_FIELD if values.get(PitParam.MODE.value) == PitMode.UP.value else None
+    return provenance.pit_request({"name": record.name, "code": record.code, "fields": {"name_field": None, "level_field": level}}, values)
+
+
+def ensure_name_row(project: StoreProject, code: str, *, conn: sqlite3.Connection) -> Any:
+    """La fila **del proyecto** del nombre de la corta ``code`` (``des.pit.{e}.name``), que la crea «sin confirmar» y sin valor si no estaba (spec 018, T24; RF-015-08): «Cambiar
+    parámetro…» pide la fila del proyecto del parámetro antes de cambiar la de la versión y la operación de la corta **no lee su nombre**, así que sin esto una corta no se podía renombrar.
+    Escribe en la transacción ``conn``. ``ValueError`` si ``code`` no es el de una corta."""
+    from .params import parse_entity_key
+    parsed = parse_entity_key(entity_key(code, PitParam.NAME))
+    if parsed is None or parsed[1] != EntityKind.PIT.value:
+        raise ValueError(f"{code!r} no es el código de una corta")
+    return ParameterStore(project).ensure_default(conn, entity_key(code, PitParam.NAME), geoblender_version=project.session.geoblender_version)
+
+
+def _check_recorded(handle: OperationHandle, prepared: PreparedPit) -> None:
+    """Los parámetros que anotó la operación al empezar son los que leyó el cálculo al prepararse (RF-013-17, D-14): los de la entidad y los del proyecto; si uno cambió entre las dos
+    cosas, el resultado ya no le corresponde (``des.input_changed``, con el parámetro)."""
+    read: dict[str, object] = {entity_key(prepared.code, PitParam(name)): value for name, value in prepared.values.items()}
+    read.update(prepared.common)
+    for param in handle.params:
+        if param.key in read and param.value != read[param.key]:
+            raise DesignError("des.input_changed", obj=f"Parámetro «{param.key}»", field="parámetros", value=param.key)
+
+
+def run_pit(project: StoreProject, request: PitRequest, *, version: str | None, code: str, masks: access.MaskSet | None = None, supersedes: str | None = None,
+            confirmed: Sequence[provenance.RampConfirmation] = (), released: Sequence[provenance.ReleasedSupport] = (), budget_s: float = STEP_BUDGET_S
+            ) -> tuple[OperationHandle, Any]:
+    """Calcula y registra ``request`` —la corta de la entidad ``code``, que ya está en su versión— de **una vez**, sin pedir confirmación a la persona (spec 018, T24; RF-018-01,
+    RF-015-02, RF-015-16; el recálculo de lo obsoleto, :func:`~.store.recompute_run`): prepara (:func:`prepare_pit`), empieza la operación ``des.pit`` **antes de calcular** —sustituye a
+    ``supersedes``— con lo que lee hoy y devuelve su ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama: calculan (:func:`compute_steps` con los otros diseños
+    de la versión), escriben y completan la operación en una transacción (:func:`create_pit_steps` con el escritor reanudado; no escribe los parámetros, que ya están). El último paso lleva
+    lo guardado (:class:`~.store.Stored`). **Un recálculo no confirma por la persona**: ``confirmed`` (lo confirmado al crear la que sustituye) se arrastra a la operación nueva y, si la
+    media nueva pasa de ello, ``des.pit_ramp_mean_over`` al avanzar, antes de escribir. ``released`` (apoyo retirado) es de la T25: no vacío es ``NotImplementedError``."""
+    if released:
+        raise NotImplementedError("dar por buena una corta sin una entidad en que se apoyaba lo hace la T25 de la 018")
+    prepared = prepare_pit(project, request, version=version, masks=masks, code=code, supersedes=supersedes)
+    start = prepared.start
+    if confirmed:
+        start = replace(start, settings={**start.settings, provenance.PIT_RAMP_CONFIRMED: [item.settings() for item in confirmed]})
+    handle = start.begin(project)
+    return handle, _pit_run(project, handle, prepared, tuple(confirmed), supersedes, budget_s)
+
+
+def _pit_run(project: StoreProject, handle: OperationHandle, prepared: PreparedPit, confirmed: tuple[provenance.RampConfirmation, ...], supersedes: str | None,
+             budget_s: float) -> Generator[Progress, None, None]:
+    frame = project_frame(project)
+    with DesignWriter.resume(project, handle) as writer:
+        _check_recorded(handle, prepared)
+        outcome: PitOutcome = yield from compute_steps(prepared.job, prepared.window, prepared.common, crs=frame.crs, vertical=frame.vertical, confirmed=confirmed, budget_s=budget_s)
+        outcome = yield from compare_others(project, prepared, outcome, supersedes=supersedes)
+        stored: Stored = yield from create_pit_steps(project, writer, prepared, outcome, confirmed=confirmed, budget_s=budget_s)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+
+
+def recompute_pit(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S, released: Sequence[provenance.ReleasedSupport] = ()
+                  ) -> tuple[OperationHandle, Any]:
+    """Repite la operación ``des.pit`` de ``request`` (:func:`~.store.recompute_run`; «Recalcular lo obsoleto», RF-008-26; spec 018, T24; RF-018-01, RF-015-02, RF-015-16): la corta de sus
+    ajustes (el nombre, el código y los campos de las capas) con los **parámetros vigentes de su entidad en su versión** (:func:`pit_parameters`, con los de sector) y no los que leyó la
+    operación que sustituye. La capa de origen (su geometría), la partida, los perfiles, las rosetas, las rampas, las máscaras y los otros diseños son entradas o parámetros de la operación:
+    cambiar uno la deja obsoleta **entera** con su causa y recalcular la repite con lo nuevo. Devuelve lo de :func:`run_pit`, con lo que la persona confirmó al crearla. ``TypeError`` si la
+    petición no es una ``RecomputeRequest``; ``ValueError`` si no es de ``des.pit``."""
+    if not isinstance(request, RecomputeRequest):
+        raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
+    if request.op_type != provenance.PIT:
+        raise ValueError(f"recompute_pit repite {provenance.PIT}, no «{request.op_type}»")
+    project: StoreProject = request.project  # type: ignore[assignment]
+    code = provenance.supported_code(request.settings)
+    found = require_version(project, request.version, provenance.PIT)
+    asked = provenance.pit_request(request.settings, pit_parameters(project, found, code))
+    return run_pit(project, asked, version=found.uid, code=code, supersedes=request.operation_uid, confirmed=provenance.ramp_confirmed(request.settings), released=released,
+                   budget_s=budget_s)
