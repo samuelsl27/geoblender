@@ -1706,8 +1706,8 @@ superficie entera (``des_psf_``), su huella (``des_epr_``: es lo que sale en la 
 (``des_rdx_``) y su informe, y deja también ``des.supported_m3`` (lo que se le apoya: RF-015-15); la accesibilidad, lo alcanzable, sus
 bermas, plataformas y zonas «requiere acceso» y su informe; la propuesta, solo su capa de líneas con Z, editable (``des_rpl_``). La
 edición de los perfiles de pista no está aquí: es de proyecto y no se repite (:data:`ROAD_PROFILE_OPERATIONS`)."""
-PIT_COMMAND = "geoblender.des_new_pit"
-"""La orden que lanza la corta: **la provisional del catálogo** («Nueva corta…», D-20); la sustituye la tarea de la fase G que entrega la clase real."""
+PIT_COMMAND = "geoblender.des_create_pit"
+"""La orden que lanza la corta: «Nueva corta…» (``bl.ops.des_pit``, T31). Sustituye a la provisional ``des_new_pit`` del catálogo (D-20)."""
 PIT_EXPAND_COMMAND = "geoblender.des_expand_bench"
 PIT_LAYER_COMMAND = "geoblender.des_compute_daylight"
 PIT_ROSE_COMMAND = PIT_COMMAND

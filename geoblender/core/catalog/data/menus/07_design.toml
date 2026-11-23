@@ -216,7 +216,7 @@ action = "S"
 frequency = 1
 
 [[menu.group.item.item]]
-key = "geoblender.des_new_pit"
+key = "geoblender.des_create_pit"
 label.en = "New pit…"
 label.es = "Nueva corta…"
 description.en = "Pit from the floor, the limit or the crest"

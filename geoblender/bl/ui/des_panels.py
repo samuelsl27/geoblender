@@ -2112,6 +2112,29 @@ def _mean_confirmation_text(calculation: Calculation) -> str:
               mean=_number(summary.gradient_mean_pct, 2), limit=_number(summary.mean_limit_pct, 2), stretches=stretches)  # type: ignore[union-attr]
 
 
+def _pit_mode_text(mode: str) -> str:
+    """El modo de una corta (``up`` o ``down``) en el idioma de Geoblender."""
+    return tr("ascending") if mode == "up" else tr("descending")
+
+
+def _pit_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de una corta calculada (``design.preview.PitSummary``; spec 018, T31; RF-018-03, RF-018-19; M1): su modo, su perfil, los bancos, el volumen de corte y el área, las rampas
+    y los hallazgos (que van en el informe y en su capa) y, **en ámbar, lo que pide su confirmación expresa**: la pendiente media de una rampa por encima de la de su perfil (con un
+    motivo, que queda registrado: el botón que la crea la confirma). Los avisos con su lugar y lo que quedará obsoleto los añade :func:`summary_lines` (son los ``notices`` del cálculo)."""
+    summary = calculation.summary
+    benches = tr("1 bench") if _one(summary.benches) else tr("{count} benches", count=_number(summary.benches))  # type: ignore[union-attr]
+    profile = tr(" · profile «{profile}»", profile=summary.profile) if summary.profile else ""  # type: ignore[union-attr]
+    lines = [(tr("Pit «{name}» ({code}) · mode «{mode}»{profile}: {benches} · cut {cut} m³ · area {area} m²", name=calculation.name, code=summary.code,  # type: ignore[union-attr]
+                 mode=_pit_mode_text(summary.mode), profile=profile, benches=benches, cut=_number(summary.cut_m3), area=_number(summary.area_m2)), False)]  # type: ignore[union-attr]
+    if summary.ramps or summary.findings:  # type: ignore[union-attr]
+        lines.append((tr("{ramps} ramps · {findings} findings (in the report and in the layers of the pit)", ramps=_number(len(summary.ramps)),  # type: ignore[union-attr]
+                         findings=_number(summary.findings)), False))  # type: ignore[union-attr]
+    for ramp, mean, limit in calculation.mean_pending:
+        lines.append((tr("The mean gradient of the ramp «{ramp}», {mean} %, passes the {limit} % of its road profile; the pit is not created without your express confirmation and a "
+                         "reason, which stays recorded with who and when; the button that creates it confirms it", ramp=ramp, mean=_number(mean, 2), limit=_number(limit, 2)), True))
+    return lines
+
+
 def _road_notices(calculation: Calculation) -> tuple[Any, ...]:
     """Los avisos del cálculo de una pista que siguen a su resumen en el diálogo: **sin el de los tramos más empinados de la media por encima de pm cuando pide confirmarla** (lo dice, con los
     tramos, :func:`_mean_confirmation_text`: T51, H3-6). Lo demás, tal cual y en su orden."""
@@ -2258,7 +2281,7 @@ def draw_access_lists(layout: Any, width_px: int) -> None:
 SUMMARY_WIDTH_PX = 520
 """El ancho de los diálogos de «Calcular» (px a escala 1,0): con el que se cuentan las filas que ocupa el resumen (:func:`summary_lines`); es el de ``bl.ops.des.DIALOG_WIDTH`` (una prueba lo comprueba:
 ``bl.ops`` importa esta ventana y no al revés)."""
-_DIALOG_CAPPED = frozenset({design_provenance.ROAD, design_provenance.ROAD_PROPOSE, design_provenance.ROAD_ACCESS})
+_DIALOG_CAPPED = frozenset({design_provenance.ROAD, design_provenance.ROAD_PROPOSE, design_provenance.ROAD_ACCESS, design_provenance.PIT})
 """Los tipos de operación cuyo resumen, en el diálogo, se recorta (T51; H3-4): los de las pistas, que dieron más de veinte avisos en el H3. Los demás (la plataforma, los acopios, el contrafuerte…) no se
 tocan: ya tienen sus propios topes de tramos, grupos y candidatos (``SUMMARY_STRETCHES``, ``SUMMARY_GROUPS``, ``SUMMARY_ITEMS``) y en el H3 no pasaron de la ventana (``tasks.md``, T51)."""
 _ACCESS_HEAD_NOTICES = frozenset({"des.access_summary", "des.access_levels", "des.access_final"})
@@ -2319,6 +2342,8 @@ def summary_lines(calculation: Calculation, *, dialog: bool = False) -> list[tup
         notices = _road_notices(calculation)
     elif calculation.op_type == design_provenance.ROAD_PROPOSE:
         lines.extend(_propose_lines(calculation))
+    elif calculation.op_type == design_provenance.PIT:
+        lines.extend(_pit_lines(calculation))
     elif calculation.op_type == design_provenance.ROAD_ACCESS:  # sus avisos ya son su resumen (sin lo que no se comunica, que dicen las listas): la cabecera no se recorta
         notices = [notice for notice in calculation.notices if notice.code not in _ACCESS_ITEM_NOTICES]
         protect = len(list(takewhile(lambda notice: notice.code in _ACCESS_HEAD_NOTICES, notices)))
@@ -2485,6 +2510,8 @@ def show_summary(calculation: Calculation | None) -> None:
         title = tr("Proposed route «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.ROAD_ACCESS:
         title = tr("Accessibility «{name}» in {version}", name=calculation.name, version=calculation.version)
+    elif calculation.op_type == design_provenance.PIT:
+        title = tr("Pit «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.STOCKPILE_DETECT:
         title = tr("Detection of stockpiles «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.STOCKPILE_DETECT_PROJECT:  # D-15: del proyecto, sin versión (spec 016, T35)

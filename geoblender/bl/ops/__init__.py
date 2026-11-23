@@ -47,6 +47,7 @@ from . import (
     core_constraints,
     core_provenance,
     des,
+    des_pit,
     dh,
     geo,
     gis,
@@ -71,6 +72,7 @@ classes += dh.classes
 classes += res.classes
 classes += core_constraints.classes
 classes += des.classes
+classes += des_pit.classes  # la corta por bancos (spec 018, T31): sus órdenes, tras las de ``des``
 
 # «Importar un fichero» y su manejador (spec 006, T32), que abre los de la topografía.
 classes += io.classes

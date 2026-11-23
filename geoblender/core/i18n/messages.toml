@@ -11802,3 +11802,263 @@ es = "la corta no baja la superficie de partida en ningún sitio"
 
 ["the cells it lowers are too few to make a surface"]
 es = "las celdas que baja son muy pocas para hacer una superficie"
+
+# --- Nueva corta… (spec 018, T31) ---
+
+["Ascending"]
+es = "Ascendente"
+
+["From one or more floors, each at its elevation: the benches rise outwards until they come out at the ground"]
+es = "Desde uno o más fondos, cada uno a su cota: los bancos suben hacia fuera hasta salir al terreno"
+
+["Descending"]
+es = "Descendente"
+
+["From one or more limits, whose crest follows the ground or is at an elevation: the benches go down inwards until a stop criterion"]
+es = "Desde uno o más límites, cuya cresta sigue al terreno o está a una cota: los bancos bajan hacia dentro hasta un criterio de parada"
+
+["By default"]
+es = "Por defecto"
+
+["The corner of the default value of the parameter (rounded: adopted, unconfirmed)"]
+es = "La esquina del valor por defecto del parámetro (redondeada: adoptado, sin confirmar)"
+
+["Rounded"]
+es = "Redondeada"
+
+["The corners are rounded with arcs"]
+es = "Las esquinas se redondean con arcos"
+
+["Mitred"]
+es = "En inglete"
+
+["The corners are kept sharp, mitred"]
+es = "Las esquinas se dejan vivas, en inglete"
+
+["Name of the pit, unique in the active version"]
+es = "Nombre de la corta, único en la versión activa"
+
+["Ascending: from the floors of the layer, each at its elevation. Descending: from the limits of the layer, whose crest follows the ground or is at an elevation"]
+es = "Ascendente: desde los fondos de la capa, cada uno a su cota. Descendente: desde los límites de la capa, cuya cresta sigue al terreno o está a una cota"
+
+["Source layer"]
+es = "Capa de origen"
+
+["Layer of polygons of the project the pit is taken from: its floors (ascending) or its limits (descending)"]
+es = "Capa de polígonos del proyecto de la que sale la corta: sus fondos (ascendente) o sus límites (descendente)"
+
+["Field of the layer with the name of each polygon (empty: the field «nombre» or «name» or, without it, the number (fid))"]
+es = "Campo de la capa con el nombre de cada polígono (vacío: el campo «nombre» o «name» o, sin él, el número (fid))"
+
+["Field of the layer with the elevation of the floor of each polygon, in metres (ascending: each floor at its elevation)"]
+es = "Campo de la capa con la cota del fondo de cada polígono, en metros (ascendente: cada fondo a su cota)"
+
+["Surface the pit starts from: by default, the last of the chain of the active version and, without it, the ground"]
+es = "Superficie de la que parte la corta: por defecto, la última de la cadena de la versión activa y, sin ella, el terreno"
+
+["Surface the pit rests on, if it rests on one (none: it rests on no other surface)"]
+es = "Superficie en la que se apoya la corta, si se apoya en una (ninguna: no se apoya en otra superficie)"
+
+["Base bench profile of the pit: its height, face angle, berm and anchor; create or complete them with «Bench profiles…»"]
+es = "Perfil de banco base de la corta: su altura, el ángulo de cara, la berma y el ancla; se crean o se completan con «Perfiles de banco…»"
+
+["Rose of slopes"]
+es = "Roseta de taludes"
+
+["Rose of design slopes: the face angle and the berm by the direction of the face of each stretch of the bench (none: the bench profile alone)"]
+es = "Roseta de taludes de diseño: el ángulo de cara y la berma según la dirección de la cara de cada tramo del banco (ninguna: solo el perfil de banco)"
+
+["Benches per berm"]
+es = "Bancos por berma"
+
+["Whole number of benches between two berms (empty: the default value, one bench)"]
+es = "Número entero de bancos entre dos bermas (vacío: el valor por defecto, un banco)"
+
+["Profiles by sector"]
+es = "Perfiles por sector"
+
+["Bench profile of each design sector, written sector=profile and separated by «;» (the sector by its code; the profiles must have the same height and anchor)"]
+es = "Perfil de banco de cada sector de diseño, escrito sector=perfil y separado por «;» (el sector, por su código; los perfiles han de tener la misma altura y ancla)"
+
+["Roses by sector"]
+es = "Rosetas por sector"
+
+["Rose of design slopes of each design sector, written sector=rose and separated by «;»"]
+es = "Roseta de taludes de diseño de cada sector de diseño, escrita sector=roseta y separada por «;»"
+
+["Benches per berm by sector"]
+es = "Bancos por berma por sector"
+
+["Benches per berm of each design sector, written sector=number and separated by «;» (they must agree with the one of the pit)"]
+es = "Bancos por berma de cada sector de diseño, escrito sector=número y separado por «;» (han de coincidir con el de la corta)"
+
+["Ramps"]
+es = "Rampas"
+
+["Ramp definitions the pit has: each one joins the floor with the surface; define them with «Ramp…»"]
+es = "Definiciones de rampa que lleva la corta: cada una une el fondo con la superficie; se definen con «Rampa…»"
+
+["Layer of polygons with the zones where no ramp may pass (none: no zone)"]
+es = "Capa de polígonos con las zonas por donde no puede pasar ninguna rampa (ninguna: sin zonas)"
+
+["Fixed benches"]
+es = "Bancos fijados"
+
+["Layer of 3D lines (breaklines, proposed routes or expanded benches) whose closed lines are benches kept as they are (none: no fixed bench)"]
+es = "Capa de líneas 3D (líneas de rotura, rutas propuestas o bancos expandidos) cuyas líneas cerradas son bancos que se dejan como están (ninguna: sin bancos fijados)"
+
+["Bench field"]
+es = "Campo del banco"
+
+["Field of the layer of fixed benches with the number of the bench of each line (empty: the bench is the one at the elevation of the line)"]
+es = "Campo de la capa de bancos fijados con el número de banco de cada línea (vacío: el banco es el de la cota de la línea)"
+
+["Crest elevation (m)"]
+es = "Cota de coronación (m)"
+
+["Elevation of the crest of the pit in metres: the benches do not rise above it (empty: they follow the ground); a stop criterion without default value"]
+es = "Cota de la coronación de la corta en metros: los bancos no suben por encima de ella (vacío: siguen al terreno); un criterio de parada sin valor por defecto"
+
+["Floor elevation (m)"]
+es = "Cota de fondo (m)"
+
+["Elevation in metres of the floor where the descending pit stops (empty: another criterion); a stop criterion without default value"]
+es = "Cota en metros del fondo donde se detiene la corta descendente (vacío: otro criterio); un criterio de parada sin valor por defecto"
+
+["Whole number of benches where the descending pit stops (empty: another criterion); a stop criterion without default value"]
+es = "Número entero de bancos en el que se detiene la corta descendente (vacío: otro criterio); un criterio de parada sin valor por defecto"
+
+["Minimum width of the floor (m)"]
+es = "Ancho mínimo del fondo (m)"
+
+["Width in metres of the floor under which the descending pit stops (empty: another criterion); a stop criterion without default value"]
+es = "Ancho en metros del fondo por debajo del cual se detiene la corta descendente (vacío: otro criterio); un criterio de parada sin valor por defecto"
+
+["How the corners of the offset of each bench are made: rounded with arcs or mitred"]
+es = "Cómo se hacen las esquinas del desfase de cada banco: redondeadas con arcos o en inglete"
+
+["Arc tolerance (m)"]
+es = "Tolerancia del arco (m)"
+
+["Most the arcs of the rounded corners may separate from the circle, in metres; a hypothesis without default value"]
+es = "Lo máximo que pueden separarse del círculo los arcos de las esquinas redondeadas, en metros; una hipótesis sin valor por defecto"
+
+["Most a simplified bench line may separate from the offset, in metres; a hypothesis without default value"]
+es = "Lo máximo que puede separarse del desfase una línea de banco simplificada, en metros; una hipótesis sin valor por defecto"
+
+["Closing radius (m)"]
+es = "Radio de cierre (m)"
+
+["Radius in metres that closes the narrow inlets of a bench line (empty or 0: no closing); a hypothesis without default value"]
+es = "Radio en metros que cierra las entrantes estrechas de una línea de banco (vacío o 0: sin cierre); una hipótesis sin valor por defecto"
+
+["Azimuth window (m)"]
+es = "Ventana del azimut (m)"
+
+["Length in metres along the bench over which the azimuth of the face is averaged to choose the range of the rose; a hypothesis without default value"]
+es = "Longitud en metros a lo largo del banco sobre la que se promedia el azimut de la cara para elegir el rango de la roseta; una hipótesis sin valor por defecto"
+
+["Why you accept a mean gradient of a ramp above the maximum of its profile: it stays recorded with who and when; it is needed only if the mean gradient passes it"]
+es = "Por qué acepta una pendiente media de una rampa por encima del máximo de su perfil: queda registrado con quién y cuándo; solo hace falta si la media lo pasa"
+
+["Pit «{name}» created in {version}"]
+es = "Corta «{name}» creada en {version}"
+
+["Computing the pit… {percent} % · Esc: cancel"]
+es = "Calculando la corta… {percent} % · Esc: cancelar"
+
+["No zones without a ramp"]
+es = "Sin zonas sin rampa"
+
+["The ramps may start anywhere"]
+es = "Las rampas pueden empezar en cualquier sitio"
+
+["No fixed benches"]
+es = "Sin bancos fijados"
+
+["No bench is fixed to a line of the project"]
+es = "Ningún banco queda fijado a una línea del proyecto"
+
+["There are no bench profiles in the project"]
+es = "No hay perfiles de banco en el proyecto"
+
+["No rose"]
+es = "Sin roseta"
+
+["The benches have the face of the bench profile"]
+es = "Los bancos llevan la cara del perfil de banco"
+
+["Ramp definition"]
+es = "Definición de rampa"
+
+["Showing the preview of the pit «{name}»"]
+es = "Enseñando la vista previa de la corta «{name}»"
+
+["The mean gradient of a ramp passes the maximum of its profile: confirm it expressly to create the pit"]
+es = "La pendiente media de una rampa pasa del máximo de su perfil: confírmela expresamente para crear la corta"
+
+["Write the reason for accepting a mean gradient above the maximum of the profile: it stays recorded with who and when"]
+es = "Escriba el motivo de aceptar una pendiente media por encima del máximo del perfil: queda registrado con quién y cuándo"
+
+["Saving the pit… {percent} % · Esc: cancel"]
+es = "Guardando la corta… {percent} % · Esc: cancelar"
+
+["Cancelled: the pit is created; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer and the layers of the pit with the next entity order or «Recompute the stale results»"]
+es = "Cancelado: la corta está creada; las restricciones declaradas y las máscaras se ponen al día antes de la próxima operación que las use, y la capa de entidades y las capas de la corta con la próxima orden de entidades o «Recalcular lo obsoleto»"
+
+["Creation cancelled: the pit has not been created and the calculation has been discarded; nothing has been left half-done"]
+es = "Creación cancelada: la corta no se ha creado y el cálculo se ha descartado; no queda nada a medias"
+
+["Expanded bench of the active version (3D lines)"]
+es = "Banco expandido de la versión activa (líneas 3D)"
+
+["No base profile"]
+es = "Sin perfil base"
+
+["Every sector has its own profile"]
+es = "Cada sector lleva su perfil"
+
+["«{value}» is not of the form sector=value (field «{field}»)"]
+es = "«{value}» no es de la forma sector=valor (campo «{field}»)"
+
+["Write the name of the pit"]
+es = "Escriba el nombre de la corta"
+
+["Choose the source layer of the pit: there is none of polygons in the project"]
+es = "Elija la capa de origen de la corta: no hay ninguna de polígonos en el proyecto"
+
+["Choose the start surface of the pit"]
+es = "Elija la superficie de partida de la corta"
+
+["The pit is created: only the declared constraints and the masks have not been brought up to date"]
+es = "La corta está creada: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
+["Rose of design slopes"]
+es = "Roseta de taludes de diseño"
+
+["ascending"]
+es = "ascendente"
+
+["descending"]
+es = "descendente"
+
+["1 bench"]
+es = "1 banco"
+
+["{count} benches"]
+es = "{count} bancos"
+
+[" · profile «{profile}»"]
+es = " · perfil «{profile}»"
+
+["Pit «{name}» ({code}) · mode «{mode}»{profile}: {benches} · cut {cut} m³ · area {area} m²"]
+es = "Corta «{name}» ({code}) · modo «{mode}»{profile}: {benches} · desmonte {cut} m³ · área {area} m²"
+
+["{ramps} ramps · {findings} findings (in the report and in the layers of the pit)"]
+es = "{ramps} rampas · {findings} hallazgos (en el informe y en las capas de la corta)"
+
+["The mean gradient of the ramp «{ramp}», {mean} %, passes the {limit} % of its road profile; the pit is not created without your express confirmation and a reason, which stays recorded with who and when; the button that creates it confirms it"]
+es = "La pendiente media de la rampa «{ramp}», {mean} %, pasa del {limit} % de su perfil de pista; la corta no se crea sin su confirmación expresa y un motivo, que queda registrado con quién y cuándo; el botón que la crea la confirma"
+
+["Pit «{name}» in {version}"]
+es = "Corta «{name}» en {version}"
