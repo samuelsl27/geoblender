@@ -122,6 +122,7 @@ HEAVY: frozenset[str] = frozenset({
     # La superficie de la corta en la rejilla (spec 018, T18): lo pide quien calcula, no habilitar.
     "design.pit_surface",
     "design.pit_sky",
+    "design.pit_store",
     # Los hallazgos, las cifras y el contraste con la 013 de la corta (spec 018, T20).
     "design.pit_report",
     "design.pit_check013",

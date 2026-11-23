@@ -251,6 +251,7 @@ from .params import (
     BenchParam,
     BodyParam,
     ButtressParam,
+    PitParam,
     PlatformParam,
     RemovalParam,
     RoadParam,
@@ -266,6 +267,7 @@ from .params import (
 from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 
 if TYPE_CHECKING:  # solo para los tipos: importar el informe arrastraría los cálculos
+    from .pit_model import PitRequest
     from .report import DesignReport
     from .road_model import AccessRequest, RoadRequest  # lo crea quien calcula la pista o la accesibilidad, no habilitar (RNF-001-03)
     from .supported_requests import (  # las crea la primera llamada que las usa, no habilitar (T51)
@@ -4330,6 +4332,64 @@ def pit_expand_figures(name: str, values: Mapping[str, float | None]) -> tuple[F
     (:data:`PIT_EXPAND_FIGURES`, las mismas dos claves de la corta), con el ámbito del nombre de la operación (:func:`figure_scope`: no es
     una entidad). Como :func:`pit_figures` en lo demás."""
     return _scoped_figures(PIT_EXPAND_FIGURES, "un banco expandido", name, figure_scope(name), values)
+
+
+_PIT_ALWAYS: tuple[PitParam, ...] = (PitParam.MODE, PitParam.LAYER, PitParam.START, PitParam.N_BERM, PitParam.CORNER, PitParam.ARC_TOL,
+                                     PitParam.SIMPLIFY)
+"""Los valores de la corta que se leen siempre (spec 018, T21): el modo, la capa, la partida, los bancos por berma, la esquina y las dos
+tolerancias del desfase (HIPÓTESIS, sin valor por defecto: la preparación las pide)."""
+_PIT_OPTIONAL: tuple[PitParam, ...] = (
+    PitParam.FIXED_LAYER, PitParam.NORAMP_LAYER, PitParam.SUPPORT, PitParam.PROFILE, PitParam.ROSE, PitParam.RAMPS, PitParam.TOP_LEVEL,
+    PitParam.BOTTOM_LEVEL, PitParam.MAX_BENCHES, PitParam.MIN_FLOOR_WIDTH, PitParam.CLOSE_RADIUS, PitParam.AZ_WINDOW)
+"""Los valores de la corta que **solo se leen si tienen valor** (un parámetro sin valor ni valor por defecto es un rechazo de la 008)."""
+
+
+def pit_inputs(layer: str, start: str, masks: Iterable[Use] = (), supports: Iterable[str] = (), *, fixed: str | None = None,
+               noramp: str | None = None) -> tuple[Use, ...]:
+    """Lo que consume ``des.pit`` (spec 018, T21; RF-018-01, 03, 05; plan 018 §5.2.3; RF-015-06, RF-015-15), en su orden y sin repetir: la
+    capa de origen ``layer`` (:data:`ENTITY_LAYER_ROLE`: su geometría y su hash; un cambio de geometría en QGIS deja la corta obsoleta, uno
+    de un campo no), las de bancos fijados ``fixed`` y de zonas sin rampa ``noramp`` si las hay (el mismo papel), la superficie de partida
+    ``start`` (:data:`SURFACE_ROLE`; **ya resuelta**: el nombre de su dato), las máscaras de la versión ``masks`` y, **añadidas al crear**,
+    lo que la corta pisa, ``supports`` (:data:`SUPPORTED_ON_ROLE`). ``ValueError`` si faltan los nombres; ``TypeError`` si ``supports`` es
+    un texto."""
+    found = [Use(_named(layer, "de la capa de origen de la corta"), ENTITY_LAYER_ROLE)]
+    found += [Use(_named(name, "de una capa de la corta"), ENTITY_LAYER_ROLE) for name in (fixed, noramp) if name is not None]
+    found += [Use(_named(start, "de la superficie de partida"), SURFACE_ROLE), *masks]
+    found += [Use(_named(name, "de una superficie en la que se apoya"), SUPPORTED_ON_ROLE) for name in _codes(supports, "las superficies de apoyo")]
+    return _unique(found)
+
+
+def pit_params(code: str, *, valued: Iterable[str] = (), profiles: Iterable[str] = (), sectors: Iterable[str] = (), supports: bool = False
+               ) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.pit`` de la corta de código ``code`` (``begin_operation(params=…)``; spec 018, T21; RF-018-01, 06, 08,
+    10, 11, 13): los de :data:`_PIT_ALWAYS` y **solo los opcionales que tienen valor** (``valued``, de entre :data:`_PIT_OPTIONAL`), las
+    dependencias declaradas si las tiene, los valores por sector que tienen valor (``sectors``: sus claves completas, de ``pit_sector_key``),
+    los cinco de cada perfil de banco ``profiles`` (``des.bench.{p}.*``) y los del proyecto que lee toda entidad que mide un borde
+    (:data:`PLATFORM_COMMON_PARAMS`). No lee su nombre ni su motivo ni lo que decide; no declara nada. ``ValueError`` si ``code`` no es el
+    de una corta o ``valued`` nombra algo que no es opcional."""
+    _typed_code(code, "pit", "una corta")
+    given = set(_codes(valued, "los valores opcionales con valor"))
+    unknown = sorted(given - {item.value for item in _PIT_OPTIONAL})
+    if unknown:
+        raise ValueError(f"{', '.join(unknown)} no son valores opcionales de una corta: son {', '.join(item.value for item in _PIT_OPTIONAL)}")
+    read = {*_PIT_ALWAYS, *(item for item in _PIT_OPTIONAL if item.value in given)}
+    if supports:
+        read.add(PitParam.SUPPORTS)
+    return _unique([*(entity_key(code, item) for item in PitParam if item in read), *_codes(sectors, "los valores por sector"),
+                    *profile_params(profiles), *PLATFORM_COMMON_PARAMS])
+
+
+def pit_settings(request: PitRequest, code: str) -> dict[str, Any]:
+    """Los ajustes de ``des.pit`` (spec 018, T21; RF-018-01, RF-015-02; JSON sin rutas): el nombre de la corta, su ``code`` (``PIT-001``) y
+    los campos de sus capas (``fields``: el del nombre, el de la cota, el de los bancos fijados). **Ninguna otra cosa**: la capa, el modo,
+    los perfiles, los criterios y las tolerancias son **parámetros de la entidad** (:func:`pit_params`). ``ValueError`` si ``code`` no es el
+    de una corta y ``TypeError`` si ``request`` no es una ``PitRequest``."""
+    from .pit_model import PitRequest as _PitRequest  # al usarlo: habilitar no la crea (RNF-001-03)
+    if not isinstance(request, _PitRequest):
+        raise TypeError(f"los ajustes de una corta salen de una PitRequest, no {request!r}")
+    _typed_code(code, "pit", "una corta")
+    return {"name": request.name, "code": code,
+            "fields": {"name_field": request.fields.name_field, "level_field": request.level_field, "fixed_field": request.fixed_field}}
 
 
 PIT_RAMP_CONFIRMED = "ramp_confirmed"

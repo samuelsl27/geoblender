@@ -3877,6 +3877,66 @@ CATALOG: tuple[Message, ...] = (
         "Corta «{name}»: el desfase del banco {bench} tiene {count} huecos; cada uno se guarda como su propia polilínea.",
         "warning",
     ),
+    # T21 (preparar la corta; RF-018-04, 06, 08, 11, 13): lo que la preparación rechaza antes de calcular.
+    Message(
+        "des.pit_layer_kind",
+        "Layer «{layer}», pit «{entity}»: «{field}»: this layer holds {value} and a pit needs {expected}; choose another layer; "
+        "nothing is created.",
+        "Capa «{layer}», corta «{entity}»: «{field}»: esta capa es de {value} y una corta necesita {expected}; elija otra capa; no se "
+        "crea nada.",
+    ),
+    Message(
+        "des.pit_layer_field",
+        "Layer «{layer}», pit «{entity}»: «{field}»: the layer has no {expected} field «{value}»; the fields are: {fields}; choose one "
+        "of them; nothing is created.",
+        "Capa «{layer}», corta «{entity}»: «{field}»: la capa no tiene ningún campo {expected} «{value}»; los campos son: {fields}; "
+        "elija uno de ellos; no se crea nada.",
+    ),
+    Message(
+        "des.pit_source_holes",
+        "Layer «{layer}», pit «{entity}»: the polygon «{value}» has {count} hole(s); an island inside a pit is another geometry; a "
+        "polygon without holes is needed (P-13); nothing is created.",
+        "Capa «{layer}», corta «{entity}»: el polígono «{value}» tiene {count} hueco(s); una isla dentro de la corta es otra geometría; "
+        "hace falta un polígono sin huecos (P-13); no se crea nada.",
+    ),
+    Message(
+        "des.pit_polygon_invalid",
+        "Layer «{layer}», pit «{entity}»: the polygon «{value}» is not valid: {reason}{place}; correct it in QGIS; nothing is created.",
+        "Capa «{layer}», corta «{entity}»: el polígono «{value}» no es válido: {reason}{place}; corríjalo en QGIS; no se crea nada.",
+    ),
+    Message(
+        "des.pit_polygons_overlap",
+        "Layer «{layer}», pit «{entity}»: the polygons «{value}» and «{other}» overlap in {area} m²; nothing is created.",
+        "Capa «{layer}», corta «{entity}»: los polígonos «{value}» y «{other}» se solapan en {area} m²; no se crea nada.",
+    ),
+    Message(
+        "des.pit_level_missing",
+        "Layer «{layer}», pit «{entity}»: the polygon «{value}» has no valid level in «{level_field}»; an ascending pit needs the level of each "
+        "floor (no value is assumed); nothing is created.",
+        "Capa «{layer}», corta «{entity}»: el polígono «{value}» no tiene una cota válida en «{level_field}»; una corta ascendente necesita "
+        "la cota de cada fondo (no se supone ninguna); no se crea nada.",
+    ),
+    Message(
+        "des.pit_level_off_lattice",
+        "Layer «{layer}», pit «{entity}»: the level {level} m of the floor «{value}» is not anchor + j·{step} m (anchor {anchor} m, "
+        "j an integer); give it a level of the bench lattice; nothing is created.",
+        "Capa «{layer}», corta «{entity}»: la cota {level} m del fondo «{value}» no es ancla + j·{step} m (ancla {anchor} m, j entero); "
+        "dele una cota de la retícula de los bancos; no se crea nada.",
+    ),
+    Message(
+        "des.pit_no_stop",
+        "Pit «{entity}»: a descending pit needs at least one stop criterion ({fields}: the minimum floor width, the bottom level or "
+        "the maximum number of benches); none is chosen for it; nothing is calculated.",
+        "Corta «{entity}»: una corta descendente necesita al menos un criterio de parada ({fields}: el ancho mínimo de fondo, la cota "
+        "de fondo o el máximo de bancos); no se elige ninguno por ella; no se calcula nada.",
+    ),
+    Message(
+        "des.pit_sector_n_berm",
+        "Pit «{entity}»: the sector «{sector}» has {value} benches between berms and the pit has {other}; a pit mixes single and double "
+        "benches only with one number for all its sectors; nothing is calculated.",
+        "Corta «{entity}»: el sector «{sector}» tiene {value} bancos por berma y la corta tiene {other}; una corta solo admite un número "
+        "de bancos por berma para todos sus sectores; no se calcula nada.",
+    ),
     Message(
         "des.pit_offset_unreliable",
         "Pit «{name}»: the offset of bench {bench} could not be verified (defect {value} m, over {limit} m); the result is not reliable.",
