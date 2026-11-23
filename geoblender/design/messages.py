@@ -3818,10 +3818,13 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.pit_ramp_radius_below_min",
-        "Ramp «{profile}», bench {bench}: the radius that fits, {value} m, is below the minimum {limit} m near {place}; nothing is "
-        "relaxed (try another type, sense or start point).",
-        "Rampa «{profile}», banco {bench}: el radio que cabe, {value} m, es menor que el mínimo de {limit} m cerca de {place}; no se "
-        "relaja nada (pruebe otro tipo, otro sentido u otro punto de inicio).",
+        "Ramp «{profile}», bench {bench}: the radius that fits, {value} m, is below the minimum {limit} m near {place}; the shortest "
+        "straight leg next to that turn (the link between two turns) measures {link} m and leaves no room for more, so the haul road "
+        "profile needs a minimum radius of {value} m at most; nothing is relaxed (try another haul road profile, type, sense or start point).",
+        "Rampa «{profile}», banco {bench}: el radio que cabe, {value} m, es menor que el mínimo de {limit} m cerca de {place}; el tramo "
+        "recto más corto junto a ese giro (el enlace entre dos giros) mide {link} m y no deja sitio a más, así que el perfil de pista "
+        "necesita un radio mínimo de {value} m como mucho; no se relaja nada (pruebe otro perfil de pista, otro tipo, otro sentido u otro "
+        "punto de inicio).",
     ),
     Message(
         "des.pit_no_ramp_fit",

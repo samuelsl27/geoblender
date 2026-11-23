@@ -254,11 +254,22 @@ def _geometry(ring: np.ndarray, point: Sequence[float], sense: str, half_m: floa
     keep = np.concatenate([[True], moves])
     foot_path, axis_path = foot_path[keep], axis_path[keep]
     cumulative = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(axis_path, axis=0).T))])
+    skeleton = _skeleton_keep(axis_path, 2.0 * half_m)
+    spare = _despike_keep(axis_path if skeleton is None else axis_path[skeleton])
+    if spare is not None:
+        skeleton = spare if skeleton is None else skeleton[spare]
+    perimeter_before = float(cumulative[-1])
+    if skeleton is not None:
+        axis_path, foot_path = axis_path[skeleton], foot_path[skeleton]
+        knots = cumulative[skeleton]
+        cumulative = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(axis_path, axis=0).T))])
     perimeter = float(cumulative[-1])
     around = np.concatenate([[0.0], np.cumsum(axis_length)])[:-1]
     s0 = float(around[e] + f * axis_length[e])
     mid = around + 0.5 * axis_length
-    u = (mid - s0) % perimeter if sense == "ccw" else (s0 - mid) % perimeter
+    u = (mid - s0) % perimeter_before if sense == "ccw" else (s0 - mid) % perimeter_before
+    if skeleton is not None:
+        u = np.interp(u, knots, cumulative)  # la abscisa de cada arista, medida sobre el eje esqueleto (la muesca cuenta como el inicio)
     foot_around = np.concatenate([[0.0], np.cumsum(length)])[:-1]
     foot_s0 = float(foot_around[e] + f * length[e])
     foot_total = float(length.sum())
@@ -267,6 +278,54 @@ def _geometry(ring: np.ndarray, point: Sequence[float], sense: str, half_m: floa
 
 
 # --- El tramo de un banco ------------------------------------------------------------------------------------------------------
+
+
+_HAIRPIN_DEG = 120.0
+"""Un giro de más de esto (°) entre dos trozos del eje es un retroceso, no una curva."""
+_NOTCH_REACH_W = 6.0
+"""Hasta dónde (en anchuras ``W`` de la sección, desde el inicio) se busca la muesca del pie de un tramo."""
+
+
+_MIN_LEG_M = 0.1
+"""Un trozo del eje más corto que esto (m) es ruido del desfase del pie (un vértice a un palmo del anterior), no una curva: se quita."""
+
+
+def _despike_keep(path: np.ndarray) -> np.ndarray | None:
+    """Los índices de ``path`` que quedan al quitar los vértices a menos de ``_MIN_LEG_M`` m del anterior que se conserva (el primero y el último se conservan siempre; el
+    penúltimo cede ante el último); ``None`` si no se quita ninguno. Es lo que deja al eje esqueleto sin curvas de radio de centímetros por trozos de milímetros."""
+    last = len(path) - 1
+    kept = [0]
+    for index in range(1, last):
+        if float(np.hypot(*(path[index] - path[kept[-1]]))) >= _MIN_LEG_M and float(np.hypot(*(path[last] - path[index]))) >= _MIN_LEG_M:
+            kept.append(index)
+    kept.append(last)
+    return None if len(kept) == len(path) else np.array(kept)
+
+
+def _skeleton_keep(path: np.ndarray, width_m: float) -> np.ndarray | None:
+    """**DIFF-018c (opción i): el eje esqueleto** de un tramo, como los índices de ``path`` (``(n, 2)``, el eje del pie desde el inicio) que se conservan, o ``None`` si no hay
+    nada que quitar. El pie del banco ``k + 1`` tiene, donde empieza el tramo, una **muesca** (el pie sigue la cresta ``k``, que salta ``W`` de retranqueo donde acaba la rampa):
+    su desfase ``W/2`` es un bucle de retrocesos (giros de más de 120°) con cuerdas gruesas y arcos densos, y el eje no puede heredarlo. Si en los primeros ``6·W`` m hay **dos o
+    más retrocesos** (uno solo es una esquina cerrada real del pie y no se toca), el eje esqueleto es el inicio del tramo, la recta hasta el primer punto liso más allá del
+    último retroceso (a ``2·W`` m del inicio como poco) y, desde allí, el arco denso del pie sin los puntos a menos de ``W`` m (para que el giro de la recta al arco quepa)."""
+    steps = np.diff(path, axis=0)
+    if len(steps) < 3:
+        return None
+    along = np.concatenate([[0.0], np.cumsum(np.hypot(*steps.T))])
+    heading = np.degrees(np.arctan2(steps[:, 0], steps[:, 1]))
+    turn = np.abs((np.diff(heading) + 180.0) % 360.0 - 180.0)  # el giro en el vértice i + 1
+    hairpins = np.flatnonzero((turn > _HAIRPIN_DEG) & (along[1:-1] <= _NOTCH_REACH_W * width_m)) + 1
+    if len(hairpins) < 2:
+        return None
+    last = int(hairpins[-1])
+    far = np.hypot(*(path[last + 1:] - path[0]).T) >= 2.0 * width_m
+    if not bool(far.any()):
+        return None
+    first = last + 1 + int(np.argmax(far))
+    index = first + 1
+    while index < len(path) - 1 and float(np.hypot(*(path[index] - path[first]))) < width_m:
+        index += 1
+    return np.concatenate([[0], np.arange(first, first + 1), np.arange(index, len(path))])
 
 
 def build_tramo(ring: object, point: Sequence[float], *, bench: int, z_foot_m: float, rise_m: float, gradient_pct: float,
@@ -368,6 +427,21 @@ def _ccw(vertices: np.ndarray) -> np.ndarray:
     return ring if _area2(ring) > 0.0 else ring[::-1]
 
 
+_END_REACH_W = 1.5
+"""La recta con que acaba el eje esqueleto de un tramo, en anchuras ``W`` de la sección: lo bastante larga para que quepa la tangente del giro del enlace."""
+
+
+def _coarse_end(axis: np.ndarray, reach_m: float) -> np.ndarray:
+    """``axis`` (``(n, 3)``, de un tramo) sin los vértices a menos de ``reach_m`` m (de arco) de su final: el eje esqueleto acaba en **una recta** hasta el fin del tramo, donde gira
+    el enlace (DIFF-018c). Las cotas de los vértices que quedan son las del tramo (la pendiente de la recta cambia en una parte en mil)."""
+    if len(axis) < 3:
+        return axis
+    along = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(axis[:, :2], axis=0).T))])
+    keep = along <= along[-1] - reach_m
+    keep[[0, -1]] = True
+    return axis[keep]
+
+
 def _spiral_units(job: PitJob, polylines: Sequence[Polyline], ramp: RampDef, start: Sequence[float]) -> Generator[None, None, Spiral]:
     if ramp.type != "spiral":
         raise ValueError(f"La rampa {ramp.code!r} es de tipo {ramp.type!r}, no «spiral»")
@@ -404,7 +478,7 @@ def _spiral_units(job: PitJob, polylines: Sequence[Polyline], ramp: RampDef, sta
         yield
     stations: list[np.ndarray] = []
     for tramo in tramos:
-        stations.append(tramo.axis + np.array([origin[0], origin[1], 0.0]))
+        stations.append(_coarse_end(tramo.axis, _END_REACH_W * width) + np.array([origin[0], origin[1], 0.0]))
     axis = np.vstack(stations)
     run = np.hypot(*np.diff(axis[:, :2], axis=0).T)
     ramp_m = math.fsum(item.length_m for item in tramos)
@@ -674,6 +748,8 @@ def zigzag_steps(job: PitJob, polylines: Sequence[Polyline], ramp: RampDef, star
 # --- Las reglas de la 017, los diagnósticos y la banda (T17) -------------------------------------------------------------------
 
 
+_SPIRAL_SIMPLIFY_M = 0.1
+"""La tolerancia (m) con que el eje denso de una espiral se reduce a su esqueleto (Douglas–Peucker, la de ``axis_of``) antes de redondear los giros."""
 _MEAN_TOL_PCT = 1e-6
 """Lo que una media nueva puede pasar de la confirmada (puntos de porcentaje) y seguir siendo la misma: el ruido de la última cifra."""
 _BLOCK_REASONS = {"noramp": "zona sin rampa", "untouchable": "intocable"}
@@ -752,9 +828,21 @@ class RampChecked:
 
 
 def _levels(axis: Axis, raw: np.ndarray, stations: np.ndarray) -> np.ndarray:
-    """La cota del eje de la construcción ``raw`` en las abscisas ``stations`` del eje redondeado: la de la línea en su abscisa (``Axis.line_abscissa``)."""
+    """La cota del eje en las abscisas ``stations`` del eje redondeado: la de la construcción ``raw`` en su abscisa **a lo largo de la línea** (``Axis.line_abscissa``) en las rectas,
+    y **lineal en el arco** entre las cotas de sus dos puntos de tangencia (DIFF-018c). Con la correspondencia por la línea, el arco de una esquina de 90° donde empieza un tramo
+    reparte los ``2T`` de línea sobre un arco más corto y sube la pendiente de la mitad que sube a ``g·4/π`` (8 % → 10,19 %, con pd = 10 %: aviso); lineal en el arco no pasa de ``g``
+    (y baja a ``0,64·g`` en un giro de 90°). La cota de cada punto de tangencia y la de cada banco siguen siendo las de la construcción."""
     along = np.concatenate(([0.0], np.cumsum(np.hypot(*np.diff(axis.vertices, axis=0).T))))
-    return np.interp(axis.line_abscissa(stations), along, raw[axis.kept, 2])
+    z_line = raw[axis.kept, 2]
+    if not axis.curves:
+        return np.interp(axis.line_abscissa(stations), along, z_line)
+    at = np.searchsorted(axis.kept, np.array([curve.vertex - 1 for curve in axis.curves]))
+    tangent = np.array([curve.tangent_m for curve in axis.curves])
+    first = np.array([curve.station_m for curve in axis.curves])
+    arc = np.array([curve.length_m for curve in axis.curves])
+    on_axis = np.concatenate(([0.0], np.column_stack([first, first + arc]).ravel(), [axis.length_m]))
+    on_line = np.concatenate(([0.0], np.column_stack([along[at] - tangent, along[at] + tangent]).ravel(), [float(along[-1])]))
+    return np.interp(np.clip(np.asarray(stations, dtype=np.float64), 0.0, axis.length_m), on_axis, np.interp(on_line, along, z_line))
 
 
 def _bench_of(levels: np.ndarray, found: Spiral | Zigzag) -> np.ndarray:
@@ -802,7 +890,7 @@ def _blocked(axis: Axis, raw: np.ndarray, job: PitJob, found: Spiral | Zigzag, r
                       reason=_BLOCK_REASONS[str(why[first])], place=_place(float(xy[first, 0]), float(xy[first, 1])))
 
 
-def check_ramp(found: Spiral | Zigzag, job: PitJob, ramp: RampDef, *, simplify_m: float = 0.0) -> RampChecked:
+def check_ramp(found: Spiral | Zigzag, job: PitJob, ramp: RampDef, *, simplify_m: float | None = None) -> RampChecked:
     """**RF-018-18 a 21**: el eje de ``found`` (la :class:`Spiral` o el :class:`Zigzag` de ``ramp``, con el perfil de pista de ``job``) con las reglas de la 017, sin
     cambiar ni escribir nada. (1) Las curvas: ``road_axis.axis_of`` con ``R``, ``Rmín`` y ``w`` del perfil (``simplify_m``: Douglas–Peucker, 0 por defecto); el
     radio que baja al que cabe es el aviso ``des.pit_ramp_radius_reduced`` y por debajo de ``Rmín``, ``DesignError`` ``des.pit_ramp_radius_below_min`` con el banco y
@@ -813,6 +901,8 @@ def check_ramp(found: Spiral | Zigzag, job: PitJob, ramp: RampDef, *, simplify_m
     if profile is None:
         raise ValueError(f"La rampa {ramp.code!r} cita el perfil de pista {ramp.road_profile!r}, que la corta no tiene")
     raw = np.asarray(found.path.axis, dtype=np.float64)
+    if simplify_m is None:
+        simplify_m = _SPIRAL_SIMPLIFY_M if isinstance(found, Spiral) else 0.0
     try:
         axis = axis_of(raw[:, :2], profile.curve_radius_m, profile.min_radius_m, profile.station_step_m, simplify_m=simplify_m)
     except RadiusBelowMinimum as error:
@@ -820,7 +910,7 @@ def check_ramp(found: Spiral | Zigzag, job: PitJob, ramp: RampDef, *, simplify_m
         bench = int(_bench_of(raw[[curve.vertex - 1], 2], found)[0])
         raise DesignError("des.pit_ramp_radius_below_min", obj=f"Rampa «{ramp.name}»", field=road_profile_key(profile.code, RoadProfileParam.MIN_RADIUS),
                           value=round(curve.radius_m, 3), profile=ramp.name, limit=error.minimum_m, bench=bench,
-                          place=_place(curve.x, curve.y)) from None
+                          place=_place(curve.x, curve.y), link=round(min(curve.before_m, curve.after_m), 3)) from None
     _blocked(axis, raw, job, found, ramp)
     z = _levels(axis, raw, axis.stations)
     benches = _bench_of(z, found)

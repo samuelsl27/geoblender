@@ -259,7 +259,7 @@ class ChainTest(unittest.TestCase):
         self.assertEqual((found.path.code, found.path.bench), ("espiral", 0))
         np.testing.assert_allclose(found.path.half_width_m, W / 2.0)
         self.assertAlmostEqual(found.path.gradient_mean_pct, 7.194, delta=0.01)
-        local = np.vstack([one.axis for one in self.tramos])
+        local = np.vstack([pit_ramp._coarse_end(one.axis, 1.5 * W) for one in self.tramos])  # DIFF-018c: el eje esqueleto acaba cada tramo en una recta
         np.testing.assert_allclose(found.path.axis[:, :2] - pd.absolute(np.zeros((1, 2)))[0], local[:, :2], atol=1e-6)
         again = list(pit_ramp.spiral_steps(job, polylines, ramp, pd.absolute(NORTH[None, :])[0]))[-1].result
         self.assertTrue(np.array_equal(found.path.axis, again.path.axis))
