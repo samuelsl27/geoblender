@@ -1305,7 +1305,7 @@ def _reproduce_road_propose(request: ReproduceRequest, budget_s: float) -> Itera
 
 class _FrozenPit:
     """El :class:`~design.pit_store.PitReader` de lo **congelado** (spec 018, T24b; RF-018-25, RF-009-11): los valores resueltos son los parámetros congelados de la operación (con el valor por defecto de su
-    definición donde no hay, como el proyecto), las rosetas y las rampas salen de las claves congeladas (su nombre es su código: el nombre libre no es un valor), el perfil de pista, de ``road_store.frozen_profile``,
+    definición donde no hay, como el proyecto), las rosetas y las rampas salen de las claves congeladas (su nombre es su código; el de la rampa, que sí sale en los hallazgos y los avisos, el que anotan los ajustes: DIFF-018h), el perfil de pista, de ``road_store.frozen_profile``,
     las capas de puntos de inicio, de las entradas congeladas, los sectores, de la tabla congelada de papel ``sectors`` (sin ella, el perímetro como sector único) y el perímetro y el límite legal, de la
     entrada de papel ``pit_limits`` (DIFF-018g): **lo mismo que lee la preparación del proyecto, por el mismo código**."""
 
@@ -1335,7 +1335,12 @@ class _FrozenPit:
         return pit_store.rose_numbers_of(list(self.frozen.values), rose_code)
 
     def ramp_names(self) -> dict[str, str]:
-        return self._codes("des.pitramp.")
+        """El nombre libre de cada rampa, el que anotó la operación en sus ajustes (``ramp_names``, DIFF-018h); el código de las que no lo tienen (operaciones anteriores a la 0.10)."""
+        named = self.frozen.request.settings.get("ramp_names")
+        found = self._codes("des.pitramp.")
+        if isinstance(named, dict):
+            found = {code: str(named.get(code, name)) for code, name in found.items()}
+        return found
 
     def road_profile(self, request: Any, ramp: str, wanted: str) -> Any:
         return road_store.frozen_profile(self.frozen.values, wanted)

@@ -1045,7 +1045,7 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
               if param.value in values]
     codes = tuple(item.code for item in profile_list)
     sector_keys = [pit_sector_key(chosen, param, segment) for segment, param, _value, _extra in sector_rows]
-    begun = _start(project, provenance.PIT, name, version, masks, provenance.pit_settings(request, chosen), inputs,
+    begun = _start(project, provenance.PIT, name, version, masks, provenance.pit_settings(request, chosen, {item.code: item.name for item in ramps}), inputs,
                    provenance.pit_params(chosen, valued=valued, profiles=codes, sectors=sector_keys, supports=has_row, roses=rose_counts,
                                          ramps=[(item.code, item.type == "zigzag") for item in ramps], road_profiles=[item.code for item in road_profile_list]),
                    supersedes)

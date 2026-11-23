@@ -4401,10 +4401,11 @@ def pit_params(code: str, *, valued: Iterable[str] = (), profiles: Iterable[str]
                     *profile_params(profiles), *coded, *PLATFORM_COMMON_PARAMS])
 
 
-def pit_settings(request: PitRequest, code: str) -> dict[str, Any]:
+def pit_settings(request: PitRequest, code: str, ramp_names: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Los ajustes de ``des.pit`` (spec 018, T21; RF-018-01, RF-015-02; JSON sin rutas): el nombre de la corta, su ``code`` (``PIT-001``) y
     los campos de sus capas (``fields``: el del nombre, el de la cota, el de los bancos fijados). **Ninguna otra cosa**: la capa, el modo,
-    los perfiles, los criterios y las tolerancias son **parámetros de la entidad** (:func:`pit_params`). ``ValueError`` si ``code`` no es el
+    los perfiles, los criterios y las tolerancias son **parámetros de la entidad** (:func:`pit_params`). T26b (DIFF-018h; RF-018-25): ``ramp_names``, el **nombre libre de cada rampa** que la corta usa
+    (código → nombre; el detalle de los hallazgos y de los avisos lo nombra y reproducir no tiene el proyecto), bajo ``ramp_names`` y solo si no está vacío. ``ValueError`` si ``code`` no es el
     de una corta y ``TypeError`` si ``request`` no es una ``PitRequest``."""
     from .pit_model import PitRequest as _PitRequest  # al usarlo: habilitar no la crea (RNF-001-03)
     if not isinstance(request, _PitRequest):
@@ -4415,7 +4416,10 @@ def pit_settings(request: PitRequest, code: str) -> dict[str, Any]:
         fields["fixed_name_field"] = request.fixed.name_field
     if request.noramp is not None:
         fields["noramp_name_field"] = request.noramp.name_field
-    return {"name": request.name, "code": code, "fields": fields}
+    found: dict[str, Any] = {"name": request.name, "code": code, "fields": fields}
+    if ramp_names:
+        found["ramp_names"] = {str(key): str(value) for key, value in ramp_names.items()}
+    return found
 
 
 _PIT_NUMBERS = ("top_level_m", "bottom_level_m", "min_floor_width_m", "arc_tol_m", "simplify_m", "close_radius_m", "az_window_m")

@@ -320,17 +320,18 @@ class PitReproduceTest(RecomputeCase):
 
 class FrozenReaderTest(RecomputeCase):
     """RF-018-25, RF-018-07, RF-018-15, DIFF-018g: lo que lee la reproducción de lo congelado (``_FrozenPit``) es lo que lee la preparación del proyecto (``ProjectReader``): las rosetas, las rampas con su
-    perfil de pista y los perfiles de banco, salvo los nombres libres (que no son un valor)."""
+    perfil de pista y los perfiles de banco, y el nombre libre de las rampas, que anota la operación (DIFF-018h)."""
 
     def test_the_roses_ramps_and_profiles_read_from_the_frozen_values_are_the_project_ones(self) -> None:
         reader = pit_store.ProjectReader(self.project, self.v1)
         keys = sorted({key for (key,) in self.query("SELECT key FROM gb_parameter WHERE key LIKE 'des.rose.%' OR key LIKE 'des.pitramp.%' OR key LIKE 'des.roadprofile.%' OR key LIKE 'des.bench.%'")})
-        frozen = types.SimpleNamespace(values=reader.values(keys), request=types.SimpleNamespace(inputs=()))
-        mine = design_reproduce._FrozenPit(frozen)
         asked = request(rose=self.rose, ramps=(self.ramp_codes["Espiral"], self.ramp_codes["Zigzag"]), profile=checks.EXPL)
+        settings = provenance.pit_settings(asked, CODE, reader.ramp_names())  # el nombre libre de las rampas, como lo anota la operación (DIFF-018h)
+        frozen = types.SimpleNamespace(values=reader.values(keys), request=types.SimpleNamespace(inputs=(), settings=settings))
+        mine = design_reproduce._FrozenPit(frozen)
         self.assertEqual(pit_store._roses(mine, asked, CODE, {}), pit_store._roses(reader, asked, CODE, {}))
         by_project, by_frozen = (pit_store._ramps(item, asked, CODE, checks.GRID) for item in (reader, mine))
-        self.assertEqual([dataclasses.replace(item, name="") for item in by_project[0]], [dataclasses.replace(item, name="") for item in by_frozen[0]])
+        self.assertEqual(by_project[0], by_frozen[0], "con el nombre libre de cada rampa")
         plain = [[{key: value for key, value in dataclasses.asdict(item).items() if key not in ("name", "class_name")} for item in found[1]] for found in (by_project, by_frozen)]
         self.assertEqual(plain[0], plain[1])
         self.assertEqual(repr(by_project[2:]), repr(by_frozen[2:]), "el inicio de cada rampa y las capas de puntos que leyó")

@@ -6,6 +6,7 @@ capas y sus sectores, es de ``milestone_pit_prepare_checks``.
 
 from __future__ import annotations
 
+import types
 import unittest
 from typing import Any
 
@@ -20,6 +21,7 @@ params = import_geoblender("design.params")
 pit_model = import_geoblender("design.pit_model")
 pit_store = import_geoblender("design.pit_store")
 provenance = import_geoblender("design.provenance")
+reproduce = import_geoblender("design.reproduce")
 road_model = import_geoblender("design.road_model")
 
 DesignError = messages.DesignError
@@ -163,6 +165,19 @@ class ProvenanceTest(unittest.TestCase):
         self.assertEqual(found, {"name": "Corta", "code": CODE, "fields": {"name_field": "nombre", "level_field": "cota_m", "fixed_field": None}})
         with self.assertRaises(TypeError):
             provenance.pit_settings("no", CODE)
+
+    def test_the_free_name_of_a_ramp_is_frozen_with_the_settings(self) -> None:
+        """T26b, RF-018-25, DIFF-018h: los ajustes llevan el nombre libre de cada rampa (código → nombre) solo si la corta las usa, y reproducir lo lee de lo congelado (no el código)."""
+        names = {"espiral": "Espiral", "zz": "Zig-zag"}
+        found = provenance.pit_settings(request(), CODE, ramp_names=names)
+        self.assertEqual(found["ramp_names"], names)
+        self.assertNotIn("ramp_names", provenance.pit_settings(request(), CODE))
+        self.assertNotIn("ramp_names", provenance.pit_settings(request(), CODE, ramp_names={}))
+        values = {"des.pitramp.espiral.gradient_pct": 8.0, "des.pitramp.zz.gradient_pct": 8.0}
+        frozen = types.SimpleNamespace(values=values, request=types.SimpleNamespace(inputs=(), settings=found))
+        self.assertEqual(reproduce._FrozenPit(frozen).ramp_names(), names)
+        old = types.SimpleNamespace(values=values, request=types.SimpleNamespace(inputs=(), settings=provenance.pit_settings(request(), CODE)))
+        self.assertEqual(reproduce._FrozenPit(old).ramp_names(), {"espiral": "espiral", "zz": "zz"}, "sin nombres congelados, el código")
 
 
 if __name__ == "__main__":
