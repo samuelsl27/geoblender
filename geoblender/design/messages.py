@@ -567,6 +567,12 @@ CATALOG: tuple[Message, ...] = (
         "Version {version} has no haul road «{value}» calculated whose gradient line can be exported ({dataset}): choose a road calculated in that version; nothing has been written.",
         "La versión {version} no tiene la pista «{value}» calculada de la que exportar su rasante ({dataset}): elija una pista calculada en esa versión; no se ha escrito nada.",
     ),
+    # Los hallazgos de una corta a CSV (spec 018, T27; RF-018-33).
+    Message(
+        "des.export_pit_unknown",
+        "Version {version} has no pit «{value}» calculated whose findings can be exported ({dataset}): choose a pit calculated in that version; nothing has been written.",
+        "La versión {version} no tiene la corta «{value}» calculada de la que exportar sus hallazgos ({dataset}): elija una corta calculada en esa versión; no se ha escrito nada.",
+    ),
     Message(
         "des.export_not_grid",
         "«{value}» is not a live grid of the design (an envelope, a design surface or a berm "
@@ -1934,6 +1940,35 @@ CATALOG: tuple[Message, ...] = (
         "des.axes_layer_name",
         "the roads layer of {version}",
         "la capa de ejes de pistas de {version}",
+        "note",
+    ),
+    # Las capas de cortas (spec 018, T27; RF-018-33): fuera de la familia ``des.pit_*``, como las de la capa de pistas con ``des.axes_*``.
+    Message(
+        "des.pitlayer_blocked",
+        "The table «{table}» of the pit «{entity}» (the {field} its rows of the pits layers come from) was edited outside Geoblender and is not edited by hand: accept the edit with a reason or recompute the pit "
+        "so it writes the table again; the pits layers of {version} are not updated meanwhile.",
+        "La tabla «{table}» de la corta «{entity}» (los datos de {field} de los que salen sus filas de las capas de cortas) se editó fuera de Geoblender y no se edita a mano: acepte la edición con un "
+        "motivo o recalcule la corta para que vuelva a escribirla; mientras tanto no se ponen al día las capas de cortas de {version}.",
+    ),
+    Message(
+        "des.pitlayer_unusable",
+        "The table «{table}» of the pit «{entity}» (the {field} its rows of the pits layers come from) is missing, damaged or is no longer what the pit wrote (its rows were deleted or changed outside Geoblender): "
+        "recompute the pit so it writes the table again; the pits layers of {version} are not updated meanwhile.",
+        "La tabla «{table}» de la corta «{entity}» (los datos de {field} de los que salen sus filas de las capas de cortas) falta, está dañada o ya no es lo que escribió la corta (se borraron o cambiaron "
+        "sus filas fuera de Geoblender): recalcule la corta para que vuelva a escribirla; mientras tanto no se ponen al día las capas de cortas de {version}.",
+    ),
+    Message(
+        "des.pitlayer_failed",
+        "The pits layers of {version} could not be updated: {reason} The pit is created; the layers keep what they had and are stale if a pit they show changed (Project ▸ Recompute the stale results brings "
+        "them up to date); they are updated the next time a pit is created, changed or discarded.",
+        "No se pudieron poner al día las capas de cortas de {version}: {reason} La corta está creada; las capas conservan lo que tenían y quedan obsoletas si cambió una corta que enseñan (Proyecto ▸ "
+        "Recalcular lo obsoleto las pone al día); se ponen al día la próxima vez que se cree, cambie o descarte una corta.",
+        "warning",
+    ),
+    Message(
+        "des.pitlayer_name",
+        "the pits layers of {version}",
+        "las capas de cortas de {version}",
         "note",
     ),
     # «Proponer el trazado» (spec 017, T27; RF-017-28, P-8, principio 7): su capa es del usuario desde que se crea; repetir la operación la sobrescribiría.

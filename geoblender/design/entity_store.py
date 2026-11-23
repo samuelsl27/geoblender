@@ -2668,6 +2668,7 @@ _OPERATION_LABELS = {
     provenance.ENTITY_LAYER: "des.entity_layer_name",
     provenance.DECLARE_CONSTRAINTS: "des.entity_declaration_name",
     provenance.ROAD_LAYER: "des.axes_layer_name",
+    provenance.PIT_LAYER: "des.pitlayer_name",
 }
 """Las operaciones de la versión sin nombre en sus ajustes y el mensaje que las nombra para una persona (spec 015, T51; H3-1)."""
 
@@ -3798,7 +3799,7 @@ def layers_sync_steps(project: StoreProject, *, budget_s: float = STEP_BUDGET_S
     registro técnico: no impide las demás ni lo que ya terminó."""
     with _consistent(project) as conn:
         due = [found for found in versions_read.versions(conn)
-               if found.editable and (layer_pending(project, conn, found.uid) or _road_layer_pending(project, conn, found.uid))]
+               if found.editable and (layer_pending(project, conn, found.uid) or _road_layer_pending(project, conn, found.uid) or _pit_layer_pending(project, conn, found.uid))]
     refreshed: list[str] = []
     for found in due:
         regenerated = False
@@ -3812,6 +3813,10 @@ def layers_sync_steps(project: StoreProject, *, budget_s: float = STEP_BUDGET_S
         except _STAGE_ERRORS:
             LOGGER.warning("No se pudo poner al día la capa de ejes de pistas de %s: sigue marcada", found.code,
                            exc_info=True)
+        try:  # las capas de cortas (spec 018, T27; RF-018-33): otra operación y otra transacción
+            regenerated = (yield from _pit_layer_sync_steps(project, found, budget_s=budget_s)) or regenerated
+        except _STAGE_ERRORS:
+            LOGGER.warning("No se pudo poner al día las capas de cortas de %s: siguen marcadas", found.code, exc_info=True)
         if regenerated:
             refreshed.append(found.code)
     return tuple(refreshed)
@@ -3825,6 +3830,28 @@ def _road_layer_pending(project: StoreProject, conn: sqlite3.Connection, version
     from . import road_layer  # al usarlo: road_layer importa este módulo
 
     return road_layer.road_layer_pending(project, conn, version_uid)
+
+
+def _pit_layer_pending(project: StoreProject, conn: sqlite3.Connection, version_uid: str) -> bool:
+    """Si las capas de cortas de la versión ``version_uid`` están **marcadas** (``design.pit_layer.pit_layer_pending``; spec 018, T27; RF-018-33): sin ninguna corta viva, **una consulta** y no importa
+    ``design.pit_layer`` (perezoso)."""
+    if not provenance.has_pit_operation(conn, version_uid):
+        return False
+    from . import pit_layer  # al usarlo: pit_layer importa este módulo
+
+    return pit_layer.pit_layer_pending(project, conn, version_uid)
+
+
+def _pit_layer_sync_steps(project: StoreProject, version: Version, *, budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, bool]:
+    """Los pasos de poner al día las capas de cortas de ``version`` **si están marcadas** (``design.pit_layer.pit_layer_sync_steps``; spec 018, T27): ninguno, y ``False``, si la versión no tiene
+    ninguna corta (una consulta, sin importar ``design.pit_layer``). Devuelve si las regeneró."""
+    with _consistent(project) as conn:
+        pits = provenance.has_pit_operation(conn, version.uid)
+    if not pits:
+        return False
+    from . import pit_layer  # al usarlo: pit_layer importa este módulo
+
+    return (yield from pit_layer.pit_layer_sync_steps(project, version, budget_s=budget_s))
 
 
 def _road_layer_sync_steps(project: StoreProject, version: Version, *, budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, bool]:
@@ -3851,10 +3878,12 @@ _CHAIN_MASKS_END = 90
 entidades (T30) y, **si la versión tiene pistas**, de 95 a 100 %, la de ejes de pistas (spec 017, T26)."""
 _CHAIN_ROADS_START = 95
 """Dónde empieza el tramo de la capa de ejes de pistas (de 95 a 100 %) cuando la versión tiene pistas; sin ellas, la capa de entidades llega a 100 %."""
+_CHAIN_PITS_START = 97
+"""Dónde empieza el tramo de las capas de cortas (spec 018, T27) cuando la versión tiene también pistas (de 97 a 100 %); sin pistas, empiezan en :data:`_CHAIN_ROADS_START`."""
 _STAGE_ERRORS = (GeoblenderError, sqlite3.Error, OSError, ValueError)
 """Lo que una etapa de :func:`after_entity_change` da por un fallo suyo (un rechazo, el disco, la base): se
 cuenta en el resultado y no se lanza; lo demás (un error del programa) sigue."""
-_CHAIN_OWN = frozenset({provenance.DECLARE_CONSTRAINTS, masks_provenance.COMPILE, provenance.ENTITY_LAYER, provenance.ROAD_LAYER})
+_CHAIN_OWN = frozenset({provenance.DECLARE_CONSTRAINTS, masks_provenance.COMPILE, provenance.ENTITY_LAYER, provenance.ROAD_LAYER, provenance.PIT_LAYER})
 """Las operaciones que hace la propia cadena: no se cuentan como «lo que quedó obsoleto». Con una entidad que
 protege, el grafo da también por obsoletas la declaración, las máscaras y la capa de entidades que acaba de hacer
 (el eco del ciclo entidad → declarada → máscaras → entidad, D-21): se ponen al día cuando se recalcula la entidad."""
@@ -3874,6 +3903,7 @@ class ChainStage(StrEnum):
     MASKS = "masks"
     LAYER = "layer"
     ROAD_LAYER = "road_layer"
+    PIT_LAYER = "pit_layer"
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -3904,7 +3934,8 @@ class EntityChain:
     (T30), aparte: cuántas entidades enseña ahora (``layer``; ``None`` si no se pudo poner al día), si su
     contenido **cambió** (``layer_changed``) y lo que falló (``layer_failure``). **De la capa de ejes de pistas** (spec 017, T26; solo si la versión
     tiene pistas): cuántas pistas enseña (``road_layer``; ``None`` si no hay o no se pudo poner al día), si su contenido **cambió**
-    (``road_layer_changed``) y lo que falló (``road_layer_failure``: ``ChainStage.ROAD_LAYER``)."""
+    (``road_layer_changed``) y lo que falló (``road_layer_failure``: ``ChainStage.ROAD_LAYER``). **De las capas de cortas** (spec 018, T27; solo si la versión tiene cortas): cuántas cortas enseñan
+    (``pit_layer``), si su contenido **cambió** (``pit_layer_changed``) y lo que falló (``pit_layer_failure``: ``ChainStage.PIT_LAYER``)."""
 
     version: str
     declared: int | None
@@ -3920,6 +3951,9 @@ class EntityChain:
     road_layer: int | None = None
     road_layer_changed: bool = False
     road_layer_failure: ChainFailure | None = None
+    pit_layer: int | None = None
+    pit_layer_changed: bool = False
+    pit_layer_failure: ChainFailure | None = None
 
     def notices(self) -> tuple[Notice, ...]:
         """Lo que se dice al terminar la orden, en el orden en que se enseña: la declaración (si cambió), las
@@ -3948,6 +3982,8 @@ class EntityChain:
                                 {"version": self.version, "reason": self.layer_failure.reason}))
         if self.road_layer_failure is not None:
             found.append(Notice("des.axes_layer_failed", {"version": self.version, "reason": self.road_layer_failure.reason}))
+        if self.pit_layer_failure is not None:
+            found.append(Notice("des.pitlayer_failed", {"version": self.version, "reason": self.pit_layer_failure.reason}))
         return tuple(found)
 
 
@@ -4047,7 +4083,9 @@ def after_entity_change(project: StoreProject, version: Version | str | None, *,
         layer_before = dataset_registry.get(conn, provenance.dataset_name(provenance.ENTITY_MAP_TABLE),
                                             version_uid=found.uid)
         roads = provenance.has_road_operation(conn, found.uid)
-    layer_end = _CHAIN_ROADS_START if roads else _CHAIN_TOTAL
+        pits = provenance.has_pit_operation(conn, found.uid)
+    layer_end = _CHAIN_ROADS_START if roads or pits else _CHAIN_TOTAL
+    roads_end = _CHAIN_PITS_START if roads and pits else _CHAIN_TOTAL
     try:  # (c) la capa de entidades
         written: Stored = yield from _scaled(
             entity_layer_steps(project, found, budget_s=budget_s), _CHAIN_MASKS_END, layer_end)
@@ -4067,13 +4105,31 @@ def after_entity_change(project: StoreProject, version: Version | str | None, *,
         with project.read() as conn:
             road_before = dataset_registry.get(conn, provenance.dataset_name(provenance.ROAD_LAYER_TABLE), version_uid=found.uid)
         try:
-            axes: Stored = yield from _scaled(road_layer.road_layer_steps(project, found, budget_s=budget_s), layer_end, _CHAIN_TOTAL)
+            axes: Stored = yield from _scaled(road_layer.road_layer_steps(project, found, budget_s=budget_s), layer_end, roads_end)
             (axes_record,) = axes.records
             with project.read() as conn:
                 road_layer_count = road_layer.written_rows(axes, conn)
             road_layer_changed = road_before is None or road_before.content_sha256 != axes_record.content_sha256
         except _STAGE_ERRORS as error:
             road_layer_failure = ChainFailure(ChainStage.ROAD_LAYER, error)
+    pit_layer_count: int | None = None
+    pit_layer_changed = False
+    pit_layer_failure: ChainFailure | None = None
+    if pits:  # (e) las capas de cortas (spec 018, T27; RF-018-33): solo si la versión tiene cortas; independiente de las demás etapas
+        from . import pit_layer  # al usarlo: pit_layer importa este módulo
+
+        pits_start = _CHAIN_PITS_START if roads else layer_end
+        yield Progress(_CHAIN_PHASE, pits_start, _CHAIN_TOTAL, "Poniendo al día las capas de cortas…")
+        with project.read() as conn:
+            pit_before = dataset_registry.get(conn, provenance.dataset_name(provenance.PIT_LAYER_TABLE), version_uid=found.uid)
+        try:
+            shown: Stored = yield from _scaled(pit_layer.pit_layer_steps(project, found, budget_s=budget_s), pits_start, _CHAIN_TOTAL)
+            shown_record = next(record for record in shown.records if record.locator.startswith(provenance.dataset_name(provenance.PIT_LAYER_TABLE) + "_"))
+            with project.read() as conn:
+                pit_layer_count = pit_layer.written_rows(shown, conn)
+            pit_layer_changed = pit_before is None or pit_before.content_sha256 != shown_record.content_sha256
+        except _STAGE_ERRORS as error:
+            pit_layer_failure = ChainFailure(ChainStage.PIT_LAYER, error)
     with project.read() as conn:
         now = _stale_operations(conn, found)
     after, _pending = access.mask_state(project, found.uid)
@@ -4081,9 +4137,9 @@ def after_entity_change(project: StoreProject, version: Version | str | None, *,
         found.code, declared, changed, compiled, changes,
         tuple(item for uid, item in now.items()
               if uid not in stale and item.op_type not in _CHAIN_OWN), after, failure, layer, layer_changed,
-        layer_failure, road_layer_count, road_layer_changed, road_layer_failure)
-    done = failure is None and layer_failure is None and road_layer_failure is None
-    what = "Restricciones declaradas, máscaras y capa de entidades" + (" y de ejes de pistas" if roads else "")
+        layer_failure, road_layer_count, road_layer_changed, road_layer_failure, pit_layer_count, pit_layer_changed, pit_layer_failure)
+    done = failure is None and layer_failure is None and road_layer_failure is None and pit_layer_failure is None
+    what = "Restricciones declaradas, máscaras y capa de entidades" + (" y de ejes de pistas" if roads else "") + (" y de cortas" if pits else "")
     yield Progress(_CHAIN_PHASE, _CHAIN_TOTAL, _CHAIN_TOTAL,
                    f"{what} al día" if done else f"{what}: no se pudo terminar", result=chain)
 
@@ -4474,6 +4530,12 @@ class _ReleaseSteps:
         except _STAGE_ERRORS:
             LOGGER.warning("No se pudo poner al día la capa de ejes de pistas de %s tras dar por bueno un apoyo: sigue "
                            "marcada", self._found.code, exc_info=True)
+        try:  # las capas de cortas (spec 018, T27): una corta cuyo apoyo se dio por bueno cambia de estado
+            for step in _pit_layer_sync_steps(self._project, self._found):
+                yield replace(step, result=None)
+        except _STAGE_ERRORS:
+            LOGGER.warning("No se pudo poner al día las capas de cortas de %s tras dar por bueno un apoyo: siguen "
+                           "marcadas", self._found.code, exc_info=True)
 
     def close(self) -> None:
         """Cierra los pasos: si no empezaron, la operación nueva queda «cancelada»; si no, la cancelan ellos (o,

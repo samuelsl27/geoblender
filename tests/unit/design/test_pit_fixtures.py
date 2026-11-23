@@ -342,12 +342,11 @@ class MainNamesTest(unittest.TestCase):
                 self.assertTrue(hasattr(loaded, name), f"{module}.{name}")
 
     def test_the_pit_type_is_registered_but_not_the_new_modules(self) -> None:
-        """Estado tras la T06 (``gis/offset.py`` ya existe): el tipo ``pit`` está registrado (T02), la roseta, la definición de rampa y los datos existen (T04 y T05) y los demás módulos
-        nuevos del plan, aún no."""
+        """Estado tras la T27 (``design/pit_layer.py`` ya existe, como los demás módulos nuevos del plan): el tipo ``pit`` está registrado (T02), la roseta, la definición de rampa y los
+        datos existen (T04 y T05) y los módulos nuevos del plan que quedan, como ``gis/offset.py`` (T06), existen."""
         entities = import_geoblender("design.entities")
         self.assertIn("pit", {str(getattr(item, "value", item)) for item in entities._TYPES})
-        for module in ("pit_layer",):
-            self.assertFalse((EXTENSION_DIR / "design" / f"{module}.py").exists(), module)
+        self.assertTrue((EXTENSION_DIR / "design" / "pit_layer.py").exists())  # T27
         self.assertTrue((EXTENSION_DIR / "gis" / "offset.py").exists())  # T06
         self.assertTrue((EXTENSION_DIR / "design" / "pit_offset.py").exists())  # T08
         self.assertTrue((EXTENSION_DIR / "design" / "pit_sky.py").exists())  # T19

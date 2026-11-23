@@ -570,6 +570,7 @@ __all__ = [
     "has_entity_operation",
     "has_declaring_operation",
     "has_platform_operation",
+    "has_pit_operation",
     "has_road_operation",
     "merge_released",
     "released_supports",
@@ -613,6 +614,8 @@ __all__ = [
     "road_request",
     "road_settings",
     "pit_expand_figures",
+    "pit_layer_inputs",
+    "pit_layer_settings",
     "pit_figures",
     "pit_operation_defs",
     "pit_request",
@@ -2088,6 +2091,12 @@ def has_road_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
     return conn.execute(_LIVE_ROAD, (version_uid, ROAD)).fetchone() is not None
 
 
+def has_pit_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
+    """Si la versión ``version_uid`` (su uid) tiene **alguna** operación ``des.pit`` hecha y sin sustituir, en cualquier revisión (spec 018, T27; RF-018-33): como :func:`has_road_operation` para la corta.
+    Sin ella las capas de cortas no tienen nada que enseñar y **no se cargan** (``design.pit_layer`` es perezoso). Una sola consulta. Solo lee."""
+    return conn.execute(_LIVE_ROAD, (version_uid, PIT)).fetchone() is not None
+
+
 def entity_figure_scope(name: str, code: str) -> dict[str, str]:
     """El ámbito de una cifra de las entidades (spec 015, T04; plan 015 §5.2.3; ``docs/trampas.md``
     §6): el de :func:`figure_scope` (el nombre de la operación en ASCII, único en la versión) y, en
@@ -2998,6 +3007,12 @@ def road_layer_settings(roads: Iterable[tuple[str, str]]) -> dict[str, Any]:
     return {"entities": _entity_pairs(roads, "de la capa de ejes de pistas")}
 
 
+def pit_layer_settings(pits: Iterable[tuple[str, str]]) -> dict[str, Any]:
+    """Los ajustes de ``des.pit_layer`` (spec 018, T27; RF-018-33): las cortas que enseña, ``(código, nombre)`` de cada una, **también la descartada** (sale atenuada): como
+    :func:`road_layer_settings`. ``ValueError`` si una corta está dos veces o falta su nombre."""
+    return {"entities": _entity_pairs(pits, "de las capas de cortas")}
+
+
 def settings_entities(settings: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     """Las entidades ``(código, nombre)`` que guardan unos ajustes de ``des.declare_constraints``, de
     ``des.entity_layer`` o de ``des.road_layer`` (:func:`declare_settings`, :func:`entity_layer_settings`, :func:`road_layer_settings`), por orden.
@@ -3346,6 +3361,18 @@ def road_layer_inputs(names: Iterable[str]) -> tuple[Use, ...]:
         found.append(Use(dataset_name(ENTITY_TABLE, name), ENTITY_ROLE))
         found.append(Use(dataset_name(ROAD_AXIS_TABLE, name), ROAD_AXIS_ROLE))
         found.append(Use(dataset_name(ENTITY_REPORT_TABLE, name), ENTITY_REPORT_ROLE))
+    return _unique(found)
+
+
+def pit_layer_inputs(names: Iterable[str]) -> tuple[Use, ...]:
+    """Lo que consume ``des.pit_layer`` (spec 018, T27; RF-018-33): de **cada corta viva**, por su nombre, sus polilíneas ``des_pbl_`` (papel :data:`PIT_POLYLINES_ROLE`), su línea de cielo ``des_psk_``
+    (:data:`PIT_SKYLINE_ROLE`) y sus rampas ``des_prl_`` (:data:`PIT_RAMPS_ROLE`): repetir la corta, también con la misma salida, deja las capas obsoletas con su causa. La corta descartada sale en las
+    capas pero no es entrada: sus datos están descartados. Como :func:`road_layer_inputs` en lo demás."""
+    found: list[Use] = []
+    for name in _codes(names, "las cortas de las capas de cortas"):
+        found.append(Use(dataset_name(PIT_POLYLINES_TABLE, name), PIT_POLYLINES_ROLE))
+        found.append(Use(dataset_name(PIT_SKYLINE_TABLE, name), PIT_SKYLINE_ROLE))
+        found.append(Use(dataset_name(PIT_RAMPS_TABLE, name), PIT_RAMPS_ROLE))
     return _unique(found)
 
 

@@ -1786,6 +1786,36 @@ class DesignWriter:
         self._vectors[provenance.ROAD_LAYER_TABLE] = _Declared(provenance.ROAD_LAYER_TABLE, planned, rows)
         return planned
 
+    def pit_layer_steps(self, rows: Iterable[Any]) -> Generator[None, None, DatasetSpec]:
+        """Prepara la capa de polilíneas de las cortas de la versión (``pit``; spec 018, T27; RF-018-33, D-19) con ``rows`` (:class:`~.pit_layer.PitLayerRow`; se reescribe **entera**,
+        ``design.pit_layer.write_pit_layer``), **sin registrar nada**: una capa de líneas con Z del GeoPackage del proyecto, no editable en QGIS (RF-008-56) y con su estilo por tipo (``commit`` lo escribe
+        en su transacción). Devuelve su ``DatasetSpec`` en ``StopIteration.value``. Se rechaza al llamar (``ValueError``; ``TypeError`` si una fila no es una ``PitLayerRow``)."""
+        from .pit_layer import PitLayerRow  # al usarlo: ``pit_layer`` importa este módulo
+
+        return self._version_layer_steps(provenance.PIT_LAYER_TABLE, PitLayerRow, "la capa de polilíneas de cortas", rows)
+
+    def sky_layer_steps(self, rows: Iterable[Any]) -> Generator[None, None, DatasetSpec]:
+        """Como :meth:`pit_layer_steps` para la línea de cielo de las cortas (``sky``; :class:`~.pit_layer.SkyLayerRow`)."""
+        from .pit_layer import SkyLayerRow  # al usarlo: ``pit_layer`` importa este módulo
+
+        return self._version_layer_steps(provenance.PIT_SKY_LAYER_TABLE, SkyLayerRow, "la capa de la línea de cielo", rows)
+
+    def _version_layer_steps(self, family: str, row_type: type, what: str, rows: Iterable[Any]) -> Generator[None, None, DatasetSpec]:
+        self._produces(family, "vector")
+        chosen = tuple(rows)
+        for item in chosen:
+            if not isinstance(item, row_type):
+                raise TypeError(f"una fila de {what} es una {row_type.__name__}, no {item!r}")
+        return self._declared_layer_steps(family, chosen)
+
+    def _declared_layer_steps(self, family: str, rows: tuple[Any, ...]) -> Generator[None, None, DatasetSpec]:
+        planned = provenance.dataset_spec(family, "", self.version_code, crs_epsg=self.crs.epsg)
+        with self.project.read() as conn:
+            self._check_place(conn, planned)
+        yield
+        self._vectors[family] = _Declared(family, planned, rows)
+        return planned
+
     def route_layer_steps(self, rows: Iterable[Any]) -> Generator[None, None, DatasetSpec]:
         """Prepara la capa propuesta del trazado (``rpl``; spec 017, T27; RF-017-28, P-8, D-19) con ``rows`` (la línea con su Z de la propuesta: una :class:`~.road_layer.RouteLayerRow`; la tabla
         se escribe **entera** al crear o repetir la operación, ``design.road_layer.write_route_layer``), **sin registrar nada**: una capa de líneas con Z del GeoPackage del proyecto
@@ -1903,6 +1933,16 @@ class DesignWriter:
             from .road_layer import write_route_layer  # al usarlo: ``road_layer`` importa este módulo
 
             write_route_layer(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg, name=self.name)
+            return
+        if declared.family == provenance.PIT_LAYER_TABLE:
+            from .pit_layer import write_pit_layer  # al usarlo: ``pit_layer`` importa este módulo
+
+            write_pit_layer(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
+            return
+        if declared.family == provenance.PIT_SKY_LAYER_TABLE:
+            from .pit_layer import write_sky_layer  # al usarlo: ``pit_layer`` importa este módulo
+
+            write_sky_layer(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
             return
         if declared.family in (provenance.PIT_POLYLINES_TABLE, provenance.PIT_SKYLINE_TABLE):
             from .pit_lines import write_pit_lines  # al usarlo
@@ -4183,6 +4223,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import pit_store  # al usarlo: pit_store importa este módulo
 
         return pit_store.recompute_pit(request, budget_s=budget_s, released=released)
+    if request.op_type == provenance.PIT_LAYER:  # las capas de cortas (T27); nunca cae en un escalonado
+        from . import pit_layer  # al usarlo: pit_layer importa este módulo
+
+        return pit_layer.recompute_pit_layer(request, budget_s=budget_s)
     if request.op_type in provenance.PIT_VERSION_TYPES:
         # El resto de tipos de la 018 (T02): sin cálculo todavía; las tareas que crean la operación lo ponen aquí. Nunca cae en un escalonado.
         raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 018 que crea su operación")

@@ -106,6 +106,13 @@ __all__ = [
     "ROAD_OTHER_COLOR",
     "ROAD_OTHER_LABEL",
     "ROAD_STYLE_NAME",
+    "PIT_FIELDS",
+    "PIT_KIND_COLORS",
+    "PIT_LAYER",
+    "PIT_STYLE_NAME",
+    "SKY_FIELDS",
+    "SKY_LAYER",
+    "SKY_STYLE_NAME",
     "STYLES_DATASET",
     "STYLES_TABLE",
     "StyleRow",
@@ -184,6 +191,35 @@ _ROAD_NOTE = ("Ejes de las pistas de esta versión (Geoblender): líneas con la 
 _ROAD_LINE_MM = 0.9
 _ROAD_FADED_MM = 0.4
 _ROAD_MARK_MM = 1.4
+PIT_LAYER = "des_pit"
+"""El nombre del dato de la capa de polilíneas de las cortas de la versión (``des_pit_<vNN>`` es su ubicación; spec 018, T27): el mismo que ``design.provenance.dataset_name("pit")`` (``core`` no importa
+``design``; una prueba lo comprueba)."""
+SKY_LAYER = "des_sky"
+"""El nombre del dato de la capa de la línea de cielo de las cortas de la versión (``des_sky_<vNN>``; spec 018, T27): el de ``design.provenance.dataset_name("sky")``."""
+PIT_STYLE_NAME = "Polilíneas de cortas"
+"""El nombre del estilo de la capa de polilíneas de las cortas (como mucho 30 caracteres)."""
+SKY_STYLE_NAME = "Línea de cielo de cortas"
+"""El nombre del estilo de la capa de la línea de cielo (como mucho 30 caracteres)."""
+PIT_FIELDS: tuple[str, ...] = ("code", "name", "state", "bench", "kind", "zone", "sector", "part", "ordinal", "ramp", "fixed", "z_m", "length_m")
+"""Los campos de la capa de polilíneas de las cortas que el estilo conoce (el contrato con ``des_pit_<vNN>`` de ``design``, T27): por ``kind`` (``foot``, ``crest`` o ``ramp``) se pinta y por ``state`` se atenúa o se
+marca. Todos de solo lectura."""
+SKY_FIELDS: tuple[str, ...] = ("code", "name", "state", "part", "length_m")
+"""Los campos de la capa de la línea de cielo que el estilo conoce (``des_sky_<vNN>``, T27)."""
+PIT_KIND_COLORS: Mapping[str, tuple[str, tuple[int, int, int]]] = MappingProxyType({
+    "foot": ("Pie", (0, 114, 178)),
+    "crest": ("Cresta", (213, 94, 0)),
+    "ramp": ("Rampa", (0, 158, 115)),
+})
+"""El color y el nombre de cada tipo de polilínea de una corta (la paleta de Okabe e Ito); «berma» no es una línea: es la banda entre el pie de un banco y la cresta del de abajo."""
+_PIT_OTHER_LABEL = "Otro tipo"
+_PIT_OTHER_COLOR = (110, 110, 110)
+_SKY_COLOR = (86, 54, 140)
+_PIT_DESCRIPTION = "Geoblender: un color por tipo de polilínea de la corta (pie, cresta, rampa); la descartada, atenuada, y la de apoyo retirado, marcada (no se edita a mano)"
+_SKY_DESCRIPTION = "Geoblender: la línea de cielo de las cortas; la descartada, atenuada, y la de apoyo retirado, marcada (no se edita a mano)"
+_PIT_NOTE = ("Polilíneas de diseño de las cortas de esta versión (Geoblender): líneas con su cota en la Z, que Geoblender regenera tras cada orden de cortas; "
+             "no se edita a mano, se cambian en la corta. Si la edita, Geoblender la bloquea.")
+_SKY_NOTE = ("Línea de cielo de las cortas de esta versión (Geoblender): donde la superficie de diseño corta al terreno, con la cota del terreno en la Z; "
+             "no se edita a mano. Si la edita, Geoblender la bloquea.")
 _DECLARED_DESCRIPTION = ("Geoblender: el estilo por tipo de las restricciones del proyecto, para las que "
                          "declaran las entidades de diseño (no se editan a mano)")
 _ENTITY_DESCRIPTION = ("Geoblender: un color por tipo de entidad de diseño; la descartada, atenuada, y la de "
@@ -375,11 +411,13 @@ class VersionLayer(StrEnum):
     DECLARED = "declared"
     ENTITIES = "entities"
     ROADS = "roads"
+    PITS = "pits"
+    SKYLINES = "skylines"
 
 
-_VERSION_LAYER = re.compile(rf"(?P<layer>{DECLARED_LAYER}|{ENTITY_LAYER}|{ROAD_LAYER})_v[0-9]+")
-_LAYER_OF_NAME = {DECLARED_LAYER: VersionLayer.DECLARED, ENTITY_LAYER: VersionLayer.ENTITIES, ROAD_LAYER: VersionLayer.ROADS}
-_TABLE_INDEX = {VersionLayer.DECLARED: 4, VersionLayer.ENTITIES: 5, VersionLayer.ROADS: 6}
+_VERSION_LAYER = re.compile(rf"(?P<layer>{DECLARED_LAYER}|{ENTITY_LAYER}|{ROAD_LAYER}|{PIT_LAYER}|{SKY_LAYER})_v[0-9]+")
+_LAYER_OF_NAME = {DECLARED_LAYER: VersionLayer.DECLARED, ENTITY_LAYER: VersionLayer.ENTITIES, ROAD_LAYER: VersionLayer.ROADS, PIT_LAYER: VersionLayer.PITS, SKY_LAYER: VersionLayer.SKYLINES}
+_TABLE_INDEX = {VersionLayer.DECLARED: 4, VersionLayer.ENTITIES: 5, VersionLayer.ROADS: 6, VersionLayer.PITS: 7, VersionLayer.SKYLINES: 8}
 """El número de capa de las claves de regla de cada capa de versión (1 a 3: las del proyecto)."""
 
 
@@ -499,6 +537,32 @@ def _road_rules(classes: Iterable[str]) -> tuple[str, str]:
     return "\n".join(rules), "\n".join(symbols)
 
 
+def _pit_rules(layer: VersionLayer) -> tuple[str, str]:
+    """Las reglas y los símbolos de las capas de cortas (spec 018, T27): la de polilíneas, **por tipo** (``kind``: pie, cresta, rampa y «otro tipo») y la de la línea de cielo, un solo tipo; cada uno
+    normal, descartado (atenuado) y con el apoyo retirado (marcado). Las reglas no se solapan."""
+    special = ", ".join(f"'{state}'" for state in (*ENTITY_FADED_STATES, *ENTITY_MARKED_STATES))
+    if layer is VersionLayer.PITS:
+        known = ", ".join(f"'{kind}'" for kind in PIT_KIND_COLORS)
+        items: list[tuple[str, str, tuple[int, int, int]]] = [(label, f"&quot;kind&quot; = '{kind}'", rgb) for kind, (label, rgb) in PIT_KIND_COLORS.items()]
+        items.append((_PIT_OTHER_LABEL, f"coalesce(&quot;kind&quot;, '') NOT IN ({known})", _PIT_OTHER_COLOR))
+    else:
+        items = [("Línea de cielo", "TRUE", _SKY_COLOR)]
+    rules = []
+    symbols = []
+    index = 0
+    for label, of_kind, rgb in items:
+        variants = (
+            (label, f"{of_kind} AND coalesce(&quot;state&quot;, '') NOT IN ({special})", _road_symbol(index, rgb, alpha=255, style="solid", width_mm=_ROAD_LINE_MM)),
+            (f"{label} {_FADED_LABEL}", f"{of_kind} AND {_state_condition(ENTITY_FADED_STATES)}", _road_symbol(index + 1, rgb, alpha=_FADED_OUTLINE_ALPHA, style="dash", width_mm=_ROAD_FADED_MM)),
+            (f"{label} {_MARKED_LABEL}", f"{of_kind} AND {_state_condition(ENTITY_MARKED_STATES)}", _road_symbol(index + 2, MARK_COLOR, alpha=255, style="dash dot", width_mm=_ROAD_MARK_MM)),
+        )
+        for text, condition, symbol in variants:
+            rules.append(f'   <rule key="{_rule_key(_TABLE_INDEX[layer], index + 1)}" filter="{condition}" label="{_attr(text)}" symbol="{index}"/>')
+            symbols.append(symbol)
+            index += 1
+    return "\n".join(rules), "\n".join(symbols)
+
+
 def _check_fields(fields: Iterable[str]) -> tuple[str, ...]:
     found = tuple(dict.fromkeys(fields))
     if not found or any(not isinstance(name, str) or not name for name in found):
@@ -519,7 +583,7 @@ def style_for(table: str, fields: Iterable[str] | None = None, classes: Iterable
         if table not in CONSTRAINT_LAYERS.values():
             raise ValueError(f"solo hay estilo de las capas de restricciones "
                              f"({', '.join(CONSTRAINT_LAYERS.values())}) y de las de una versión "
-                             f"({DECLARED_LAYER}_<vNN>, {ENTITY_LAYER}_<vNN>, {ROAD_LAYER}_<vNN>), no de «{table}»")
+                             f"({DECLARED_LAYER}_<vNN>, {ENTITY_LAYER}_<vNN>, {ROAD_LAYER}_<vNN>, {PIT_LAYER}_<vNN>, {SKY_LAYER}_<vNN>), no de «{table}»")
         return StyleRow(STYLE_NAME, STYLE_DESCRIPTION, _qml(table))
     if layer is VersionLayer.DECLARED:
         named = _check_fields(("fid", *DECLARED_COLUMNS) if fields is None else fields)
@@ -530,6 +594,14 @@ def style_for(table: str, fields: Iterable[str] | None = None, classes: Iterable
         named = _check_fields(("fid", *ROAD_FIELDS) if fields is None else fields)
         rule_lines, symbol_lines = _road_rules(() if classes is None else classes)
         return StyleRow(ROAD_STYLE_NAME, _ROAD_DESCRIPTION, _version_qml(layer, rule_lines, symbol_lines, _ROAD_NOTE, named))
+    if layer is VersionLayer.PITS:
+        named = _check_fields(("fid", *PIT_FIELDS) if fields is None else fields)
+        rule_lines, symbol_lines = _pit_rules(layer)
+        return StyleRow(PIT_STYLE_NAME, _PIT_DESCRIPTION, _version_qml(layer, rule_lines, symbol_lines, _PIT_NOTE, named))
+    if layer is VersionLayer.SKYLINES:
+        named = _check_fields(("fid", *SKY_FIELDS) if fields is None else fields)
+        rule_lines, symbol_lines = _pit_rules(layer)
+        return StyleRow(SKY_STYLE_NAME, _SKY_DESCRIPTION, _version_qml(layer, rule_lines, symbol_lines, _SKY_NOTE, named))
     named = _check_fields(("fid", *ENTITY_FIELDS) if fields is None else fields)
     rule_lines, symbol_lines = _entity_rules()
     return StyleRow(ENTITY_STYLE_NAME, _ENTITY_DESCRIPTION,

@@ -831,7 +831,7 @@ def recompute_pit_expand(request: RecomputeRequest) -> OperationHandle:
 
 
 def recompute_pit_layer(request: RecomputeRequest) -> OperationHandle:
-    """El recálculo de ``des.pit_layer`` (RF-018-29; D-19 de la 013): véase el módulo. Sin comportamiento todavía (spec 018, T03)."""
+    """El recálculo de ``des.pit_layer`` (RF-018-33; D-19 de la 013): véase el módulo (``design.pit_layer``, T27)."""
     return _recompute(request)
 
 

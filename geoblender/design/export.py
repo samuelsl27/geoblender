@@ -119,6 +119,7 @@ __all__ = [
     "PART_THICKNESS",
     "PROJECT_VERSION",
     "QUARRY_GRIDS",
+    "PIT_FINDING_CSV_COLUMNS",
     "ROAD_EXPORTS",
     "ROAD_GRIDS",
     "SUFFIXES",
@@ -126,15 +127,18 @@ __all__ = [
     "UNIT",
     "ExportProject",
     "StoredGrid",
+    "StoredPitFindings",
     "StoredRoad",
     "check_target",
     "compose_ground",
     "export_grid",
     "export_grid_steps",
+    "export_pit_findings_csv",
     "export_road_csv",
     "metadata_items",
     "road_csv_bytes",
     "stored_grid",
+    "stored_pit_findings",
     "stored_road",
     "stored_road_export",
     "thickness_between",
@@ -700,4 +704,71 @@ def export_road_csv(project: ExportProject, name: str, path: str | Path, *, vers
     except (sqlite3.Error, ValueError):
         raise DesignError("des.export_road_unknown", obj=name, field=_FIELD_ROAD, value=name, version=found.version_code, dataset=found.record.name) from None
     _write_bytes(data, target)
+    return target
+
+
+# --- Los hallazgos de una corta a CSV (spec 018, T27; RF-018-33, RF-018-26) -------------------------
+
+PIT_FINDING_CSV_COLUMNS: tuple[str, ...] = ("Tipo", "Banco", "Valor", "Límite", "Unidad", "X (m)", "Y (m)", "Detalle")
+"""Los títulos de las columnas del CSV de los hallazgos de una corta (``des_pfn_``): el tipo, el banco (vacío si no es de uno), el valor y el límite que no cumple, su unidad, el lugar absoluto y el detalle."""
+_PIT_FINDING_SQL = "SELECT kind, bench, value, limit_value, unit, x, y, detail FROM \"{table}\" ORDER BY fid"
+_FIELD_PIT = "corta"
+
+
+@dataclass(frozen=True, slots=True)
+class StoredPitFindings:
+    """Los hallazgos de una corta calculada que se pueden exportar (:func:`stored_pit_findings`): su dato (``des_pfn_<nombre>``), la familia (``pfn``), el nombre de su operación tal como está en el nombre de su
+    dato y su versión (su uid y su código)."""
+
+    record: DatasetRecord
+    family: str
+    name: str
+    version_uid: str
+    version_code: str
+
+
+def stored_pit_findings(project: ExportProject, ref: str, *, version: str) -> StoredPitFindings:
+    """Los hallazgos de la corta ``ref`` (su código o su nombre) en la versión ``version`` (uid o código): ``des_pfn_<nombre>`` **vivo y vigente** de esa versión (RF-018-33). ``VersionError``
+    ``core.version_unknown`` si la versión no existe; ``DesignError`` ``des.export_pit_unknown`` si la versión no tiene esa corta calculada (o su dato está bloqueado, sustituido o descartado).
+    ``TypeError`` si ``ref`` o ``version`` no son textos. No escribe nada."""
+    if not isinstance(ref, str) or not ref.strip():
+        raise TypeError(f"una corta se indica por su código o su nombre, no {ref!r}")
+    found = _version(project, version)
+    if found is None:
+        raise ValueError("los hallazgos de una corta son de una versión: la versión no puede ser vacía")
+    entry = entities.registry(project, found.uid).get(ref.strip())
+    shown = entry.record.name if entry is not None and entry.record.kind == entities.EntityKind.PIT and entry.operation_uid is not None else ref.strip()
+    dataset = declared.dataset_name(declared.PIT_FINDINGS_TABLE, shown)
+    with project.read() as conn:
+        record = dataset_registry.get(conn, dataset, version_uid=found.uid)
+    if record is None or not record.live or record.status.value != "current":
+        raise DesignError("des.export_pit_unknown", obj=ref, field=_FIELD_PIT, value=ref, version=found.code, dataset=dataset)
+    return StoredPitFindings(record, declared.PIT_FINDINGS_TABLE, record.name[len(declared.FAMILIES_BY_CODE[declared.PIT_FINDINGS_TABLE].prefix):], found.uid, found.code)
+
+
+def _csv_cell(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return _csv_number(value)
+    return str(value)
+
+
+def export_pit_findings_csv(project: ExportProject, ref: str, path: str | Path, *, version: str, read_only: ReadOnlyDirs, overwrite: bool = False) -> Path:
+    """Los hallazgos de la corta ``ref`` de la versión ``version`` (uid o código) a CSV en ``path`` (RF-018-33, RF-018-26; véase el módulo): una fila por hallazgo, en el orden del cálculo, con el tipo, el
+    banco, el valor y el límite, la unidad, el lugar y el detalle; BOM de UTF-8, «;», CRLF y coma decimal **sin pérdida** (como la rasante de una pista, :func:`road_csv_bytes`). Al llamar, antes de escribir
+    nada, la versión (``VersionError``), que la corta esté calculada en ella (:func:`stored_pit_findings`, ``DesignError`` ``des.export_pit_unknown``) y el destino (:func:`check_target` con la extensión de
+    un CSV); **no modifica nada del proyecto** (no es una operación). Una corta sin hallazgos da el CSV con solo los títulos. Devuelve ``path``."""
+    found = stored_pit_findings(project, ref, version=version)
+    target = check_target(path, project=project, read_only=read_only, overwrite=overwrite, suffixes=CSV_SUFFIXES, label="CSV")
+    try:
+        with project.read() as conn:
+            rows = conn.execute(_PIT_FINDING_SQL.format(table=found.record.locator)).fetchall()
+    except sqlite3.Error:
+        raise DesignError("des.export_pit_unknown", obj=ref, field=_FIELD_PIT, value=ref, version=found.version_code, dataset=found.record.name) from None
+    stream = io.StringIO(newline="")
+    writer_ = csv.writer(stream, delimiter=_CSV_SEPARATOR, lineterminator=_CSV_LINE_END)
+    writer_.writerow(PIT_FINDING_CSV_COLUMNS)
+    writer_.writerows([_csv_cell(value) for value in row] for row in rows)
+    _write_bytes(stream.getvalue().encode(_CSV_ENCODING), target)
     return target
