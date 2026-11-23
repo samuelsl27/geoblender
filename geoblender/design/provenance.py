@@ -252,17 +252,21 @@ from .params import (
     BodyParam,
     ButtressParam,
     PitParam,
+    PitRampParam,
     PlatformParam,
     RemovalParam,
     RoadParam,
     RoadProfileParam,
+    RoseParam,
     StockpileParam,
     bench_key,
     entity_key,
     entity_params,
     entity_params_of,
     entity_segment,
+    pitramp_key,
     road_profile_key,
+    rose_key,
 )
 from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 
@@ -4345,27 +4349,29 @@ _PIT_OPTIONAL: tuple[PitParam, ...] = (
 
 
 def pit_inputs(layer: str, start: str, masks: Iterable[Use] = (), supports: Iterable[str] = (), *, fixed: str | None = None,
-               noramp: str | None = None) -> tuple[Use, ...]:
+               noramp: str | None = None, points: Iterable[str] = ()) -> tuple[Use, ...]:
     """Lo que consume ``des.pit`` (spec 018, T21; RF-018-01, 03, 05; plan 018 §5.2.3; RF-015-06, RF-015-15), en su orden y sin repetir: la
     capa de origen ``layer`` (:data:`ENTITY_LAYER_ROLE`: su geometría y su hash; un cambio de geometría en QGIS deja la corta obsoleta, uno
     de un campo no), las de bancos fijados ``fixed`` y de zonas sin rampa ``noramp`` si las hay (el mismo papel), la superficie de partida
     ``start`` (:data:`SURFACE_ROLE`; **ya resuelta**: el nombre de su dato), las máscaras de la versión ``masks`` y, **añadidas al crear**,
-    lo que la corta pisa, ``supports`` (:data:`SUPPORTED_ON_ROLE`). ``ValueError`` si faltan los nombres; ``TypeError`` si ``supports`` es
-    un texto."""
+    lo que la corta pisa, ``supports`` (:data:`SUPPORTED_ON_ROLE`). ``points``: las capas de puntos de inicio de las rampas (T21b; el mismo
+    papel que las otras capas). ``ValueError`` si faltan los nombres; ``TypeError`` si ``supports`` es un texto."""
     found = [Use(_named(layer, "de la capa de origen de la corta"), ENTITY_LAYER_ROLE)]
-    found += [Use(_named(name, "de una capa de la corta"), ENTITY_LAYER_ROLE) for name in (fixed, noramp) if name is not None]
+    found += [Use(_named(name, "de una capa de la corta"), ENTITY_LAYER_ROLE) for name in (fixed, noramp, *_codes(points, "las capas de puntos de inicio")) if name is not None]
     found += [Use(_named(start, "de la superficie de partida"), SURFACE_ROLE), *masks]
     found += [Use(_named(name, "de una superficie en la que se apoya"), SUPPORTED_ON_ROLE) for name in _codes(supports, "las superficies de apoyo")]
     return _unique(found)
 
 
-def pit_params(code: str, *, valued: Iterable[str] = (), profiles: Iterable[str] = (), sectors: Iterable[str] = (), supports: bool = False
-               ) -> tuple[str, ...]:
+def pit_params(code: str, *, valued: Iterable[str] = (), profiles: Iterable[str] = (), sectors: Iterable[str] = (), supports: bool = False,
+               roses: Iterable[tuple[str, int]] = (), ramps: Iterable[tuple[str, bool]] = (), road_profiles: Iterable[str] = ()) -> tuple[str, ...]:
     """Los parámetros que lee ``des.pit`` de la corta de código ``code`` (``begin_operation(params=…)``; spec 018, T21; RF-018-01, 06, 08,
     10, 11, 13): los de :data:`_PIT_ALWAYS` y **solo los opcionales que tienen valor** (``valued``, de entre :data:`_PIT_OPTIONAL`), las
     dependencias declaradas si las tiene, los valores por sector que tienen valor (``sectors``: sus claves completas, de ``pit_sector_key``),
     los cinco de cada perfil de banco ``profiles`` (``des.bench.{p}.*``) y los del proyecto que lee toda entidad que mide un borde
-    (:data:`PLATFORM_COMMON_PARAMS`). No lee su nombre ni su motivo ni lo que decide; no declara nada. ``ValueError`` si ``code`` no es el
+    (:data:`PLATFORM_COMMON_PARAMS`). T21b: los cuatro valores de cada rango de cada roseta que usa (``roses``: ``(código, número de rangos)``;
+    ``des.rose.{r}.r{i}.*``), los de cada definición de rampa (``ramps``: ``(código, zig-zag)``; ``des.pitramp.{q}.*``: los seis comunes y, solo en el zig-zag, el radio y la plataforma, que una espiral no tiene) y los del perfil de pista de cada rampa
+    (``road_profiles``, sin su clase normativa). No lee su nombre ni su motivo ni lo que decide; no declara nada. ``ValueError`` si ``code`` no es el
     de una corta o ``valued`` nombra algo que no es opcional."""
     _typed_code(code, "pit", "una corta")
     given = set(_codes(valued, "los valores opcionales con valor"))
@@ -4375,8 +4381,12 @@ def pit_params(code: str, *, valued: Iterable[str] = (), profiles: Iterable[str]
     read = {*_PIT_ALWAYS, *(item for item in _PIT_OPTIONAL if item.value in given)}
     if supports:
         read.add(PitParam.SUPPORTS)
+    coded = [rose_key(rose, f"r{number}", item) for rose, count in dict(roses).items() for number in range(1, count + 1) for item in RoseParam]
+    coded += [pitramp_key(ramp, item) for ramp, zigzag in dict(ramps).items() for item in PitRampParam
+              if zigzag or item not in (PitRampParam.TURN_RADIUS, PitRampParam.MIN_PLATFORM)]
+    coded += [road_profile_key(profile, item) for profile in dict.fromkeys(road_profiles) for item in _ROAD_PROFILE_READ]
     return _unique([*(entity_key(code, item) for item in PitParam if item in read), *_codes(sectors, "los valores por sector"),
-                    *profile_params(profiles), *PLATFORM_COMMON_PARAMS])
+                    *profile_params(profiles), *coded, *PLATFORM_COMMON_PARAMS])
 
 
 def pit_settings(request: PitRequest, code: str) -> dict[str, Any]:

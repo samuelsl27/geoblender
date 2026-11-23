@@ -106,6 +106,30 @@ class ProvenanceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             provenance.pit_params("PLT-001")
 
+    def test_the_rose_ramp_and_road_profile_parameters(self) -> None:
+        """T21b, RF-018-07 y 15: los valores de cada rango de la roseta, los de cada rampa (el radio y la plataforma solo en el zig-zag) y los del perfil de
+        pista (sin su clase) son parámetros que lee la operación; las capas de puntos de inicio, entradas."""
+        keys = provenance.pit_params(CODE, roses=[("rosa", 2)], ramps=[("espiral", False), ("zz", True)], road_profiles=["pista"])
+        for wanted in ("des.rose.rosa.r1.from_deg", "des.rose.rosa.r2.berm_m", "des.pitramp.espiral.gradient_pct", "des.pitramp.zz.turn_radius_m",
+                       "des.pitramp.zz.min_platform_m", "des.roadprofile.pista.max_gradient_pct"):
+            self.assertIn(wanted, keys)
+        self.assertNotIn("des.rose.rosa.r3.from_deg", keys)
+        self.assertNotIn("des.pitramp.espiral.turn_radius_m", keys)
+        self.assertNotIn("des.roadprofile.pista.class", keys)
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertNotIn("des.rose.rosa.r1.from_deg", provenance.pit_params(CODE))
+        uses = provenance.pit_inputs("gis_fea_f", "gis_dtm_t", points=["gis_fea_p", "gis_fea_p"])
+        self.assertEqual([(use.item, use.role) for use in uses], [("gis_fea_f", provenance.ENTITY_LAYER_ROLE), ("gis_fea_p", provenance.ENTITY_LAYER_ROLE),
+                                                                   ("gis_dtm_t", provenance.SURFACE_ROLE)])
+
+    def test_the_start_of_a_ramp_is_a_point_or_a_bench(self) -> None:
+        """T21b, RF-018-15: un inicio es un punto o un banco, no los dos ni ninguno."""
+        self.assertEqual(pit_model.RampStart("espiral", bench=0).bench, 0)
+        self.assertEqual(pit_model.RampStart("espiral", point=(1, 2), layer="gis_fea_p", name="A").point, (1.0, 2.0))
+        for changes in ({}, {"point": (1.0, 2.0), "bench": 1}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                pit_model.RampStart("espiral", **changes)
+
     def test_the_settings_hold_no_figure(self) -> None:
         found = provenance.pit_settings(request(), CODE)
         self.assertEqual(found, {"name": "Corta", "code": CODE, "fields": {"name_field": "nombre", "level_field": "cota_m", "fixed_field": None}})

@@ -3937,6 +3937,35 @@ CATALOG: tuple[Message, ...] = (
         "Corta «{entity}»: el sector «{sector}» tiene {value} bancos por berma y la corta tiene {other}; una corta solo admite un número "
         "de bancos por berma para todos sus sectores; no se calcula nada.",
     ),
+    # T21b (preparar la corta: bancos fijados, roseta y rampas; RF-018-07, 15, 23, 24): lo que la preparación rechaza antes de calcular.
+    Message(
+        "des.pit_rose_unknown",
+        "Layer «{layer}», pit «{entity}»: «{field}» = «{value}» is not a slope rose of the project; the roses are: {roses}; create it "
+        "first; nothing is created.",
+        "Capa «{layer}», corta «{entity}»: «{field}» = «{value}» no es una roseta de taludes del proyecto; las rosetas son: {roses}; "
+        "créela antes; no se crea nada.",
+    ),
+    Message(
+        "des.pit_ramp_unknown",
+        "Layer «{layer}», pit «{entity}»: «{field}» = «{value}» is not a ramp definition of the project; the ramps are: {ramps}; create "
+        "it first; nothing is created.",
+        "Capa «{layer}», corta «{entity}»: «{field}» = «{value}» no es una definición de rampa del proyecto; las rampas son: {ramps}; "
+        "créela antes; no se crea nada.",
+    ),
+    Message(
+        "des.pit_start_invalid",
+        "Layer «{layer}», pit «{entity}»: the start «{value}» of the ramp «{ramp}» is not valid: {reason}; use «fondo», «banco N» or "
+        "«layer:name» of a points layer; nothing is created.",
+        "Capa «{layer}», corta «{entity}»: el inicio «{value}» de la rampa «{ramp}» no es válido: {reason}; use «fondo», «banco N» o "
+        "«capa:nombre» de una capa de puntos; no se crea nada.",
+    ),
+    Message(
+        "des.pit_fixed_invalid",
+        "Layer «{layer}», pit «{entity}»: the fixed bench «{value}» is not valid: {reason}{place}; correct it in QGIS; the line of the "
+        "user is not changed; nothing is created.",
+        "Capa «{layer}», corta «{entity}»: el banco fijado «{value}» no es válido: {reason}{place}; corríjalo en QGIS; la línea del "
+        "usuario no se cambia; no se crea nada.",
+    ),
     Message(
         "des.pit_offset_unreliable",
         "Pit «{name}»: the offset of bench {bench} could not be verified (defect {value} m, over {limit} m); the result is not reliable.",

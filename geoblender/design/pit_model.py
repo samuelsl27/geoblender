@@ -79,6 +79,7 @@ __all__ = [
     "PolylineKind",
     "RampDef",
     "RampPath",
+    "RampStart",
     "RoseRange",
     "StopCriterion",
 ]
@@ -468,6 +469,31 @@ class FixedBench:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class RampStart:
+    """El punto de inicio de una rampa de la corta ya resuelto (RF-018-15; T21b): el ``ramp`` (su código) y **o** el ``point`` ``(x, y)`` absoluto de una
+    capa de puntos (``layer`` y ``name``: de dónde salió) **o** el ``bench`` sobre cuya polilínea parte (``fondo`` es el banco 0; la rampa lo sitúa
+    cuando tiene la polilínea: T21c). Uno solo de los dos."""
+
+    ramp: str
+    point: tuple[float, float] | None = None
+    bench: int | None = None
+    layer: str = ""
+    name: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "ramp", _label(self.ramp, "el código de una rampa"))
+        if (self.point is None) == (self.bench is None):
+            raise ValueError(f"el inicio de la rampa «{self.ramp}» es un punto o un banco, no los dos ni ninguno")
+        if self.point is not None:
+            x, y = self.point
+            object.__setattr__(self, "point", (_real(x, "la x del inicio de una rampa"), _real(y, "la y del inicio de una rampa")))
+        if self.bench is not None:
+            object.__setattr__(self, "bench", _int(self.bench, "el banco del inicio de una rampa"))
+        object.__setattr__(self, "layer", _text(self.layer, "la capa del inicio de una rampa"))
+        object.__setattr__(self, "name", _text(self.name, "el nombre del inicio de una rampa"))
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class PitJob:
     """Lo que necesita calcular una corta, ya leído y **sin nada del proyecto** (plan 018 §5.3.1; lo que ``RoadJob`` a la 017): la
     ``request`` (su nombre y su capa), el ``code`` de la entidad (``PIT-001``), la rejilla (``grid``), la superficie de partida
@@ -476,7 +502,8 @@ class PitJob:
     (``profile``: ``None`` si todo sector lleva el suyo), los sectores (``sectors``), la roseta base (``rose``), las rampas
     (``ramps``, con los perfiles de pista que usan: ``road_profiles``), los bancos fijados (``fixed``), las zonas sin rampa
     (``noramp``: partes de polígonos), el perímetro de actuación (``perimeter``) y el límite legal (``legal``: partes de polígonos o
-    ``None``; los pide la línea de cielo, RF-018-29) y los parámetros (``params``: :class:`PitParams`).
+    ``None``; los pide la línea de cielo, RF-018-29) y los parámetros (``params``: :class:`PitParams`). ``ramp_starts``: el inicio de cada rampa
+    ya resuelto (T21b: el punto de su capa o el banco).
 
     **No lleva** ruta de fichero, conexión, proyecto ni versión: se calcula sin proyecto y se reproduce con el mismo resultado.
     Los arrays son de la **rejilla entera** y vistas de solo lectura. :class:`TypeError` o :class:`ValueError` (errores del programa:
@@ -503,6 +530,7 @@ class PitJob:
     noramp: Parts | None = None
     perimeter: Parts | None = None
     legal: Parts | None = None
+    ramp_starts: tuple[RampStart, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.request, PitRequest):
@@ -536,6 +564,11 @@ class PitJob:
         for ramp in self.ramps:
             if ramp.road_profile not in known:
                 raise ValueError(f"la rampa «{ramp.code}» cita el perfil de pista «{ramp.road_profile}», que la corta no lleva")
+        object.__setattr__(self, "ramp_starts", _tuple_of(self.ramp_starts, RampStart, "los inicios de las rampas de una corta"))
+        codes = {item.code for item in self.ramps}
+        for item in self.ramp_starts:
+            if item.ramp not in codes:
+                raise ValueError(f"el inicio de la rampa «{item.ramp}» es de una rampa que la corta no lleva")
         object.__setattr__(self, "fixed", _tuple_of(self.fixed, FixedBench, "los bancos fijados de una corta"))
         for attr in ("noramp", "perimeter", "legal"):
             found = getattr(self, attr)

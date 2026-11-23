@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Preparar la corta y rechazar, sobre el proyecto de las cortas, como prueba de **hito** (spec 018, T21; HU-018-1 y HU-018-5; RF-018-01 a RF-018-06;
-RF-015-06, RF-015-07, RF-015-08; CE-018-08; plan 018 §5.2.1, §5.4 A0 y A1, §5.7 P-13; P-16: lo que monta un proyecto no entra en el «verde»).
+RF-015-06, RF-015-07, RF-015-08; CE-018-08; plan 018 §5.2.1, §5.4 A0 y A1, §5.7 P-13; P-16: lo que monta un proyecto no entra en el «verde»). **T21b**:
+los bancos fijados (RF-018-23), la roseta (RF-018-07) y las rampas con su perfil de pista y su punto de inicio (RF-018-15), leídos y rechazados antes de calcular.
 
 Sobre el proyecto de las cortas (``tests.support.pit_data``: la cantera de la 015 con los terrenos de la 018, en la gruesa de 2 m, 200 × 200 celdas) con las
 capas de polígonos de cada caso: ``design.pit_store`` **lee y comprueba antes de calcular**, sin escribir nada (el contador de cambios de la base, las
@@ -11,6 +12,7 @@ operaciones, los datos, los parámetros y los ficheros no se mueven), y cada rec
 from __future__ import annotations
 
 import dataclasses
+import math
 import unittest
 from typing import Any
 
@@ -24,6 +26,11 @@ from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
 from tests.support.versions_fixtures import change_counter
+from tests.unit.design.milestone_road_profiles_operation import declaration as road_declaration
+from tests.unit.design.milestone_road_profiles_operation import new as new_road_profile
+from tests.unit.design.test_pit_ramp_def import values as ramp_values
+from tests.unit.design.test_pit_ramp_def import zigzag as zigzag_values
+from tests.unit.design.test_pit_rose import ranges_of
 
 access = import_geoblender("gis.masks.access")
 core_params = import_geoblender("core.params")
@@ -31,7 +38,10 @@ design_params = import_geoblender("design.params")
 gis = import_geoblender("gis")
 messages = import_geoblender("design.messages")
 pit_model = import_geoblender("design.pit_model")
+pit_ramp_def = import_geoblender("design.pit_ramp_def")
+pit_rose = import_geoblender("design.pit_rose")
 pit_store = import_geoblender("design.pit_store")
+road_profiles = import_geoblender("design.road_profiles")
 provenance = import_geoblender("design.provenance")
 res_provenance = import_geoblender("reserves.provenance")
 road_model = import_geoblender("design.road_model")
@@ -44,6 +54,12 @@ HOLLOW = "gis_dtm_corta_hueco"
 EXPL = "expl_10_60_6"
 REST = "rest_5_35_6"
 FLOORS = "gis_fea_corta_fondos"
+STARTS = "gis_fea_corta_inicios"
+FIXED = "gis_brk_corta_fijados"
+FIXED_OPEN = "gis_brk_corta_abierta"
+FIXED_ZERO = "gis_brk_corta_cero"
+ROAD = "pista_principal"
+BENCH_Z = {2: pd.FLOOR_Z_M + 20.0}
 LIMITS = "gis_fea_corta_limites"
 CODE = "PIT-001"
 KEY = "des.pit.pit_001."
@@ -90,11 +106,14 @@ class PitPrepareCase(pd.PitProjectCase):
         cls.addClassCleanup(core_params.unregister_definitions, "des")
         core_params.register_definitions(res_provenance.VERIFY_DEFINITIONS)
         cls.addClassCleanup(core_params.unregister_definitions, "res")
-        for families in (design_params.FAMILIES, design_params.PIT_FAMILIES, design_params.PIT_SECTOR_FAMILIES):
+        for families in (design_params.FAMILIES, design_params.PIT_FAMILIES, design_params.PIT_SECTOR_FAMILIES, design_params.ROAD_PROFILE_FAMILIES,
+                         design_params.ROSE_FAMILIES, design_params.PITRAMP_FAMILIES):
             core_params.register_families(families)
         cls.addClassCleanup(core_params.unregister_families, "des")
         cls.enterClassContext(registered(provenance.operation_def(provenance.PIT, never), *provenance.PIT_FIGURES))
+        cls.enterClassContext(registered(*road_profiles.OPERATIONS, *pit_rose.OPERATIONS, *pit_ramp_def.OPERATIONS))
         cls.write_profiles()
+        cls.write_roses_and_ramps()
         cls.masks_v1 = access.load_masks(cls.project, cls.v1.uid)
         hole = pd.flat_terrain(GRID)
         hole[pd.rd.in_box((115.0, 150.0, 125.0, 170.0), GRID)] = np.nan
@@ -120,6 +139,44 @@ class PitPrepareCase(pd.PitProjectCase):
         ):
             sdata.write_layer(cls.project, cls.clock, item)
         sdata.write_layer(cls.project, cls.clock, sdata.FieldsLayer("gis_fea_corta_lineas", "line", ((((ring([(0.0, 0.0), (10.0, 10.0)])),),),), ("L",), {}))
+        cls.write_starts_and_fixed()
+
+    @classmethod
+    def write_roses_and_ramps(cls) -> None:
+        """El perfil de pista ``PISTA_PRINCIPAL``, la roseta de CE-018-02 y las rampas de la prueba (una espiral desde el fondo, un zig-zag desde el banco 2 y tres con su
+        inicio en la capa de puntos), en el proyecto, con su origen."""
+        by_hand = {"source": "Estudio de la prueba", "decided_by": "Samuel (IMGA)", "reason": "Spec 018"}
+        cls.clock.advance(minutes=1)
+        road_profiles.edit_road_profiles(cls.project, (new_road_profile("PISTA_PRINCIPAL"),), road_declaration())
+        cls.clock.advance(minutes=1)
+        pit_rose.edit_pit_roses(cls.project, [pit_rose.RoseEdit(name="Roseta del tajo", ranges=ranges_of())], pit_rose.Declaration(**by_hand))
+        cls.rose = "roseta_del_tajo"
+        ramps = {"Espiral": ramp_values(), "Zigzag": zigzag_values(start="banco 2"), "Espiral punto": ramp_values(start=f"{STARTS}:Inicio A"),
+                 "Espiral rara": ramp_values(start="en la esquina"), "Espiral lineas": ramp_values(start="gis_fea_corta_lineas:L"),
+                 "Espiral sin punto": ramp_values(start=f"{STARTS}:No existe"), "Espiral repetida": ramp_values(start=f"{STARTS}:Doble"),
+                 "Espiral fuera": ramp_values(start=f"{STARTS}:Lejos"), "Espiral sin capa": ramp_values(start="gis_fea_no_existe:A")}
+        cls.ramp_codes = {}
+        for name, data in ramps.items():
+            cls.clock.advance(minutes=1)
+            cls.ramp_codes[name] = pit_ramp_def.edit_pit_ramps(cls.project, [pit_ramp_def.RampEdit(name=name, values=data)],
+                                                              pit_rose.Declaration(**by_hand)).created[0]
+        cls.clock.advance(minutes=1)
+
+    @classmethod
+    def write_starts_and_fixed(cls) -> None:
+        """La capa de puntos de inicio de las rampas y las líneas de rotura de los bancos fijados (una cerrada con la Z del banco 2 y otra abierta)."""
+        names = ("Inicio A", "Doble", "Doble", "Lejos")
+        places = [(260.0, 200.0), (250.0, 250.0), (250.0, 260.0), (4000.0, 4000.0)]
+        points = tuple((((pd.absolute([place], GRID)),),) for place in places)
+        sdata.write_layer(cls.project, cls.clock, sdata.FieldsLayer(STARTS, "point", points, names, {}))
+        closed = np.column_stack([ring(pd.circle_ring(60.0, 36)), np.full(36, BENCH_Z[2])])
+        closed = np.vstack([closed, closed[:1]])
+        sdata.write_breaklines(cls.project, cls.clock, FIXED, [closed])
+        sdata.write_breaklines(cls.project, cls.clock, FIXED_OPEN, [closed[:20]])
+        sdata.write_breaklines(cls.project, cls.clock, FIXED_ZERO, [closed])
+        with cls.project.write_transaction() as conn:  # el campo ``hard`` (0 o 1) hace de número de banco en la prueba del campo numérico
+            conn.execute(f'UPDATE "{FIXED_ZERO}" SET hard = 0')
+        cls.clock.advance(minutes=1)
 
     @classmethod
     def write_profiles(cls) -> None:
@@ -229,11 +286,159 @@ class AscendingTest(PitPrepareCase):
         self.assertEqual(len(prepared.job.noramp), 2)
         self.assertIn(("gis_fea_corta_sin_rampa", provenance.ENTITY_LAYER_ROLE), {(use.item, use.role) for use in prepared.start.inputs})
 
-    def test_what_is_not_prepared_yet(self) -> None:
-        """T21b: los bancos fijados, la roseta y las rampas se piden con un error del programa, no se ignoran."""
-        for changes in ({"rose": "r1"}, {"ramps": ("rampa_1",)}, {"fixed": road_model.LayerFields("gis_fea_corta_sin_rampa", "nombre")}):
-            with self.subTest(changes=changes), self.assertRaises(NotImplementedError):
-                self.prepare(request(**changes))
+
+class RoseTest(PitPrepareCase):
+    """RF-018-07: la roseta del perfil base y de un sector, leída de la versión, comprobada y en orden de azimut."""
+
+    def test_the_base_rose_is_read_in_azimuth_order(self) -> None:
+        """La roseta de CE-018-02 llega al trabajo como dos ``RoseRange``; sus valores son parámetros que lee la operación; la fila de ``rose`` lleva su procedencia."""
+        prepared = self.prepare(request(rose=self.rose))
+        found = [(item.from_deg, item.to_deg, item.face_deg, item.berm_m) for item in prepared.job.rose]
+        self.assertEqual(found, [(item.from_deg, item.to_deg, item.face_deg, item.berm_m) for item in pd.ROSE_TWO_RANGES])
+        self.assertTrue(all(isinstance(item, pit_model.RoseRange) for item in prepared.job.rose))
+        params = set(prepared.start.params)
+        for number in (1, 2):
+            for field in ("from_deg", "to_deg", "face_deg", "berm_m"):
+                self.assertIn(f"des.rose.{self.rose}.r{number}.{field}", params)
+        self.assertIn(KEY + "rose", params)
+        self.assertEqual({row.key: row.value for row in prepared.rows}[KEY + "rose"], self.rose)
+        self.assertEqual(prepared.job.sectors, ())
+
+    def test_a_rose_of_a_sector(self) -> None:
+        """RF-018-07 y 09: la roseta de un sector va con ese sector (con su geometría) y no con la corta; la fila lleva su clave por sector."""
+        prepared = self.prepare(request(sector_roses={"sector_1": self.rose}))
+        self.assertIsNone(prepared.job.rose)
+        (sector,) = prepared.job.sectors
+        self.assertEqual((sector.code, len(sector.rose)), ("sector_1", 2))
+        self.assertIsNone(sector.profile)
+        self.assertIn(KEY + "rose.sector_1", {row.key for row in prepared.rows})
+        self.assertIn(KEY + "rose.sector_1", set(prepared.start.params))
+
+    def test_a_sector_with_only_a_rose_needs_a_base_profile(self) -> None:
+        """Sin perfil base, un sector que solo tiene roseta no tiene perfil: se pide el de la corta, no se supone."""
+        self.refused(request(profile=None, sector_profiles={"sector_1": EXPL}, sector_roses={"sector_2": self.rose}), "des.entity_param_missing")
+
+    def test_a_rose_of_a_sector_that_does_not_exist(self) -> None:
+        self.refused(request(sector_roses={"sector_9": self.rose}), "des.sector_unknown")
+
+    def test_the_reach_uses_the_widest_advance_of_the_rose(self) -> None:
+        """A0: una roseta con la cara a 30° y 20 m de berma (avance ≈ 31,5 m por banco) ensancha el alcance de una ascendente."""
+        sources = [pit_model.PitSource("f", pd.circle_ring(), 125.0)]
+        flat = [pit_rose.RoseRange(0.0, 360.0, 30.0, 20.0)]
+        plain = pit_store._reach_m(request(), [pd.EXPL], sources, pd.flat_terrain(GRID))
+        wide = pit_store._reach_m(request(), [pd.EXPL], sources, pd.flat_terrain(GRID), flat)
+        self.assertAlmostEqual(plain, 5 * (10.0 / math.tan(math.radians(60.0)) + 6.0), places=9)
+        self.assertAlmostEqual(wide, 5 * (10.0 / math.tan(math.radians(30.0)) + 20.0), places=9)
+
+    def test_a_rose_that_does_not_exist(self) -> None:
+        error = self.refused(request(rose="no_existe"), "des.pit_rose_unknown")
+        self.assertIn("Roseta del tajo", error.text)
+
+
+class RampTest(PitPrepareCase):
+    """RF-018-15: las definiciones de rampa de la corta, con su perfil de pista y su punto de inicio, leídas y rechazadas antes de calcular."""
+
+    def test_a_spiral_from_the_floor(self) -> None:
+        """Una espiral desde el fondo: la definición comprobada, su perfil de pista, el inicio en el banco 0 y los parámetros que lee la operación."""
+        prepared = self.prepare(request(ramps=(self.ramp_codes["Espiral"],)))
+        job = prepared.job
+        (ramp,) = job.ramps
+        self.assertEqual((ramp.code, ramp.type, ramp.sense, ramp.gradient_pct, ramp.road_profile), (self.ramp_codes["Espiral"], "spiral", "cw", 8.0, ROAD))
+        self.assertEqual([item.code for item in job.road_profiles], [ROAD])
+        (start,) = job.ramp_starts
+        self.assertEqual((start.ramp, start.bench, start.point), (ramp.code, 0, None))
+        params = set(prepared.start.params)
+        self.assertIn(f"des.pitramp.{ramp.code}.gradient_pct", params)
+        self.assertIn(f"des.roadprofile.{ROAD}.carriageway_m", {key.replace("lane_m", "carriageway_m") for key in params} | {f"des.roadprofile.{ROAD}.carriageway_m"})
+        self.assertTrue(any(key.startswith(f"des.roadprofile.{ROAD}.") for key in params))
+        self.assertFalse(any(key.endswith((".turn_radius_m", ".min_platform_m")) for key in params), "una espiral no tiene radio ni plataforma")
+        self.assertFalse(any(key == f"des.roadprofile.{ROAD}.class" for key in params))
+        self.assertEqual({row.key: row.value for row in prepared.rows}[KEY + "ramps"], ramp.code)
+
+    def test_a_zigzag_from_a_bench(self) -> None:
+        """Un zig-zag desde el banco 2: su radio y su plataforma son parámetros que lee la operación; el inicio es el banco 2."""
+        prepared = self.prepare(request(ramps=(self.ramp_codes["Zigzag"],)))
+        code = self.ramp_codes["Zigzag"]
+        self.assertEqual((prepared.job.ramps[0].type, prepared.job.ramp_starts[0].bench), ("zigzag", 2))
+        self.assertIn(f"des.pitramp.{code}.turn_radius_m", set(prepared.start.params))
+        self.assertIn(f"des.pitramp.{code}.min_platform_m", set(prepared.start.params))
+
+    def test_a_start_in_a_layer_of_points(self) -> None:
+        """El inicio de una capa de puntos: el punto absoluto de ese nombre, y la capa es una entrada de la corta."""
+        prepared = self.prepare(request(ramps=(self.ramp_codes["Espiral punto"],)))
+        (start,) = prepared.job.ramp_starts
+        x, y = pd.absolute([(260.0, 200.0)], GRID)[0]
+        self.assertEqual((start.point, start.bench, start.layer, start.name), ((float(x), float(y)), None, STARTS, "Inicio A"))
+        self.assertIn((STARTS, provenance.ENTITY_LAYER_ROLE), {(use.item, use.role) for use in prepared.start.inputs})
+
+    def test_two_ramps_share_the_profile_once(self) -> None:
+        prepared = self.prepare(request(ramps=(self.ramp_codes["Espiral"], self.ramp_codes["Zigzag"])))
+        self.assertEqual(len(prepared.job.ramps), 2)
+        self.assertEqual(len(prepared.job.road_profiles), 1)
+        self.assertEqual([item.ramp for item in prepared.job.ramp_starts], [item.code for item in prepared.job.ramps])
+
+    def test_a_start_that_is_not_valid(self) -> None:
+        """RF-018-15: cada inicio que no vale se rechaza con la rampa, el texto y el motivo, sin escribir nada."""
+        wanted = {"Espiral rara": "«fondo»", "Espiral lineas": "no es de puntos", "Espiral sin punto": "ningún punto llamado",
+                  "Espiral repetida": "2 puntos llamados", "Espiral fuera": "fuera de la rejilla", "Espiral sin capa": "no es una capa de entidades"}
+        for name, text in wanted.items():
+            with self.subTest(ramp=name):
+                error = self.refused(request(ramps=(self.ramp_codes[name],)), "des.pit_start_invalid")
+                self.assertIn(text, error.text)
+                self.assertEqual(error.values["ramp"], name)
+
+    def test_a_ramp_that_does_not_exist(self) -> None:
+        error = self.refused(request(ramps=("no_existe",)), "des.pit_ramp_unknown")
+        self.assertIn("Espiral", error.text)
+
+
+class FixedTest(PitPrepareCase):
+    """RF-018-23 y 24: los bancos fijados de una capa de líneas con Z, tal cual y sin modificar la capa."""
+
+    def fixed_request(self, layer: str = FIXED, **changes: Any) -> Any:
+        return request(fixed=road_model.LayerFields(layer, "line_id"), **changes)
+
+    def test_a_closed_line_is_a_bench_as_it_is(self) -> None:
+        """Una línea cerrada con la Z de su banco: el banco fijado lleva sus vértices con la Z (sin repetir el primero), de solo lectura, y su cota; la capa es una
+        entrada, el parámetro se lee y el hash entra entre los de las geometrías."""
+        before = self.state()
+        prepared = self.prepare(self.fixed_request())
+        self.assertEqual(self.state(), before)
+        (item,) = prepared.job.fixed
+        self.assertEqual((item.name, item.closed, item.bench, item.level_m, item.vertices.shape), ("S1", True, None, BENCH_Z[2], (36, 3)))
+        self.assertFalse(item.vertices.flags.writeable)
+        self.assertEqual(item.vertices[:, 2].tolist(), [BENCH_Z[2]] * 36)
+        self.assertIn((FIXED, provenance.ENTITY_LAYER_ROLE), {(use.item, use.role) for use in prepared.start.inputs})
+        self.assertIn(KEY + "fixed_layer", set(prepared.start.params))
+        self.assertEqual(prepared.sources_sha256["fijado: S1"], pit_store._fixed_sha256(item))
+        self.assertNotEqual(pit_store._fixed_sha256(item), pit_store._fixed_sha256(dataclasses.replace(item, level_m=item.level_m + 10.0)))
+
+    def test_an_open_line_is_not_a_bench(self) -> None:
+        error = self.refused(self.fixed_request(FIXED_OPEN), "des.pit_fixed_invalid")
+        self.assertEqual(error.values["value"], "S1")
+        self.assertIn("abierta", error.text)
+
+    def test_the_bench_comes_from_the_numeric_field(self) -> None:
+        """Con ``fixed_field``, el banco es el número de ese campo (un entero) y la cota la pone el banco; en una descendente, desde el 1."""
+        prepared = self.prepare(self.fixed_request(fixed_field="hard"))
+        (item,) = prepared.job.fixed
+        self.assertIsInstance(item.bench, int)
+        self.assertIsNone(item.level_m)
+        down = dict(mode="down", source=LIMITS, start=LIMIT, level_field=None, bottom_level_m=pd.LIMIT_BOTTOM_Z_M)
+        self.assertEqual(self.prepare(self.fixed_request(fixed_field="hard", **down)).job.fixed[0].bench, 1)
+        error = self.refused(self.fixed_request(FIXED_ZERO, fixed_field="hard", **down), "des.pit_fixed_invalid")
+        self.assertIn("descendente", error.text)
+
+    def test_a_layer_without_z_or_that_does_not_exist(self) -> None:
+        """Una capa de entidades no guarda la Z: se rechaza; una que no existe, también."""
+        error = self.refused(self.fixed_request(FLOORS), "des.pit_fixed_invalid")
+        self.assertIn("Z", error.text)
+        with self.assertRaises(Exception) as caught:
+            self.prepare(self.fixed_request("gis_brk_no_existe"))
+        self.assertEqual(getattr(caught.exception, "code", ""), "gis.dataset_unknown")
+
+    def test_a_field_the_layer_does_not_have(self) -> None:
+        self.refused(self.fixed_request(fixed_field="banco"), "des.pit_layer_field")
 
 
 class DescendingTest(PitPrepareCase):
