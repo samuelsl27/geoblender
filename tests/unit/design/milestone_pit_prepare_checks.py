@@ -334,6 +334,15 @@ class RoseTest(PitPrepareCase):
         self.assertAlmostEqual(plain, 5 * (10.0 / math.tan(math.radians(60.0)) + 6.0), places=9)
         self.assertAlmostEqual(wide, 5 * (10.0 / math.tan(math.radians(30.0)) + 20.0), places=9)
 
+    def test_the_reach_adds_the_width_of_the_ramp_section_per_bench(self) -> None:
+        """A0, RF-018-16 (T26, hito H2): con una rampa cada banco puede retranquearse además la sección de su perfil de pista; sin ella la ventana de trabajo
+        no contenía el movimiento de la espiral (``ValueError``, error del programa)."""
+        sources = [pit_model.PitSource("f", pd.circle_ring(), 125.0)]
+        plain = pit_store._reach_m(request(), [pd.EXPL], sources, pd.flat_terrain(GRID))
+        ramped = pit_store._reach_m(request(), [pd.EXPL], sources, pd.flat_terrain(GRID), (), 11.5)
+        self.assertAlmostEqual(ramped, plain + 5 * 11.5, places=9)
+        self.assertEqual(pit_store._ramp_width_m([]), 0.0)
+
     def test_a_rose_that_does_not_exist(self) -> None:
         error = self.refused(request(rose="no_existe"), "des.pit_rose_unknown")
         self.assertIn("Roseta del tajo", error.text)

@@ -889,9 +889,10 @@ def _box(sources: Sequence[PitSource]) -> tuple[float, float, float, float]:
 
 
 def _reach_m(request: PitRequest, profile_list: Sequence[BenchProfile], sources: Sequence[PitSource], start: np.ndarray,
-             roses: Sequence[RoseRange] = ()) -> float:
+             roses: Sequence[RoseRange] = (), ramp_width_m: float = 0.0) -> float:
     """Lo más lejos que puede llegar la cresta de una corta ascendente (m), por exceso: los bancos que hacen falta para subir del fondo más bajo al
-    terreno más alto, por el mayor avance de entre los perfiles y los rangos de las rosetas (``n·h/tan α + B``). Una cota de coronación acota los bancos."""
+    terreno más alto, por el mayor avance de entre los perfiles y los rangos de las rosetas (``n·h/tan α + B``). Una cota de coronación acota los bancos. Con rampas, cada banco puede retranquearse además la anchura de la sección del mayor
+    perfil de pista (``ramp_width_m``): el pie y la cresta se apartan de la banda (RF-018-16)."""
     ground_top = float(np.nanmax(start))
     lowest = min(item.level_m for item in sources if item.level_m is not None)
     top = ground_top if request.top_level_m is None else min(ground_top, request.top_level_m)
@@ -900,7 +901,12 @@ def _reach_m(request: PitRequest, profile_list: Sequence[BenchProfile], sources:
     count = max(1, math.ceil((top - lowest) / (n * height)))
     advance = max([n * item.height_m / math.tan(math.radians(item.face_deg)) + item.berm_m for item in profile_list]
                   + [pit_rose.advance_m(height, item.face_deg, item.berm_m, n) for item in roses])
-    return count * advance
+    return count * (advance + ramp_width_m)
+
+
+def _ramp_width_m(road_profile_list: Sequence[RoadProfile]) -> float:
+    """La mayor anchura de sección (m) de los perfiles de pista de las rampas de la corta (0 sin rampas)."""
+    return max((road_profiles.derived(item).section_m for item in road_profile_list), default=0.0)
 
 
 def _window(grid: Grid, box: tuple[float, float, float, float], reach_m: float) -> Window:
@@ -1005,7 +1011,7 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
     params = PitParams.from_values(values)
     box = _box(sources)
     all_roses = [item for ranges in (rose or (), *rose_by_sector.values()) for item in ranges]
-    reach = _reach_m(request, profile_list, sources, start, all_roses) if request.mode is PitMode.UP else 0.0
+    reach = _reach_m(request, profile_list, sources, start, all_roses, _ramp_width_m(road_profile_list)) if request.mode is PitMode.UP else 0.0
     window = _window(grid, box, reach)
     zone = np.zeros(grid.shape, dtype=bool)
     if request.mode is PitMode.DOWN:
@@ -1084,7 +1090,7 @@ def frozen_job(reader: PitReader, request: PitRequest, code: str, grid: Grid, st
     ramps, road_profile_list, ramp_starts, _point_layers = _ramps(reader, request, code, grid)
     sectors = _sectors(reader, request, code, by_sector, sector_codes, base, rose_by_sector)
     all_roses = [item for ranges in (rose or (), *rose_by_sector.values()) for item in ranges]
-    reach = _reach_m(request, profile_list, sources, start, all_roses) if request.mode is PitMode.UP else 0.0
+    reach = _reach_m(request, profile_list, sources, start, all_roses, _ramp_width_m(road_profile_list)) if request.mode is PitMode.UP else 0.0
     window = _window(grid, _box(sources), reach)
     cut, fill = admitted_pair(masks, (slice(0, grid.nrows), slice(0, grid.ncols)))
     perimeter, legal = reader.limits()
