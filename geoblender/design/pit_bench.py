@@ -45,7 +45,7 @@ esquina suroeste de la rejilla, ADR-0005) y las polilíneas salen absolutas. Pyt
 from __future__ import annotations
 
 import math
-from collections.abc import Generator, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import closing
 from dataclasses import dataclass
 
@@ -56,9 +56,11 @@ from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.offset import offset_ring, simplify_ring
 from ..gis.polygons import chain, crossings, overlay
 from .messages import DesignError
+from .pit_bench_ramp import RampLoop
 from .pit_model import (MAX_BENCHES, MAX_VERTICES, FixedBench, PitCode, PitJob, PitMode, PitSource, Polyline, PolylineKind,
                         StopCriterion)
-from .pit_offset import PolylineOffset, Step, offset_polyline_steps
+from .pit_offset import PolylineOffset, Step, edge_distances, offset_polyline_steps
+from .pit_ramp import RampChecked
 from .preview import Notice
 from .road_section import sample_terrain
 from .seeds import pace_progress
@@ -95,6 +97,7 @@ class Benches:
     floor_level_m: float | None = None
     floor_area_m2: float = 0.0
     floor_width_m: float | None = None
+    ramps: tuple[RampChecked, ...] = ()
 
 
 @dataclass(slots=True, eq=False)
@@ -344,13 +347,13 @@ def _united(rings: list[_Ring]) -> tuple[list[_Ring], list[np.ndarray]]:
 
 
 def _offset(job: PitJob, ring: _Ring, step: Step, origin: np.ndarray, *, side: int = 1, z_m: np.ndarray | None = None,
-            anchor_m: float | None = None) -> Generator[None, None, PolylineOffset]:
+            anchor_m: float | None = None, extra_m: np.ndarray | None = None) -> Generator[None, None, PolylineOffset]:
     """Los pasos del desfase de ``ring`` (cada ``Progress`` del motor, una unidad) y el :class:`PolylineOffset`; ``side`` es ``+1`` hacia
     fuera (la ascendente) o ``-1`` hacia dentro (la descendente) y ``z_m`` con ``anchor_m``, el primer banco de altura variable."""
     steps = offset_polyline_steps(
         ring.points, step=step, side=side, tol=job.params.arc_tol_m, corner=str(job.params.corner), simplify_m=ring.slack_m,
         profile=job.profile, rose=job.rose, n_berm=_n_berm(job), sectors=job.sectors, origin=origin, az_window_m=job.params.az_window_m,
-        z_m=z_m, anchor_m=anchor_m)
+        z_m=z_m, anchor_m=anchor_m, extra_m=extra_m)
     with closing(steps):
         for progress in steps:
             if progress.result is None:
@@ -359,6 +362,19 @@ def _offset(job: PitJob, ring: _Ring, step: Step, origin: np.ndarray, *, side: i
             assert isinstance(progress.result, PolylineOffset)
             return progress.result
     raise AssertionError("el desfase no dio su resultado")
+
+
+def _face_of(job: PitJob, origin: np.ndarray) -> Callable[[np.ndarray], np.ndarray]:
+    """El ángulo de cara (°) de cada arista de un pie, con la roseta y los sectores de la corta (el de su primer trozo si un sector la parte)."""
+
+    def face(ring: np.ndarray) -> np.ndarray:
+        found = edge_distances(ring, step=Step.FACE, side=1, profile=job.profile, rose=job.rose, n_berm=_n_berm(job), sectors=job.sectors, origin=origin,
+                               az_window_m=job.params.az_window_m)
+        angle = np.empty(len(ring))
+        angle[found.source_edge[::-1]] = found.face_deg[::-1]
+        return angle
+
+    return face
 
 
 def _ascend_units(job: PitJob) -> Generator[None, None, Benches]:
@@ -381,6 +397,8 @@ def _ascend_units(job: PitJob) -> Generator[None, None, Benches]:
     done = 0
     stop = StopCriterion.SURFACE
     crests_below: list[np.ndarray] = []
+    ramps = RampLoop(job, origin, n)
+    face_of = _face_of(job, origin)
 
     def line(kind: PolylineKind, bench: int, ring: np.ndarray, level: float, part: int, label: str,
              user: FixedBench | None = None) -> Polyline:
@@ -438,10 +456,13 @@ def _ascend_units(job: PitJob) -> Generator[None, None, Benches]:
         crest_rings: list[tuple[np.ndarray, str]] = []
         bench = level_index // n
         top = level + n * height
-        for ring in active:
-            polylines.append(line(PolylineKind.FOOT, bench, ring.points, level, parts[PolylineKind.FOOT], ring.label, ring.fixed))
+        plans = ramps.plan(bench, level, top - level, [ring.points for ring in active], face_of) if ramps.active else {}
+        for position, ring in enumerate(active):
+            plan = plans.get(position)
+            offsetting = ring if plan is None else _Ring(plan.points, ring.label, ring.slack_m, ring.fixed)
+            polylines.append(line(PolylineKind.FOOT, bench, offsetting.points, level, parts[PolylineKind.FOOT], ring.label, ring.fixed))
             parts[PolylineKind.FOOT] += 1
-            face = yield from _offset(job, ring, Step.FACE, origin)
+            face = yield from _offset(job, offsetting, Step.FACE, origin, extra_m=None if plan is None else plan.extra)
             if not face.result.verified:
                 reliable = False
                 notices.append(Notice(PitCode.OFFSET_UNRELIABLE.value, {"name": name, "bench": bench, "value": face.result.max_defect_m,
@@ -481,7 +502,8 @@ def _ascend_units(job: PitJob) -> Generator[None, None, Benches]:
         yield
 
     _unused(job, fixed, origin)
-    return Benches(tuple(polylines), stop, done, tuple(notices), reliable, math.fsum(volumes))
+    checked, ramp_notices = ramps.result()
+    return Benches(tuple(polylines), stop, done, (*notices, *ramp_notices), reliable, math.fsum(volumes), ramps=checked)
 
 
 def ascend_steps(job: PitJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
@@ -717,6 +739,8 @@ def _by_position(items: list[tuple[np.ndarray, str, np.ndarray, _Fixed | None]])
 
 def _descend_units(job: PitJob) -> Generator[None, None, Benches]:
     _check_supported(job, PitMode.DOWN)
+    if job.ramps:
+        raise ValueError("las rampas de la corta descendente no se calculan todavía (T21c2): el pie sale del desfase de la cresta con el término de la propia rampa")
     n = _n_berm(job)
     params = job.params
     if params.min_floor_width_m is None and params.bottom_level_m is None and params.max_benches is None:

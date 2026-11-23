@@ -79,6 +79,12 @@ __all__ = [
     "Tramo",
     "Zigzag",
     "ZigzagDoesNotFit",
+    "ZigzagStepper",
+    "foot_breaks",
+    "split_ring",
+    "spiral_of",
+    "zigzag_foot_breaks",
+    "zigzag_of",
     "build_tramo",
     "build_zigzag",
     "platform_length_m",
@@ -401,6 +407,69 @@ def edge_extra_m(tramo: Tramo, ring: object, face_deg: object) -> np.ndarray:
     return extra
 
 
+_SPLIT_MIN_M = 1e-3
+"""Un punto a menos de esto (m) de un vértice del anillo ya es ese vértice: no se parte la arista (no deja aristas de longitud casi 0)."""
+_SPLIT_ON_M = 1e-6
+"""A más de esto (m) del anillo, un punto no está sobre una arista y no se inserta."""
+
+
+def foot_breaks(tramo: Tramo, ring: object) -> np.ndarray:
+    """Los puntos ``(k, 2)`` del pie ``ring`` (el del tramo ``tramo`` de una espiral: antihorario, abierto, el mismo marco) donde el término de la cresta cambia de forma: el inicio y el
+    fin de la rampa y, con transición, también ``L_t`` m antes y ``L_t`` m después (T21c; RF-018-16). Las aristas del pie se parten ahí (:func:`split_ring`) para que la abscisa del punto
+    medio de cada arista, con que :func:`edge_extra_m` evalúa el término, no cruce un cambio de forma."""
+    points = _ring(ring)
+    found = _geometry(points, tramo.foot_start, tramo.sense, 0.5 * tramo.width_m)
+    lead = tramo.transition_m
+    marks = [0.0, tramo.ramp_m] if lead <= 0.0 else [-lead, 0.0, tramo.ramp_m, tramo.ramp_m + lead]
+    perimeter = found.perimeter_m
+    found_points = []
+    for mark in marks:
+        along = mark + perimeter if mark < 0.0 else mark
+        if along >= perimeter - 1e-9:
+            continue
+        index = min(int(np.searchsorted(found.cumulative, along, side="right")) - 1, len(found.cumulative) - 2)
+        span = float(found.cumulative[index + 1] - found.cumulative[index])
+        fraction = 0.0 if span <= 0.0 else (along - float(found.cumulative[index])) / span
+        found_points.append(found.foot_path[index] + fraction * (found.foot_path[index + 1] - found.foot_path[index]))
+    return np.array(found_points).reshape(-1, 2)
+
+
+def zigzag_foot_breaks(tramo: Tramo) -> np.ndarray:
+    """Los dos puntos ``(2, 2)`` del pie donde empieza y acaba el tramo recto de un zig-zag (el eje es el pie desplazado ``W/2``: se restan ``W/2`` a lo largo de su normal)."""
+    shift = tramo.axis[0, :2] - tramo.foot_start
+    return np.array([tramo.foot_start, tramo.axis[-1, :2] - shift])
+
+
+def split_ring(ring: object, points: object) -> np.ndarray:
+    """El anillo ``ring`` (abierto) con ``points`` ``(k, 2)`` insertados como vértices en la arista a la que pertenecen (a ≤ 1 µm de ella): geométricamente el mismo anillo, con
+    las aristas partidas. Un punto a menos de 1 mm de un vértice no se inserta; uno que no está sobre el anillo, tampoco. Es determinista."""
+    base = np.asarray(ring, dtype=np.float64)
+    found = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    if len(found) == 0:
+        return base
+    edge = np.roll(base, -1, axis=0) - base
+    length2 = np.einsum("ij,ij->i", edge, edge)
+    inserts: dict[int, list[tuple[float, np.ndarray]]] = {}
+    for point in found:
+        fraction = np.clip(np.einsum("ij,ij->i", point - base, edge) / length2, 0.0, 1.0)
+        foot = base + fraction[:, None] * edge
+        distance = np.hypot(*(foot - point).T)
+        index = int(np.argmin(distance))
+        if float(distance[index]) > _SPLIT_ON_M:
+            continue
+        here = base[index] + fraction[index] * edge[index]
+        if min(float(np.hypot(*(here - base[index]))), float(np.hypot(*(here - base[(index + 1) % len(base)])))) < _SPLIT_MIN_M:
+            continue
+        inserts.setdefault(index, []).append((float(fraction[index]), here))
+    rows: list[np.ndarray] = []
+    for index in range(len(base)):
+        rows.append(base[index][None, :])
+        for fraction, here in sorted(inserts.get(index, []), key=lambda item: item[0]):
+            if float(np.hypot(*(here - rows[-1][-1]))) >= _SPLIT_MIN_M:
+                rows.append(here[None, :])
+    return np.vstack(rows)
+
+
 def chain_start(next_ring: object, tramo: Tramo, *, width_m: float | None = None) -> tuple[np.ndarray, np.ndarray, float]:
     """El inicio del tramo del banco siguiente (DIFF-018b): el punto del pie ``next_ring`` más cercano al fin de ``tramo`` (P-15 para los
     empates) y el inicio del eje allí (el pie desplazado ``W/2`` hacia fuera), con la longitud del **enlace horizontal** recto que los une
@@ -476,14 +545,18 @@ def _spiral_units(job: PitJob, polylines: Sequence[Polyline], ramp: RampDef, sta
         point = tramo.end_xy
         level = top
         yield
-    stations: list[np.ndarray] = []
-    for tramo in tramos:
-        stations.append(_coarse_end(tramo.axis, _END_REACH_W * width) + np.array([origin[0], origin[1], 0.0]))
-    axis = np.vstack(stations)
+    yield
+    return spiral_of(tramos, origin, width, ramp)
+
+
+def spiral_of(tramos: Sequence[Tramo], origin: Sequence[float], width_m: float, ramp: RampDef) -> Spiral:
+    """La :class:`Spiral` de los ``tramos`` de ``ramp`` (calculados en un marco local con el ``origin`` absoluto dado): el eje esqueleto de cada tramo (acaba en una recta de
+    ``1,5·W``), en absolutas, con sus enlaces horizontales, y los metros de rampa y de enlace."""
+    shift = np.array([origin[0], origin[1], 0.0])
+    axis = np.vstack([_coarse_end(tramo.axis, _END_REACH_W * width_m) + shift for tramo in tramos])
     run = np.hypot(*np.diff(axis[:, :2], axis=0).T)
     ramp_m = math.fsum(item.length_m for item in tramos)
-    path = RampPath(ramp.code, tramos[0].bench, axis, np.full(len(axis), 0.5 * width))
-    yield
+    path = RampPath(ramp.code, tramos[0].bench, axis, np.full(len(axis), 0.5 * width_m))
     return Spiral(path, tuple(tramos), ramp_m, float(run.sum()) - ramp_m)
 
 
@@ -581,11 +654,15 @@ def _first_side(ring: np.ndarray, point: Sequence[float], half_m: float) -> _Sid
     return max(near, key=lambda item: (item.length, -item.edge))
 
 
-def _side_after(ring: np.ndarray, end: np.ndarray, back: np.ndarray, out: np.ndarray, half_m: float) -> tuple[_Side, float]:
+def _side_after(ring: np.ndarray, end: np.ndarray, back: np.ndarray, out: np.ndarray, half_m: float, min_length_m: float = 0.0) -> tuple[_Side, float]:
     """El lado del pie siguiente: el paralelo al anterior (el tramo vuelve en ``back``) y el más cercano por fuera del eje de ``end``,
-    con la distancia lateral ``d`` (m)."""
+    con la distancia lateral ``d`` (m). Con ``min_length_m`` (un pie real, con el escalón que deja el término de la cresta, tiene lados paralelos cortos), solo los que miden
+    al menos eso; si ninguno llega, todos (el rechazo lo da quien lo construye)."""
     best: tuple[float, float, _Side] | None = None
-    for side in _sides(ring, half_m):
+    sides = _sides(ring, half_m)
+    if min_length_m > 0.0 and any(item.length >= min_length_m - 1e-9 for item in sides):
+        sides = [item for item in sides if item.length >= min_length_m - 1e-9]
+    for side in sides:
         if abs(float(side.u @ back)) < 0.999:
             continue
         lateral = float((side.p0 - end) @ out)
@@ -628,6 +705,29 @@ def _assemble(tramos: Sequence[Tramo], platforms: Sequence[np.ndarray], half_m: 
     return Zigzag(path, tuple(tramos), tuple(platforms), ramp_m, platforms_m, platform_m, float(axis[-1, 2] - axis[0, 2]))
 
 
+def _zigzag_link(ring: np.ndarray, tramo: Tramo, side: _Side, sigma: float, half_m: float, platform_m: float, z_next_m: float, bench: int
+                 ) -> tuple[np.ndarray, _Side, float, float]:
+    """La plataforma de retorno tras ``tramo`` (que va por ``side`` en el sentido ``sigma``) hacia el pie ``ring`` del banco ``bench``: ``(plataforma ``(3, 3)``, el lado siguiente, su
+    sentido, la abscisa de inicio sobre él)``. :class:`ZigzagDoesNotFit` si el tramo y la plataforma no caben en su lado o el aterrizaje cae fuera del lado siguiente."""
+    needed = tramo.ramp_m + platform_m
+    if needed > side.length + 1e-9:
+        raise ZigzagDoesNotFit(tramo.bench, needed, side.length, side.p0 + tramo.abscissa_m * side.u)
+    end = tramo.end_xy
+    travel = sigma * side.u
+    try:
+        following, lateral = _side_after(ring, end, -travel, side.n, half_m, tramo.ramp_m)
+    except ValueError:
+        raise ZigzagDoesNotFit(bench, tramo.ramp_m, 0.0, end) from None
+    turn = end + max(platform_m - lateral, 0.0) * travel
+    landing = turn + lateral * side.n
+    landing = landing - ((landing - following.p0) @ following.n) * following.n  # al eje del lado siguiente
+    platform = np.array([[end[0], end[1], z_next_m], [turn[0], turn[1], z_next_m], [landing[0], landing[1], z_next_m]])
+    t = float((landing - following.p0) @ following.u)
+    if not -1e-9 <= t <= following.length + 1e-9:
+        raise ZigzagDoesNotFit(bench, t, following.length, landing)
+    return platform, following, -sigma, min(max(t, 0.0), following.length)
+
+
 def build_zigzag(rings: Sequence[object], point: Sequence[float], *, z_first_m: float, rise_m: float, gradient_pct: float, width_m: float,
                  platform_m: float, sense: str = "ccw", code: str = "zigzag", first_bench: int = 0) -> Zigzag:
     """El zig-zag sobre los pies ``rings`` (de abajo arriba; antihorarios y abiertos, en el mismo marco que ``point``; el banco ``i`` es
@@ -655,20 +755,59 @@ def build_zigzag(rings: Sequence[object], point: Sequence[float], *, z_first_m: 
         tramos.append(tramo)
         if last:
             break
-        end = tramo.end_xy
-        travel = sigma * side.u
-        following, lateral = _side_after(points[index + 1], end, -travel, side.n, half)
-        turn = end + max(platform_m - lateral, 0.0) * travel
-        landing = turn + lateral * side.n
-        landing = landing - ((landing - following.p0) @ following.n) * following.n  # al eje del lado siguiente
-        z_next = z_first_m + (index + 1) * rise_m
-        platforms.append(np.array([[end[0], end[1], z_next], [turn[0], turn[1], z_next], [landing[0], landing[1], z_next]]))
-        side, sigma = following, -sigma
-        t = float((landing - following.p0) @ following.u)
-        if not -1e-9 <= t <= following.length + 1e-9:
-            raise ZigzagDoesNotFit(first_bench + index + 1, t, following.length, landing)
-        t = min(max(t, 0.0), following.length)
+        platform, side, sigma, t = _zigzag_link(points[index + 1], tramo, side, sigma, half, platform_m, z_first_m + (index + 1) * rise_m,
+                                                first_bench + index + 1)
+        platforms.append(platform)
     return _assemble(tramos, platforms, half, code, platform_m)
+
+
+class ZigzagStepper:
+    """El zig-zag de ``ramp`` banco a banco (T21c): cada pie, al calcularse, pide su tramo (:meth:`tramo`) y, al acabar, :meth:`result` da el :class:`Zigzag` en absolutas. Es
+    :func:`build_zigzag` con los pies de uno en uno (el lado siguiente y la plataforma salen del pie del banco que sigue, ya con el término de la cresta anterior)."""
+
+    def __init__(self, ramp: RampDef, width_m: float) -> None:
+        if ramp.type != "zigzag":
+            raise ValueError(f"La rampa {ramp.code!r} es de tipo {ramp.type!r}, no «zigzag»")
+        if ramp.turn_radius_m is None or ramp.min_platform_m is None:
+            raise ValueError(f"La rampa {ramp.code!r} en zig-zag necesita el radio de giro y la plataforma mínima")
+        self.ramp = ramp
+        self.width_m = width_m
+        self.platform_m = platform_length_m(ramp.turn_radius_m, ramp.min_platform_m)
+        self.tramos: list[Tramo] = []
+        self.platforms: list[np.ndarray] = []
+        self._side: _Side | None = None
+        self._sigma = 1.0 if ramp.sense == "ccw" else -1.0
+
+    def tramo(self, ring: object, point: Sequence[float], *, bench: int, z_foot_m: float, rise_m: float) -> Tramo:
+        """El tramo del banco ``bench`` sobre su pie ``ring`` (antihorario, abierto): en el primero, el lado más largo que contiene ``point``; en los demás, tras la plataforma de
+        retorno. :class:`ZigzagDoesNotFit` si no cabe."""
+        points = _ring(ring)
+        half = 0.5 * self.width_m
+        if self._side is None:
+            side = _first_side(points, point, half)
+            t = 0.0 if self._sigma > 0.0 else side.length
+            sigma = self._sigma
+        else:
+            platform, side, sigma, t = _zigzag_link(points, self.tramos[-1], self._side, self._sigma, half, self.platform_m, z_foot_m, bench)
+            self.platforms.append(platform)
+        found = _zigzag_tramo(side, t, sigma, bench=bench, z_foot_m=z_foot_m, rise_m=rise_m, gradient_pct=self.ramp.gradient_pct, width_m=self.width_m,
+                              platform_m=self.platform_m, last=True, sense=self.ramp.sense)
+        self._side, self._sigma = side, sigma
+        self.tramos.append(found)
+        return found
+
+    def result(self, origin: Sequence[float]) -> Zigzag:
+        """El :class:`Zigzag` de los tramos calculados hasta ahora (``origin``: el absoluto del marco local)."""
+        return zigzag_of(self.tramos, self.platforms, origin, self.width_m, self.platform_m, self.ramp)
+
+
+def zigzag_of(tramos: Sequence[Tramo], platforms: Sequence[np.ndarray], origin: Sequence[float], width_m: float, platform_m: float, ramp: RampDef) -> Zigzag:
+    """El :class:`Zigzag` de los ``tramos`` y ``platforms`` de ``ramp`` (calculados en un marco local con el ``origin`` absoluto dado), en absolutas."""
+    shift = np.array([origin[0], origin[1], 0.0])
+    found = _assemble(tramos, platforms, 0.5 * width_m, ramp.code, platform_m)
+    path = RampPath(ramp.code, found.path.bench, found.path.axis + shift, found.path.half_width_m)
+    return Zigzag(path, tuple(dataclasses.replace(item, axis=item.axis + shift) for item in found.tramos), tuple(item + shift for item in found.platforms),
+                  found.ramp_m, found.platforms_m, found.platform_m, found.rise_m)
 
 
 def zigzag_edge_extra_m(tramo: Tramo, ring: object, face_deg: object) -> np.ndarray:
