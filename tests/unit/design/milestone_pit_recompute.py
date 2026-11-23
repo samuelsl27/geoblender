@@ -9,17 +9,26 @@ Sobre el proyecto de las cortas (rejilla de 2 m, 200 × 200 celdas) con la corta
   prepararla y empezarla se rechaza (``des.input_changed``).
 - **«Cambiar parámetro…»** (:class:`ParameterTest`): la fila del proyecto del nombre existe (la crea «Crear») y un nombre repetido se rechaza.
 - **Traerla a otra versión** (:class:`BringTest`): queda **sin calcular**, con sus valores por sector, y se calcula traída con su código.
+- **Reproducirla** (:class:`PitReproduceTest`, T24b, DIFF-018g; RF-018-25, RF-009-11): un V01.r1 congelado con cortas de los tres tipos de partida da de cada dato **el mismo hash** y de cada cifra el
+  mismo valor —también las distancias de la línea de cielo al límite legal y al perímetro, con su geometría anotada como entrada—, **sin escribir** nada en el proyecto.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import types
+import unittest
 from typing import Any, ClassVar
 from unittest import mock
 
+import numpy as np
+
 from tests.support import pit_data as pd
 from tests.support import res_fixtures
+from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
+from tests.support.versions_fixtures import change_counter, files
 from tests.unit.design import milestone_pit_prepare_checks as checks
 from tests.unit.design.milestone_pit_create import BY, NAME, CreateCase
 from tests.unit.design.milestone_pit_prepare_checks import CODE, request
@@ -27,12 +36,17 @@ from tests.unit.design.milestone_pit_prepare_checks import CODE, request
 core_params = import_geoblender("core.params")
 gis = import_geoblender("gis")
 design_params = import_geoblender("design.params")
+design_reproduce = import_geoblender("design.reproduce")
 entities = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
+freeze = import_geoblender("core.versions.freeze")
+pit_lines = import_geoblender("design.pit_lines")
 messages = import_geoblender("design.messages")
 pit_store = import_geoblender("design.pit_store")
 provenance = import_geoblender("design.provenance")
 recompute_mod = import_geoblender("core.provenance.recompute")
+road_model = import_geoblender("design.road_model")
+reproduce_mod = import_geoblender("core.versions.reproduce")
 steps = import_geoblender("design.steps")
 store = import_geoblender("design.store")
 
@@ -41,6 +55,8 @@ FACE = "des.bench.expl_10_60_6.face_deg"
 OTHER_PROFILE = "expl_10_45_6"
 """Un perfil de la misma altura y ancla que ``EXPL_10_60_6``, con otro ángulo de cara: lo que admite un sector."""
 SECTOR_PROFILE = f"des.pit.pit_001.profile.{SEG}"
+FIXED_LAYER = "gis_brk_corta_banco_2"
+ROLES_OF_A_PIT = ("entity_surface", "entity", "pit_polylines", "pit_skyline", "pit_ramps", "pit_findings", "pit_benches", "entity_report")
 
 
 def finish_steps(work: Any) -> Any:
@@ -60,9 +76,10 @@ def recompute_function(request_: Any) -> Any:
 class RecomputeCase(CreateCase):
     @classmethod
     def setUpClass(cls) -> None:
-        patcher = mock.patch.object(checks, "never", recompute_function)
-        patcher.start()
-        cls.addClassCleanup(patcher.stop)
+        for name, found in (("never", recompute_function), ("never_reproduced", design_reproduce.reproduce_pit)):
+            patcher = mock.patch.object(checks, name, found)
+            patcher.start()
+            cls.addClassCleanup(patcher.stop)
         super().setUpClass()
         parameters = core_params.ParameterStore(cls.project)
         cls.clock.advance(minutes=1)
@@ -234,3 +251,91 @@ class BringTest(RecomputeCase):
         with self.assertRaises(messages.DesignError) as caught:
             pit_store.entity_pit_request(self.project, self.v2, CODE)
         self.assertEqual(caught.exception.code, "des.entity_calculate_done")
+
+
+class PitReproduceTest(RecomputeCase):
+    """RF-018-25, RF-009-11, RF-015-02, DIFF-018g: las cortas de V01 congeladas en ``V01.r1`` y reproducidas **sin proyecto**: la ascendente de los fondos, la que lleva un valor por sector (el sector es
+    una entrada congelada), la descendente desde un límite, la de la roseta con una capa de zonas sin rampa y la de un banco fijado (la capa de líneas con Z congelada)."""
+
+    revision: ClassVar[str]
+    pits: ClassVar[dict[str, str]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.pits = {}
+        res_fixtures.write_grids(cls.project, [(label, gis.Raster(checks.GRID, pd.flat_terrain(checks.GRID), pd.CRS, pd.VERTICAL)) for label in ("corta_llano_d", "corta_llano_e")],
+                                 message="Más terrenos llanos, iguales al de partida")
+        cls.clock.advance(minutes=1)
+        for code, name, start, changes in (
+                ("PIT-001", NAME, "gis_dtm_corta_llano_b", {}),
+                ("PIT-002", "Corta con sector", "gis_dtm_corta_llano_c", {"sector_profiles": {SEG: "expl_10_60_6"}}),
+                ("PIT-003", "Corta del límite", checks.LIMIT, {"mode": "down", "source": checks.LIMITS, "profile": checks.EXPL}),
+                ("PIT-004", "Corta con roseta", "gis_dtm_corta_llano_d", {"rose": cls.rose, "noramp": road_model.LayerFields("gis_fea_corta_sin_rampa", "nombre")})):
+            cls.clock.advance(minutes=1)
+            cls.pits[code] = cls.uid(cls, cls.calculate(cls, request(name, start=start, **changes)).create(decided_by=BY))
+        with cls.project.read() as conn:  # el pie del banco 2 de la primera corta, como línea de rotura con Z: una corta con ese banco fijado lo usa tal cual
+            lines = pit_lines.read_pit_lines(conn, provenance.dataset_locator(provenance.PIT_POLYLINES_TABLE, NAME, "V01"), provenance.PIT_POLYLINES_TABLE, closed_column="closed")
+        foot = next(line for line in lines if (line.values[0], line.values[1]) == (2, "foot"))
+        sdata.write_breaklines(cls.project, cls.clock, FIXED_LAYER, [np.vstack([foot.points, foot.points[:1]])])
+        cls.clock.advance(minutes=1)
+        cls.clock.advance(minutes=1)
+        cls.pits["PIT-005"] = cls.uid(cls, cls.calculate(cls, request("Corta con banco fijado", start="gis_dtm_corta_llano_e", fixed=road_model.LayerFields(FIXED_LAYER, "line_id"))).create(decided_by=BY))
+        cls.clock.advance(minutes=1)
+        cls.revision = str(finish_steps(freeze.freeze_steps(cls.project, cls.v1.uid, reason="Entrega de la prueba")).frozen.uid)
+        cls.clock.advance(minutes=1)
+
+    def test_a_reproducing_the_frozen_revision_gives_the_same_without_writing(self) -> None:
+        """RF-018-25, RF-009-11: reproducir ``V01.r1`` —sin proyecto, desde la capa, la partida, las máscaras, los parámetros, el perímetro, el límite legal y los sectores congelados— da de cada corta el
+        **mismo hash** de sus ocho datos y **las mismas cifras** (con las distancias de la línea de cielo), sin escribir nada en el proyecto (ni ficheros ni el contador de cambios de la base)."""
+        before = (files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root))
+        report = finish_steps(reproduce_mod.reproduce_steps(self.project, self.revision))
+        self.assertEqual((files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root)), before, "reproducir no escribe en el proyecto")
+        for code, uid in self.pits.items():
+            with self.subTest(pit=code):
+                mine = [check for check in report.outputs if check.operation_uid == uid]
+                self.assertEqual([check.role for check in mine], list(ROLES_OF_A_PIT))
+                self.assertTrue(all(check.same for check in mine), [check for check in mine if not check.same])
+                found = [check for check in report.figures if check.operation_uid == uid]
+                self.assertEqual(len(found), len(self.figures_of(uid)))
+                self.assertTrue(found and all(check.same for check in found), [check for check in found if not check.same])
+                self.assertNotIn(uid, [note.operation_uid for note in report.not_reproducible])
+        keys = {check.key for check in report.figures if check.operation_uid == self.pits["PIT-001"]}
+        self.assertIn("des.pit_sky_dist_legal_m", keys)
+        self.assertIn("des.pit_sky_dist_perimeter_m", keys)
+
+    def test_b_the_geometry_of_the_limits_and_of_the_named_sectors_are_inputs_with_their_own_role(self) -> None:
+        """DIFF-018g: la operación anota la geometría del perímetro y del límite legal (los polígonos compilados de las restricciones) con el papel ``pit_limits``; los sectores (``sectors``) solo si la
+        corta los nombra."""
+        roles = {code: [role for _name, role in self.inputs(uid)] for code, uid in self.pits.items()}
+        self.assertEqual(roles["PIT-001"].count(provenance.PIT_LIMITS_ROLE), 1)
+        self.assertEqual(roles["PIT-002"].count(provenance.PIT_LIMITS_ROLE), 1)
+        self.assertNotIn(provenance.SECTORS_ROLE, roles["PIT-001"])
+        self.assertEqual(roles["PIT-002"].count(provenance.SECTORS_ROLE), 1)
+        for code in ("PIT-003", "PIT-004", "PIT-005"):
+            self.assertNotIn(provenance.SECTORS_ROLE, roles[code])
+            self.assertEqual(roles[code].count(provenance.PIT_LIMITS_ROLE), 1)
+        self.assertEqual(roles["PIT-005"].count(provenance.ENTITY_LAYER_ROLE), 2, "la capa de origen y la de los bancos fijados")
+
+
+class FrozenReaderTest(RecomputeCase):
+    """RF-018-25, RF-018-07, RF-018-15, DIFF-018g: lo que lee la reproducción de lo congelado (``_FrozenPit``) es lo que lee la preparación del proyecto (``ProjectReader``): las rosetas, las rampas con su
+    perfil de pista y los perfiles de banco, salvo los nombres libres (que no son un valor)."""
+
+    def test_the_roses_ramps_and_profiles_read_from_the_frozen_values_are_the_project_ones(self) -> None:
+        reader = pit_store.ProjectReader(self.project, self.v1)
+        keys = sorted({key for (key,) in self.query("SELECT key FROM gb_parameter WHERE key LIKE 'des.rose.%' OR key LIKE 'des.pitramp.%' OR key LIKE 'des.roadprofile.%' OR key LIKE 'des.bench.%'")})
+        frozen = types.SimpleNamespace(values=reader.values(keys), request=types.SimpleNamespace(inputs=()))
+        mine = design_reproduce._FrozenPit(frozen)
+        asked = request(rose=self.rose, ramps=(self.ramp_codes["Espiral"], self.ramp_codes["Zigzag"]), profile=checks.EXPL)
+        self.assertEqual(pit_store._roses(mine, asked, CODE, {}), pit_store._roses(reader, asked, CODE, {}))
+        by_project, by_frozen = (pit_store._ramps(item, asked, CODE, checks.GRID) for item in (reader, mine))
+        self.assertEqual([dataclasses.replace(item, name="") for item in by_project[0]], [dataclasses.replace(item, name="") for item in by_frozen[0]])
+        plain = [[{key: value for key, value in dataclasses.asdict(item).items() if key not in ("name", "class_name")} for item in found[1]] for found in (by_project, by_frozen)]
+        self.assertEqual(plain[0], plain[1])
+        self.assertEqual(repr(by_project[2:]), repr(by_frozen[2:]), "el inicio de cada rampa y las capas de puntos que leyó")
+        self.assertEqual(pit_store._profiles(mine, asked, CODE, {})[0], pit_store._profiles(reader, asked, CODE, {})[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

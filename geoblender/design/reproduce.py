@@ -92,14 +92,17 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 import numpy as np
 
 from ..core.constraints import store as constraints_store
 from ..core.constraints.declared import write_declared
+from ..core.constraints.model import Sector
 from ..core.gpkg.base import create_attribute_table, create_base
 from ..core.georef import CrsRef
 from ..core.gpkg.connection import GpkgConnection
+from ..core.params import definition
 from ..core.paths import check_path_length
 from ..core.project.model import Progress
 from ..core.provenance.contract import ReproduceFunction
@@ -117,11 +120,11 @@ from ..gis.masks import provenance as masks_declared
 from ..gis.masks.access import MaskSet, MaskState
 from ..gis.masks.combine import ClassBit
 from ..gis.masks.compile import STEP_BUDGET_S
-from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, zone_runs_steps
+from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, read_shapes, zone_runs_steps
 from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
-from . import access_store, entities, entity_store, fronts, pipeline, provenance, quarry, removal, road_layer, road_store, stockpile_store, store, supported_store
+from . import access_store, entities, entity_store, fronts, pipeline, pit_lines, pit_store, provenance, quarry, removal, road_layer, road_store, stockpile_store, store, supported_store
 from .compose import admitted, admitted_in
 from .model import BenchSense, BodySense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
 from .params import (
@@ -1297,12 +1300,132 @@ def _reproduce_road_propose(request: ReproduceRequest, budget_s: float) -> Itera
     yield Progress(_PHASE, 1, 1, "Trazado reproducido", result=ReproducedResult((made,), tuple(outcome.figures)))
 
 
-# --- El tipo de la 018 (spec 018, T02): sin comportamiento todavía ---------------------------------------------
+# --- Los tipos de la 018 (spec 018, T02, T03 y T24b) ---------------------------------------------
+
+
+class _FrozenPit:
+    """El :class:`~design.pit_store.PitReader` de lo **congelado** (spec 018, T24b; RF-018-25, RF-009-11): los valores resueltos son los parámetros congelados de la operación (con el valor por defecto de su
+    definición donde no hay, como el proyecto), las rosetas y las rampas salen de las claves congeladas (su nombre es su código: el nombre libre no es un valor), el perfil de pista, de ``road_store.frozen_profile``,
+    las capas de puntos de inicio, de las entradas congeladas, los sectores, de la tabla congelada de papel ``sectors`` (sin ella, el perímetro como sector único) y el perímetro y el límite legal, de la
+    entrada de papel ``pit_limits`` (DIFF-018g): **lo mismo que lee la preparación del proyecto, por el mismo código**."""
+
+    def __init__(self, frozen: _Frozen) -> None:
+        self.frozen = frozen
+
+    def values(self, keys: Sequence[str]) -> dict[str, Any]:
+        found: dict[str, Any] = {}
+        for key in keys:
+            if key in self.frozen.values:
+                found[key] = self.frozen.values[key]
+            else:
+                declared = definition(key)
+                found[key] = None if declared is None else declared.default
+        return found
+
+    def check_profiles(self, codes: Sequence[str]) -> None:
+        """Ya pasó al crearla."""
+
+    def _codes(self, prefix: str) -> dict[str, str]:
+        return {key.split(".")[2]: key.split(".")[2] for key in self.frozen.values if key.startswith(prefix) and key.count(".") >= 3}
+
+    def rose_names(self) -> dict[str, str]:
+        return self._codes("des.rose.")
+
+    def rose_numbers(self, rose_code: str) -> list[int]:
+        return pit_store.rose_numbers_of(list(self.frozen.values), rose_code)
+
+    def ramp_names(self) -> dict[str, str]:
+        return self._codes("des.pitramp.")
+
+    def road_profile(self, request: Any, ramp: str, wanted: str) -> Any:
+        return road_store.frozen_profile(self.frozen.values, wanted)
+
+    def point_layer(self, name: str) -> FeatureLayer:
+        return self.frozen.features(name)
+
+    def limits(self) -> tuple[Any, Any]:
+        items = [item for item in self.frozen.request.inputs if item.role == provenance.PIT_LIMITS_ROLE]
+        if not items:
+            return None, None
+        with _open(Path(items[0].files["main"])) as conn:
+            shapes = read_shapes(conn, str(items[0].settings["layer"]))
+        return pit_store.limits_of_shapes(shapes)
+
+    def sectors(self) -> dict[str, Any]:
+        items = [item for item in self.frozen.request.inputs if item.role == provenance.SECTORS_ROLE]
+        if items:
+            with _open(Path(items[0].files["main"])) as conn:
+                found = constraints_store.read_sectors(conn)
+            if found:
+                return {sector.code: sector for sector in found}
+        perimeter, legal = self.limits()
+        parts = perimeter or legal
+        if not parts:
+            return {}
+        return {"": Sector("", "", PERIMETER_SECTOR_NAME, tuple(ring for part in parts for ring in part))}
+
+
+def _pit_lines_output(request: ReproduceRequest, family: str, rows: Sequence[pit_lines.LineRow], crs: CrsRef) -> ReproducedOutput:
+    """Escribe ``rows`` como la salida de líneas con Z ``family`` (``pbl`` o ``psk``) de la corta, en su GeoPackage de la carpeta de trabajo (``pit_lines.write_pit_lines``, el que escribe «Crear»)."""
+    found = provenance.FAMILIES_BY_CODE[family]
+    name = str(request.settings.get("name", ""))
+    table = provenance.dataset_locator(family, name, "V01")
+    path = Path(request.workdir) / f"{found.role}.gpkg"
+    check_path_length(path, obj=_OBJ)
+    with GpkgConnection.open_write(path, create=True) as gpkg, gpkg.transaction() as conn:
+        create_base(conn, crs)
+        pit_lines.write_pit_lines(conn, table, family, rows, srs_id=crs.epsg, label=name)
+    return ReproducedOutput(found.role, found.reader, {"main": path}, {"layer": table})
 
 
 def reproduce_pit(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """Reproduce ``des.pit`` (spec 018, T02; RF-018-01, RF-009-11): sin comportamiento todavía (la tarea que crea la operación)."""
-    return _not_yet(request, provenance.PIT, "la tarea que crea la operación", "018")
+    """Reproduce ``des.pit`` (spec 018, T24b; RF-018-01, RF-018-25, RF-009-11) con la capa de origen, las de bancos fijados y de zonas sin rampa, la superficie de partida y las máscaras congeladas, los parámetros
+    congelados de su entidad (``des.pit.{e}.*``, con los valores por sector), de sus perfiles de banco, rosetas, rampas y perfiles de pista, y del proyecto (el espesor mínimo, la tolerancia de cara, el umbral de
+    magnitud y el salto creado), con los ajustes de su operación (el nombre, el código y los campos de las capas), **sin el proyecto**: el mismo cálculo (``pit_store.compute_steps`` sobre el mismo
+    ``PitJob``, que arma ``pit_store.frozen_job`` con el mismo código que la preparación). **La geometría del perímetro de actuación y del límite legal** (la entrada de papel ``pit_limits``, DIFF-018g) y la de
+    los **sectores** (``sectors``), leídas de lo congelado, dan bit a bit también las distancias de la línea de cielo. Los otros diseños que difieren en la huella (``other_design``) repiten el aviso del
+    informe. Sus pasos y, el último, el ``ReproducedResult`` con la superficie entera (``des_psf_``), la huella (``des_epr_``), las polilíneas y la línea de cielo con Z (``des_pbl_``, ``des_psk_``), las
+    rampas (``des_prl_``), los hallazgos (``des_pfn_``), las cifras por banco (``des_pbk_``), el informe (``des_prp_``) y las cifras (con ``des.supported_m3`` de lo que apoya). Lo confirmado por la persona
+    no se reproduce (es una decisión suya, de los ajustes). Lo que no es una ``ReproduceRequest`` es ``TypeError``; una de otro tipo, ``ValueError``."""
+    return _reproduce_pit(_check(request, provenance.PIT), budget_s)
+
+
+def _reproduce_pit(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    code = provenance.supported_code(request.settings)
+    asked = provenance.pit_request(request.settings, provenance.supported_values(code, frozen.values))
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    refs, _labels = frozen.sector_layout(masks)
+    start_item = frozen.item(provenance.SURFACE_ROLE)
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida").values
+    job, window, hashes = pit_store.frozen_job(
+        _FrozenPit(frozen), asked, code, frozen.grid, start, masks, layer=frozen.features(asked.layer), refs=refs,
+        noramp_layer=None if asked.noramp is None else frozen.features(asked.noramp.layer),
+        fixed_lines=None if asked.fixed is None else frozen.lines_3d(asked.fixed.layer))
+    common = {key: store.number(frozen.values, key) for key in provenance.PLATFORM_COMMON_PARAMS}
+    outcome = yield from pit_store.compute_steps(job, window, common, crs=frozen.crs, vertical=frozen.vertical, confirmed=provenance.ramp_confirmed(request.settings), budget_s=budget_s)
+    others = tuple(item.name for item in request.inputs if item.role == provenance.ROAD_OTHER_DESIGN_ROLE)
+    if others:
+
+        def read_other(name: str, window: tuple[slice, slice]) -> np.ndarray:
+            """La superficie de otro diseño de la versión, **congelada**, en la ventana de trabajo de la corta."""
+            return np.asarray(frozen.named_raster(name, what="superficie de otro diseño").values[window], dtype=np.float64)
+
+        differing, notices = yield from pit_store.other_designs_steps(job, outcome, others, read_other, store.number(frozen.values, VERIFY_MIN_THICKNESS))
+        if differing:
+            outcome = replace(outcome, other_designs=differing, notices=(*outcome.notices, *notices))
+    surface = outcome.compose(job.start)
+    made = yield from _grid_output(request, provenance.ENTITY_SURFACE_GRID, Raster(job.grid, surface, frozen.crs, frozen.vertical), budget_s)
+    entity = pit_store.pit_entity_rows(job, outcome, fid=0, start_surface=start_item.name, support_surface=_support_dataset(request, asked), sources_sha256=hashes)
+    produced = (_table_output(request, provenance.ENTITY_TABLE, entity, frozen.crs),
+                _pit_lines_output(request, provenance.PIT_POLYLINES_TABLE, pit_store.pit_polyline_rows(outcome), frozen.crs),
+                _pit_lines_output(request, provenance.PIT_SKYLINE_TABLE, pit_store.pit_skyline_rows(outcome), frozen.crs),
+                _table_output(request, provenance.PIT_RAMPS_TABLE, pit_store.pit_ramp_rows(outcome), frozen.crs),
+                _table_output(request, provenance.PIT_FINDINGS_TABLE, pit_store.pit_finding_rows(outcome), frozen.crs),
+                _table_output(request, provenance.PIT_BENCHES_TABLE, pit_store.pit_bench_rows(outcome), frozen.crs),
+                _table_output(request, provenance.ENTITY_REPORT_TABLE, pit_store.pit_report_rows(outcome), frozen.crs))
+    yield Progress(_PHASE, 1, 1, "Corta reproducida", result=ReproducedResult((made, *produced), (*outcome.figures, *_support_figures(frozen, [surface], start))))
 
 
 def reproduce_pit_expand(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:

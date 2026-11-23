@@ -14,6 +14,7 @@ import numpy as np
 from tests.support import pit_data as pd
 from tests.support.package import import_geoblender
 
+constraint_model = import_geoblender("core.constraints.model")
 messages = import_geoblender("design.messages")
 params = import_geoblender("design.params")
 pit_model = import_geoblender("design.pit_model")
@@ -90,6 +91,33 @@ class ProvenanceTest(unittest.TestCase):
                           ("des_psf_a", provenance.SUPPORTED_ON_ROLE)])
         with self.assertRaises(TypeError):
             provenance.pit_inputs("gis_fea_f", "gis_dtm_t", (), "des_psf_a")
+
+    def test_the_limits_and_the_sectors_are_inputs_with_their_own_role(self) -> None:
+        """DIFF-018g, RF-018-25: la geometría del perímetro y del límite legal (``limits``: los polígonos compilados) y la de los sectores que se nombran (``sectors``) son entradas, tras las máscaras y antes de
+        lo que la corta pisa; sin ellas, ninguna."""
+        masks = (provenance.Use("m1", "masks_classes"),)
+        uses = provenance.pit_inputs("gis_fea_f", "gis_dtm_t", masks, ("des_psf_a",), limits="gis_mskg_v01", sectors="core_sector")
+        self.assertEqual([(use.item, use.role) for use in uses],
+                         [("gis_fea_f", provenance.ENTITY_LAYER_ROLE), ("gis_dtm_t", provenance.SURFACE_ROLE), ("m1", "masks_classes"), ("gis_mskg_v01", provenance.PIT_LIMITS_ROLE),
+                          ("core_sector", provenance.SECTORS_ROLE), ("des_psf_a", provenance.SUPPORTED_ON_ROLE)])
+        self.assertEqual(provenance.PIT_LIMITS_ROLE, "pit_limits")
+        self.assertEqual([use.role for use in provenance.pit_inputs("gis_fea_f", "gis_dtm_t")], [provenance.ENTITY_LAYER_ROLE, provenance.SURFACE_ROLE])
+        with self.assertRaises(ValueError):
+            provenance.pit_inputs("gis_fea_f", "gis_dtm_t", limits=" ")
+
+    def test_the_limits_are_taken_from_the_compiled_shapes(self) -> None:
+        """DIFF-018g: el perímetro y el límite legal salen de los polígonos compilados de la versión (código → tipo y partes), por su tipo y en su orden; sin ellos, ``None`` (como antes)."""
+        kind = constraint_model.ConstraintType
+        square = (np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),)
+        other = (np.array([[1.0, 1.0], [2.0, 1.0], [2.0, 2.0]]),)
+        shapes = {"p1": (kind.ACTION_PERIMETER, (square,)), "u1": (kind.UNTOUCHABLE, (other,)), "l1": (kind.LEGAL_LIMIT, (square, other)), "p2": (kind.ACTION_PERIMETER, (other,))}
+        perimeter, legal = pit_store.limits_of_shapes(shapes)
+        self.assertEqual([len(part) for part in perimeter], [1, 1])
+        np.testing.assert_array_equal(perimeter[0][0], square[0])
+        np.testing.assert_array_equal(perimeter[1][0], other[0])
+        self.assertEqual(len(legal), 2)
+        self.assertEqual(pit_store.limits_of_shapes({"u1": (kind.UNTOUCHABLE, (other,))}), (None, None))
+        self.assertEqual(pit_store.limits_of_shapes({}), (None, None))
 
     def test_the_parameters(self) -> None:
         keys = provenance.pit_params(CODE, valued=("profile", "bottom_level_m"), profiles=("expl_10_60_6",),

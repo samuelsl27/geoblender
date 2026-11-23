@@ -139,15 +139,11 @@ class PitOperationTest(unittest.TestCase):
         self.assertNotIn(PIT, store._NO_REST_TYPES)  # noqa: SLF001
 
     def test_recomputing_or_reproducing_says_which_task_is_missing(self) -> None:
-        """RF-008-26, RF-009-11: ``recompute_run`` ya repite ``des.pit`` (T24: unos ajustes que no son los de una corta son un ``ValueError``, **nunca cae en un escalonado**) y ``reproduce_pit``,
-        sin comportamiento, dice qué tarea lo hace (``NotImplementedError``); lo que no es una petición, ``TypeError``; una de otro tipo, ``ValueError`` (errores del programa)."""
+        """RF-008-26, RF-009-11: ``recompute_run`` ya repite ``des.pit`` (T24: unos ajustes que no son los de una corta son un ``ValueError``, **nunca cae en un escalonado**) y ``reproduce_pit`` (T24b)
+        ya la reproduce de lo congelado: lo que no es una petición, ``TypeError``; una de otro tipo, ``ValueError`` (errores del programa)."""
         request = recompute_mod.RecomputeRequest(object(), "uid", PIT, {}, (), ())
         with self.assertRaises(ValueError):
             store.recompute_run(request)
-        reproducing = versions_reproduce.ReproduceRequest(PIT, {}, (), {}, ".", None)
-        with self.assertRaises(NotImplementedError) as caught:
-            reproduce_mod.reproduce_pit(reproducing)
-        self.assertIn("018", str(caught.exception))
         with self.assertRaises(TypeError):
             reproduce_mod.reproduce_pit("petición")  # type: ignore[arg-type]
         with self.assertRaises(ValueError):

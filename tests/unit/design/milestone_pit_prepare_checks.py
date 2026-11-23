@@ -70,6 +70,10 @@ def never(request: Any) -> Any:
     raise AssertionError("las pruebas del «verde» no recalculan ni reproducen")
 
 
+def never_reproduced(request: Any) -> Any:
+    raise AssertionError("las pruebas del «verde» no reproducen")
+
+
 def ring(points: Any) -> np.ndarray:
     """Los puntos locales como anillo absoluto."""
     return pd.absolute(points, GRID)
@@ -110,7 +114,7 @@ class PitPrepareCase(pd.PitProjectCase):
                          design_params.ROSE_FAMILIES, design_params.PITRAMP_FAMILIES):
             core_params.register_families(families)
         cls.addClassCleanup(core_params.unregister_families, "des")
-        cls.enterClassContext(registered(provenance.operation_def(provenance.PIT, never), *provenance.PIT_FIGURES))
+        cls.enterClassContext(registered(provenance.operation_def(provenance.PIT, never, never_reproduced), *provenance.PIT_FIGURES))
         cls.enterClassContext(registered(*road_profiles.OPERATIONS, *pit_rose.OPERATIONS, *pit_ramp_def.OPERATIONS))
         cls.write_profiles()
         cls.write_roses_and_ramps()

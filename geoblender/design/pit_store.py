@@ -48,12 +48,12 @@ import sqlite3
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 
 from ..core.constraints import store as constraint_store
-from ..core.constraints.model import ConstraintType
+from ..core.constraints.model import ConstraintType, Sector
 from ..core.datasets import registry as dataset_registry
 from ..core.project.model import Progress
 from ..core.provenance.operations import OperationHandle, Use
@@ -63,9 +63,9 @@ from ..core.versions.model import Version
 from ..gis import polygons
 from ..gis.grid import Grid
 from ..gis.masks import access
-from ..gis.masks.compile import STEP_BUDGET_S, is_active
-from ..gis.masks.store import _resolved as _resolved_constraints
-from ..gis.masks.store import search_sectors
+from ..gis.masks import provenance as masks_declared
+from ..gis.masks.compile import STEP_BUDGET_S
+from ..gis.masks.store import available_tables, read_shapes, search_sectors
 from ..gis.messages import GisError
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features
@@ -132,6 +132,7 @@ from .report import _thickness
 from .road_store import (
     _LINES_3D_PREFIXES,
     _ROUTE_PREFIX,
+    Lines3D,
     OtherReader,
     other_design_notices,
     other_designs,
@@ -157,7 +158,8 @@ from .store import (
 from .surfaces import project_frame, read_surface_steps
 from .zones import polygons_cells
 
-__all__ = ["ensure_name_row", "entity_pit_request", "pit_parameters", "recompute_pit", "run_pit", "OFFSET_NOT_VERIFIED", "OTHERS_SEEN", "OTHER_DESIGN_DIFFERS", "PreparedPit", "compare_others", "compute", "compute_steps", "confirm_ramps", "create_pit", "create_pit_steps",
+__all__ = ["ensure_name_row", "entity_pit_request", "pit_parameters", "recompute_pit", "run_pit", "OFFSET_NOT_VERIFIED", "OTHERS_SEEN", "OTHER_DESIGN_DIFFERS", "PitReader", "PreparedPit", "ProjectReader", "compare_others", "compute", "compute_steps", "confirm_ramps", "create_pit", "create_pit_steps",
+           "fixed_of", "frozen_job", "limits_of_shapes", "noramp_parts", "rose_numbers_of", "sources_hashes",
            "other_designs_steps", "pit_bench_rows", "pit_entity_rows", "pit_finding_rows", "pit_obsolete", "pit_operation_start", "pit_polyline_rows", "pit_ramp_rows", "pit_report_rows",
            "pit_skyline_rows", "pit_summary", "prepare_pit", "prepare_pit_units", "source_sha256", "summary_of"]
 
@@ -419,7 +421,11 @@ def _noramp(project: StoreProject, request: PitRequest, code: str) -> Parts | No
     """Las zonas sin rampa (RF-018-15) de su capa de polígonos: por geometría y parte, sus anillos absolutos. ``None`` si no se pide la capa."""
     if request.noramp is None:
         return None
-    layer = _polygon_layer(project, request.noramp.layer, request, code, PitParam.NORAMP_LAYER)
+    return noramp_parts(_polygon_layer(project, request.noramp.layer, request, code, PitParam.NORAMP_LAYER))
+
+
+def noramp_parts(layer: FeatureLayer) -> Parts | None:
+    """Las zonas sin rampa de la capa de polígonos ``layer`` (la del proyecto o la congelada): por geometría y parte, sus anillos absolutos. ``None`` sin ninguna."""
     found = tuple(tuple(np.array(ring, dtype=np.float64) for ring in part) for parts in layer.parts for part in parts)
     return found or None
 
@@ -452,6 +458,13 @@ def _fixed_benches(project: StoreProject, version: Version, request: PitRequest,
         if record is None:
             raise GisError("gis.dataset_unknown", obj="Dato de topografía", field="dato", value=name)
         lines = read_lines_3d(conn, record.locator)
+    return fixed_of(lines, request, code)
+
+
+def fixed_of(lines: Lines3D, request: PitRequest, code: str) -> tuple[FixedBench, ...]:
+    """Los bancos fijados de la capa de líneas con Z ``lines`` ya leída (la del proyecto o la congelada; T24b): lo que hace :func:`_fixed_benches` con lo leído, con los mismos rechazos."""
+    assert request.fixed is not None
+    name = request.fixed.layer
     layer = lines.layer
     if not len(layer.fids):
         raise _fixed_error(request, code, name, name, "la capa no tiene ninguna línea")
@@ -499,6 +512,13 @@ def _fixed_sha256(item: FixedBench) -> str:
     return digest.hexdigest()
 
 
+def sources_hashes(sources: Sequence[PitSource], fixed: Sequence[FixedBench]) -> dict[str, str]:
+    """El hash de cada polígono de origen (por nombre) y de cada banco fijado (``fijado: nombre``): :attr:`PreparedPit.sources_sha256` (RF-018-01)."""
+    hashes = {item.name: source_sha256(item.ring, item.level_m) for item in sources}
+    hashes.update({f"fijado: {item.name}": _fixed_sha256(item) for item in fixed})
+    return hashes
+
+
 def _resolved_values(project: StoreProject, version: Version, keys: Sequence[str]) -> dict[str, Any]:
     """Los valores de ``keys`` como los resuelve una operación que empezara ahora (versión → proyecto → valor por defecto de su definición), clave → valor
     (``None`` si no hay). Sin escribir nada."""
@@ -515,26 +535,128 @@ def _resolved_values(project: StoreProject, version: Version, keys: Sequence[str
     return values
 
 
-def _rose(project: StoreProject, version: Version, request: PitRequest, code: str, rose_code: str, field: str) -> tuple[RoseRange, ...]:
+def rose_numbers_of(keys: Sequence[str], rose_code: str) -> list[int]:
+    """Los números de los rangos de la roseta ``rose_code`` que tienen alguna clave en ``keys`` (``des.rose.{r}.r{i}.…``), de menor a mayor."""
+    prefix = f"des.rose.{rose_code}."
+    return sorted({int(key[len(prefix):].split(".")[0][1:]) for key in keys if key.startswith(prefix) and key[len(prefix):].split(".")[0][1:].isdigit()})
+
+
+class PitReader(Protocol):
+    """Lo que la corta lee **además de sus capas y su superficie** (T24b): los valores resueltos de los parámetros, las rosetas, las rampas con su perfil de pista, las capas de puntos de inicio, los sectores
+    de búsqueda y la geometría del perímetro y del límite legal. :class:`ProjectReader` lo lee del proyecto (al preparar); ``design.reproduce`` lo lee de lo **congelado** (sin proyecto), de modo que
+    preparar y reproducir comparten el mismo código."""
+
+    def values(self, keys: Sequence[str]) -> dict[str, Any]: ...
+
+    def check_profiles(self, codes: Sequence[str]) -> None: ...
+
+    def rose_names(self) -> dict[str, str]: ...
+
+    def rose_numbers(self, rose_code: str) -> list[int]: ...
+
+    def ramp_names(self) -> dict[str, str]: ...
+
+    def road_profile(self, request: PitRequest, ramp: str, wanted: str) -> RoadProfile: ...
+
+    def point_layer(self, name: str) -> FeatureLayer: ...
+
+    def sectors(self) -> dict[str, Sector]: ...
+
+    def limits(self) -> tuple[Parts | None, Parts | None]: ...
+
+
+def limits_of_shapes(shapes: Mapping[str, tuple[ConstraintType, Sequence[Sequence[np.ndarray]]]]) -> tuple[Parts | None, Parts | None]:
+    """El perímetro de actuación y el límite legal (RF-018-29: la línea de cielo mide la distancia a ellos; DIFF-018g) de los polígonos compilados ``shapes`` de las restricciones activas de la versión (código →
+    tipo y partes: ``gis.masks.store.read_shapes``), como partes de polígonos absolutas, por su tipo y en su orden; ``None`` si no hay. Lo mismo lo leen la preparación (del proyecto) y la reproducción (de lo congelado)."""
+
+    def parts_of(kind: ConstraintType) -> Parts | None:
+        found = tuple(tuple(np.array(ring, dtype=np.float64) for ring in part) for ctype, parts in shapes.values() if ctype is kind for part in parts)
+        return found or None
+
+    return parts_of(ConstraintType.ACTION_PERIMETER), parts_of(ConstraintType.LEGAL_LIMIT)
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectReader:
+    """:class:`PitReader` del proyecto, en la versión ``version``: lo que lee una operación que empezara ahora."""
+
+    project: StoreProject
+    version: Version
+
+    def values(self, keys: Sequence[str]) -> dict[str, Any]:
+        return _resolved_values(self.project, self.version, keys)
+
+    def check_profiles(self, codes: Sequence[str]) -> None:
+        from .store import _check_profiles  # al usarlo: es de la 013
+
+        _check_profiles(self.project, self.version, codes, tuple(BenchParam))
+
+    def rose_names(self) -> dict[str, str]:
+        with self.project.read() as conn:
+            return {item.code: item.name for item in pit_rose.read_roses(conn)}
+
+    def rose_numbers(self, rose_code: str) -> list[int]:
+        with self.project.read() as conn:
+            stored = [str(row[0]) for row in conn.execute("SELECT DISTINCT key FROM gb_parameter WHERE key LIKE 'des.rose.%'")]
+        return rose_numbers_of(stored, rose_code)
+
+    def ramp_names(self) -> dict[str, str]:
+        with self.project.read() as conn:
+            return {item.code: item.name for item in pit_ramp_def.read_ramps(conn)}
+
+    def road_profile(self, request: PitRequest, ramp: str, wanted: str) -> RoadProfile:
+        """El perfil de pista ``wanted`` (su código) que usa la rampa ``ramp``, con los valores que tiene en la versión (RF-017-07, RF-009-24): como ``design.road_store._profile``.
+        ``des.road_profile_unknown`` si el proyecto no lo tiene; un valor que falta o está fuera de rango, el rechazo de la 017."""
+        with self.project.read() as conn:
+            stored = road_profiles.read_profiles(conn)
+        road_profiles.check_names(stored)
+        names = {item.code: item.name for item in stored}
+        if wanted not in names:
+            raise DesignError("des.road_profile_unknown", obj=f"Rampa «{ramp}» de la corta «{request.name}»", field=pitramp_key(ramp, PitRampParam.ROAD_PROFILE),
+                              value=wanted, layer=request.layer, entity=ramp, profiles=", ".join(names.values()) or "—")
+        keys = [road_profile_key(wanted, param) for param in RoadProfileParam]
+        return road_profiles.road_profiles_from(self.values(keys), (wanted,), names)[wanted]
+
+    def point_layer(self, name: str) -> FeatureLayer:
+        return _layer(self.project, name)
+
+    def sectors(self) -> dict[str, Sector]:
+        with self.project.read() as conn:
+            return {sector.code: sector for sector, _source in search_sectors(conn, self.project, self.version.uid)}
+
+    def _shapes_record(self, conn: sqlite3.Connection) -> Any:
+        return dataset_registry.get(conn, masks_declared.dataset_name(masks_declared.SHAPES), version_uid=self.version.uid)
+
+    def limits(self) -> tuple[Parts | None, Parts | None]:
+        """El perímetro de actuación y el límite legal de las restricciones activas de la versión (DIFF-018g: los **polígonos compilados** de las máscaras al día, :func:`limits_of_shapes`)."""
+        with self.project.read() as conn:
+            record = self._shapes_record(conn)
+            shapes = {} if record is None else read_shapes(conn, record.locator)
+        return limits_of_shapes(shapes)
+
+    def limits_uid(self) -> str | None:
+        """El uid del dato de los polígonos compilados de la versión (la entrada de papel :data:`~.provenance.PIT_LIMITS_ROLE`); ``None`` si no lo hay."""
+        with self.project.read() as conn:
+            record = self._shapes_record(conn)
+        return None if record is None else str(record.uid)
+
+
+def _rose(reader: PitReader, request: PitRequest, code: str, rose_code: str, field: str) -> tuple[RoseRange, ...]:
     """Los rangos de la roseta ``rose_code`` (su código) con los valores que tiene en la versión (RF-018-07, RF-009-24: los de la versión y, si no, los del
     proyecto), comprobados con :func:`design.pit_rose.check_rose` (un hueco, un solape, un valor que falta o fuera de rango se rechazan nombrando la roseta, la
     clave y el valor) y **en orden de azimut**. ``des.pit_rose_unknown`` si el proyecto no tiene esa roseta."""
-    with project.read() as conn:
-        names = {item.code: item.name for item in pit_rose.read_roses(conn)}
-        stored = [row[0] for row in conn.execute("SELECT DISTINCT key FROM gb_parameter WHERE key LIKE 'des.rose.%'")] if rose_code in names else []
+    names = reader.rose_names()
     if rose_code not in names:
         raise DesignError("des.pit_rose_unknown", obj=f"Corta «{request.name}» de la capa «{request.layer}»", field=field, value=rose_code, layer=request.layer,
                           entity=request.name, roses=", ".join(names.values()) or "—")
-    prefix = f"des.rose.{rose_code}."
-    numbers = sorted({int(key[len(prefix):].split(".")[0][1:]) for key in stored
-                      if key.startswith(prefix) and key[len(prefix):].split(".")[0][1:].isdigit()})
+    numbers = reader.rose_numbers(rose_code)
     keys = [rose_key(rose_code, f"r{number}", param) for number in numbers for param in RoseParam]
-    values = _resolved_values(project, version, keys)
+    values = reader.values(keys)
     ranges = [{param.value: values[rose_key(rose_code, f"r{number}", param)] for param in RoseParam} for number in numbers]
     return pit_rose.check_rose(names[rose_code], rose_code, ranges)
 
 
-def _roses(project: StoreProject, version: Version, request: PitRequest, code: str, sector_codes: Mapping[str, str]
+def _roses(reader: PitReader, request: PitRequest, code: str, sector_codes: Mapping[str, str]
            ) -> tuple[tuple[RoseRange, ...] | None, dict[str, tuple[RoseRange, ...]], dict[str, int]]:
     """La roseta base y la de cada sector (por el código del sector) de la petición, con los rangos de cada una (:func:`_rose`) y cuántos tiene cada roseta
     (para los parámetros que lee la operación). Una roseta que se repite se lee una vez."""
@@ -542,7 +664,7 @@ def _roses(project: StoreProject, version: Version, request: PitRequest, code: s
 
     def read(rose_code: str, field: str) -> tuple[RoseRange, ...]:
         if rose_code not in cache:
-            cache[rose_code] = _rose(project, version, request, code, rose_code, field)
+            cache[rose_code] = _rose(reader, request, code, rose_code, field)
         return cache[rose_code]
 
     base = None if request.rose is None else read(request.rose, entity_key(code, PitParam.ROSE))
@@ -550,21 +672,7 @@ def _roses(project: StoreProject, version: Version, request: PitRequest, code: s
     return base, by_sector, {rose_code: len(found) for rose_code, found in cache.items()}
 
 
-def _road_profile(project: StoreProject, version: Version, request: PitRequest, ramp: str, wanted: str) -> RoadProfile:
-    """El perfil de pista ``wanted`` (su código) que usa la rampa ``ramp``, con los valores que tiene en la versión (RF-017-07, RF-009-24): como
-    ``design.road_store._profile``. ``des.road_profile_unknown`` si el proyecto no lo tiene; un valor que falta o está fuera de rango, el rechazo de la 017."""
-    with project.read() as conn:
-        stored = road_profiles.read_profiles(conn)
-    road_profiles.check_names(stored)
-    names = {item.code: item.name for item in stored}
-    if wanted not in names:
-        raise DesignError("des.road_profile_unknown", obj=f"Rampa «{ramp}» de la corta «{request.name}»", field=pitramp_key(ramp, PitRampParam.ROAD_PROFILE),
-                          value=wanted, layer=request.layer, entity=ramp, profiles=", ".join(names.values()) or "—")
-    keys = [road_profile_key(wanted, param) for param in RoadProfileParam]
-    return road_profiles.road_profiles_from(_resolved_values(project, version, keys), (wanted,), names)[wanted]
-
-
-def _ramp_start(project: StoreProject, request: PitRequest, code: str, ramp: RampDef, grid: Grid, layers: dict[str, FeatureLayer]) -> RampStart:
+def _ramp_start(reader: PitReader, request: PitRequest, code: str, ramp: RampDef, grid: Grid, layers: dict[str, FeatureLayer]) -> RampStart:
     """El punto de inicio de la rampa ``ramp`` (RF-018-15): ``fondo`` (el banco 0) o ``banco N`` (la rampa parte de la polilínea de ese banco: lo sitúa el
     cálculo) o ``capa:nombre``, el punto de ese nombre de una capa de puntos del proyecto, dentro de la rejilla. ``des.pit_start_invalid`` con la rampa, el
     texto y el motivo en cualquier otro caso."""
@@ -584,7 +692,7 @@ def _ramp_start(project: StoreProject, request: PitRequest, code: str, ramp: Ram
         raise refuse("no es «fondo», «banco N» ni «capa:nombre»")
     if layer_name not in layers:
         try:
-            layers[layer_name] = _layer(project, layer_name)
+            layers[layer_name] = reader.point_layer(layer_name)
         except (ValueError, GisError):
             raise refuse(f"«{layer_name}» no es una capa de entidades del proyecto") from None
     layer = layers[layer_name]
@@ -605,15 +713,14 @@ def _ramp_start(project: StoreProject, request: PitRequest, code: str, ramp: Ram
     return RampStart(ramp.code, point=(x, y), layer=layer_name, name=point_name)
 
 
-def _ramps(project: StoreProject, version: Version, request: PitRequest, code: str, grid: Grid
+def _ramps(reader: PitReader, request: PitRequest, code: str, grid: Grid
            ) -> tuple[tuple[RampDef, ...], tuple[RoadProfile, ...], tuple[RampStart, ...], tuple[str, ...]]:
     """Las definiciones de rampa de la petición (``request.ramps``: sus códigos; RF-018-15), cada una con los valores que tiene en la versión comprobados con
     :func:`design.pit_ramp_def.check_ramp` (la pendiente de diseño no pasa de la máxima del perfil de pista que usa), los perfiles de pista que usan, su punto
     de inicio resuelto (:func:`_ramp_start`) y las capas de puntos que leyó. ``des.pit_ramp_unknown`` si el proyecto no tiene una."""
     if not request.ramps:
         return (), (), (), ()
-    with project.read() as conn:
-        names = {item.code: item.name for item in pit_ramp_def.read_ramps(conn)}
+    names = reader.ramp_names()
     for wanted in request.ramps:
         if wanted not in names:
             raise _reject("des.pit_ramp_unknown", request, code, PitParam.RAMPS, wanted, ramps=", ".join(names.values()) or "—")
@@ -622,52 +729,39 @@ def _ramps(project: StoreProject, version: Version, request: PitRequest, code: s
     starts: list[RampStart] = []
     layers: dict[str, FeatureLayer] = {}
     for wanted in dict.fromkeys(request.ramps):
-        resolved = _resolved_values(project, version, [pitramp_key(wanted, param) for param in PitRampParam])
+        resolved = reader.values([pitramp_key(wanted, param) for param in PitRampParam])
         values = {param.value: resolved[pitramp_key(wanted, param)] for param in PitRampParam}
         road = values.get(PitRampParam.ROAD_PROFILE.value)
-        profile = _road_profile(project, version, request, names[wanted], road) if isinstance(road, str) and road else None
+        profile = reader.road_profile(request, names[wanted], road) if isinstance(road, str) and road else None
         ramp = pit_ramp_def.check_ramp(names[wanted], wanted, values, max_gradient_pct=1.0 if profile is None else profile.max_gradient_pct,
                                        road_profile_name="" if profile is None else profile.name)
         assert profile is not None
         profiles[profile.code] = profile
         ramps.append(ramp)
-        starts.append(_ramp_start(project, request, code, ramp, grid, layers))
+        starts.append(_ramp_start(reader, request, code, ramp, grid, layers))
     return tuple(ramps), tuple(profiles.values()), tuple(starts), tuple(layers)
 
 
 # --- Los perfiles y los sectores -------------------------------------------------------------------------------------------
 
 
-def _bench_values(project: StoreProject, version: Version, codes: Sequence[str]) -> dict[str, object]:
+def _bench_values(reader: PitReader, codes: Sequence[str]) -> dict[str, object]:
     """Los cinco valores de cada perfil de ``codes`` como los resuelve una operación que empezara ahora (versión → proyecto → valor por defecto de su
-    definición), clave ``des.bench.{p}.…`` → valor. Sin escribir nada."""
-    keys = tuple(bench_key(item, param) for item in codes for param in BenchParam)
-    with project.read() as conn:
-        found = ParameterStore(project).resolve_many(conn, keys, (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid)
-    values: dict[str, object] = {}
-    for key in keys:
-        resolved = found.get(key)
-        if resolved is not None:
-            values[key] = resolved.value
-        else:
-            declared = definition(key)
-            values[key] = None if declared is None else declared.default
-    return values
+    definición) o, al reproducir, como los congeló, clave ``des.bench.{p}.…`` → valor. Sin escribir nada."""
+    return dict(reader.values(tuple(bench_key(item, param) for item in codes for param in BenchParam)))
 
 
-def _profiles(project: StoreProject, version: Version, request: PitRequest, code: str, sector_codes: Mapping[str, str]
+def _profiles(reader: PitReader, request: PitRequest, code: str, sector_codes: Mapping[str, str]
               ) -> tuple[BenchProfile | None, dict[str, BenchProfile]]:
     """Los perfiles de banco de la corta (RF-018-06): el base y el de cada sector, con los valores comprobados (RF-013-19: uno que falta o está fuera de
     rango es ``des.profile_value_missing`` o ``_range``, nombrando el perfil, el campo y el valor) y **de la misma altura y ancla** (``des.pit_profiles_differ``
     con los dos y sus valores). ``sector_codes`` da el código de cada segmento de sector de la petición. Sin ninguno base, cada sector lleva el suyo."""
-    from .store import _check_profiles  # al usarlo: es de la 013
-
     assigned = [item for item in (request.profile, *(profile for _sector, profile in request.sector_profiles)) if item is not None]
     if not assigned:
         raise _reject("des.entity_param_missing", request, code, PitParam.PROFILE, None)
     codes = tuple(dict.fromkeys(assigned))
-    _check_profiles(project, version, codes, tuple(BenchParam))
-    built = pipeline.bench_profiles(_bench_values(project, version, codes), codes)
+    reader.check_profiles(codes)
+    built = pipeline.bench_profiles(_bench_values(reader, codes), codes)
     base = None if request.profile is None else built[request.profile]
     by_sector = {sector_codes[segment]: built[profile] for segment, profile in request.sector_profiles}
     ordered = [item for item in (base, *by_sector.values()) if item is not None]
@@ -692,7 +786,7 @@ def _sector_codes(request: PitRequest, code: str, refs: Sequence[Any]) -> dict[s
     return {sector: segments[sector] for sector in dict.fromkeys(named)}
 
 
-def _sectors(project: StoreProject, version: Version, request: PitRequest, code: str, by_sector: Mapping[str, BenchProfile],
+def _sectors(reader: PitReader, request: PitRequest, code: str, by_sector: Mapping[str, BenchProfile],
              sector_codes: Mapping[str, str], base: BenchProfile | None = None,
              by_rose: Mapping[str, tuple[RoseRange, ...]] | None = None) -> tuple[PitSector, ...]:
     """Los sectores de la corta con lo que les corresponde: los que la petición nombra (su perfil, su roseta o su número de bancos por berma, RF-018-06, 07
@@ -705,8 +799,7 @@ def _sectors(project: StoreProject, version: Version, request: PitRequest, code:
         if value != base_n:
             raise DesignError("des.pit_sector_n_berm", obj=f"Corta «{request.name}»", field=pit_sector_key(code, PitSectorParam.N_BERM, segment),
                               value=value, entity=request.name, sector=segment, other=base_n)
-    with project.read() as conn:
-        found = {sector.code: sector for sector, _source in search_sectors(conn, project, version.uid)}
+    found = reader.sectors()
     items = []
     for sector_code in dict.fromkeys([*by_sector, *by_rose, *by_n]):
         sector = found[sector_code]
@@ -820,21 +913,6 @@ def _window(grid: Grid, box: tuple[float, float, float, float], reach_m: float) 
     return (slice(max(0, row0), min(grid.nrows, row1)), slice(max(0, col0), min(grid.ncols, col1)))
 
 
-def _limits(project: StoreProject, version: Version) -> tuple[Parts | None, Parts | None]:
-    """El perímetro de actuación y el límite legal activos de la versión (RF-018-29: la línea de cielo mide la distancia a ellos), como partes de polígonos
-    absolutas; ``None`` si no hay."""
-    with project.read() as conn:
-        constraints = constraint_store.read_constraints(conn)
-        resolved = _resolved_constraints(conn, project, constraints, version.uid)
-
-    def parts_of(kind: ConstraintType) -> Parts | None:
-        found = tuple(tuple(np.array(ring, dtype=np.float64) for ring in part) for item in constraints
-                      if item.ctype is kind and is_active(item, resolved) for part in item.parts)
-        return found or None
-
-    return parts_of(ConstraintType.ACTION_PERIMETER), parts_of(ConstraintType.LEGAL_LIMIT)
-
-
 def _refuse_pending(project: StoreProject, version: Version, masks: access.MaskSet | access.MaskSource, grid: Grid, window: Window,
                     zone: np.ndarray) -> Generator[None, None, None]:
     """RF-018-05 y RF-015-07: ``des.sector_pending`` si un sector que toca la corta (``zone``: las celdas de la ventana que puede mover) no tiene la búsqueda
@@ -890,16 +968,17 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
     if not grid.same_geometry(masks.grid):
         raise ValueError("la rejilla de las máscaras no es la del proyecto")
     _check_polygons(sources, request, chosen, grid, start)
+    reader = ProjectReader(project, version)
     refs, _labels = sector_layout(project, masks)
     sector_codes = _sector_codes(request, chosen, refs)
-    base, by_sector = _profiles(project, version, request, chosen, sector_codes)
+    base, by_sector = _profiles(reader, request, chosen, sector_codes)
     profile_list = [item for item in (base, *by_sector.values()) if item is not None]
     values = pit_values(request, chosen, start_ref=start_ref)
     yield
     n_berm = int(values[PitParam.N_BERM.value])
-    rose, rose_by_sector, rose_counts = _roses(project, version, request, chosen, sector_codes)
-    ramps, road_profile_list, ramp_starts, point_layers = _ramps(project, version, request, chosen, grid)
-    sectors = _sectors(project, version, request, chosen, by_sector, sector_codes, base, rose_by_sector)
+    rose, rose_by_sector, rose_counts = _roses(reader, request, chosen, sector_codes)
+    ramps, road_profile_list, ramp_starts, point_layers = _ramps(reader, request, chosen, grid)
+    sectors = _sectors(reader, request, chosen, by_sector, sector_codes, base, rose_by_sector)
     if request.mode is PitMode.UP:
         _check_levels(sources, request, chosen, grid, start, profile_list[0], n_berm)
     params = PitParams.from_values(values)
@@ -915,7 +994,7 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
     yield from _refuse_pending(project, version, masks, grid, window, zone[window])
     cut, fill = admitted_pair(masks, (slice(0, grid.nrows), slice(0, grid.ncols)))
     untouchable = untouchable_cells(masks)
-    perimeter, legal = _limits(project, version)
+    perimeter, legal = reader.limits()
     asked = replace(request, start=start_ref)
     job = PitJob(asked, chosen, grid, start, cut, fill, untouchable, tuple(sources), params, base, sectors, rose, ramps, road_profile_list, fixed, noramp,
                  perimeter, legal, ramp_starts)
@@ -926,8 +1005,11 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
     common = entity_store._common(project, version)
     supported = ()
     surfaces = () if support_name is None else (support_name,)
+    named_sectors = bool(request.sector_profiles or request.sector_roses or request.sector_n_berm)
     inputs = provenance.pit_inputs(request.layer, start_name, masks.uses(), surfaces, fixed=None if request.fixed is None else request.fixed.layer,
-                                   noramp=None if request.noramp is None else request.noramp.layer, points=point_layers)
+                                   noramp=None if request.noramp is None else request.noramp.layer, points=point_layers,
+                                   limits=reader.limits_uid() if perimeter is not None or legal is not None else None,
+                                   sectors=constraint_store.SECTOR_TABLE if named_sectors and constraint_store.SECTOR_TABLE in available_tables(project, version.uid) else None)
     valued = [param.value for param in (PitParam.SUPPORT, PitParam.PROFILE, PitParam.TOP_LEVEL, PitParam.BOTTOM_LEVEL, PitParam.MAX_BENCHES,
                                         PitParam.MIN_FLOOR_WIDTH, PitParam.CLOSE_RADIUS, PitParam.AZ_WINDOW, PitParam.NORAMP_LAYER,
                                         PitParam.FIXED_LAYER, PitParam.ROSE, PitParam.RAMPS)
@@ -940,8 +1022,7 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
                    supersedes)
     begun = replace(begun, carry=False)
     yield
-    hashes = {item.name: source_sha256(item.ring, item.level_m) for item in sources}
-    hashes.update({f"fijado: {item.name}": _fixed_sha256(item) for item in fixed})
+    hashes = sources_hashes(sources, fixed)
     return PreparedPit(job, begun, chosen, version, start_name, start_ref, support_name, request.layer, _rows(asked, chosen, values, sector_rows),
                        MappingProxyType(values), MappingProxyType(common), window, MappingProxyType(hashes), supported, (), code is not None)
 
@@ -960,6 +1041,33 @@ def prepare_pit(project: StoreProject, request: PitRequest, *, version: str | No
             result: PreparedPit = stop.value
             return result
 
+
+
+def frozen_job(reader: PitReader, request: PitRequest, code: str, grid: Grid, start: np.ndarray, masks: access.MaskSet, *, layer: FeatureLayer,
+               refs: Sequence[Any], noramp_layer: FeatureLayer | None = None, fixed_lines: Lines3D | None = None
+               ) -> tuple[PitJob, Window, dict[str, str]]:
+    """El :class:`~design.pit_model.PitJob` de la corta ``request`` (de código ``code``) con **lo congelado** (spec 018, T24b; RF-018-25, RF-009-11; DIFF-018g), sin proyecto: lo que hace
+    :func:`prepare_pit_units` con lo ya leído —la capa de origen ``layer``, la de zonas sin rampa y las líneas de los bancos fijados, los sectores ``refs`` y las máscaras— y con el mismo código para los
+    perfiles, las rosetas, las rampas, los sectores y los límites (``reader``: :class:`PitReader`). No repite las comprobaciones de la preparación (ya pasaron al crearla). Devuelve el job, su ventana de
+    trabajo (A0) y el hash de cada polígono de origen y de cada banco fijado (:func:`sources_hashes`)."""
+    sources, _rings = _sources(layer, request, code)
+    noramp = None if noramp_layer is None else noramp_parts(noramp_layer)
+    fixed = () if fixed_lines is None else fixed_of(fixed_lines, request, code)
+    sector_codes = _sector_codes(request, code, refs)
+    base, by_sector = _profiles(reader, request, code, sector_codes)
+    profile_list = [item for item in (base, *by_sector.values()) if item is not None]
+    values = pit_values(request, code, start_ref=request.start)
+    rose, rose_by_sector, _counts = _roses(reader, request, code, sector_codes)
+    ramps, road_profile_list, ramp_starts, _point_layers = _ramps(reader, request, code, grid)
+    sectors = _sectors(reader, request, code, by_sector, sector_codes, base, rose_by_sector)
+    all_roses = [item for ranges in (rose or (), *rose_by_sector.values()) for item in ranges]
+    reach = _reach_m(request, profile_list, sources, start, all_roses) if request.mode is PitMode.UP else 0.0
+    window = _window(grid, _box(sources), reach)
+    cut, fill = admitted_pair(masks, (slice(0, grid.nrows), slice(0, grid.ncols)))
+    perimeter, legal = reader.limits()
+    job = PitJob(request, code, grid, start, cut, fill, untouchable_cells(masks), tuple(sources), PitParams.from_values(values), base, sectors, rose, ramps, road_profile_list, fixed, noramp,
+                 perimeter, legal, ramp_starts)
+    return job, window, sources_hashes(sources, fixed)
 
 
 # --- Calcular (T22) --------------------------------------------------------------------------------------------------------

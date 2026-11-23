@@ -403,6 +403,7 @@ __all__ = [
     "PIT_FINDINGS_TABLE",
     "PIT_LAYER",
     "PIT_LAYER_ROLE",
+    "PIT_LIMITS_ROLE",
     "PIT_LAYER_TABLE",
     "PIT_OPERATION_TYPES",
     "PIT_POLYLINES_ROLE",
@@ -826,6 +827,10 @@ PIT_EXPANDED_ROLE = "pit_expanded"
 fijados."""
 PIT_LAYER_ROLE = "pit_layer"
 """El papel de la capa de cortas de la versión (``des_pit_<vNN>``; no editable a mano)."""
+PIT_LIMITS_ROLE = "pit_limits"
+"""El papel con que una corta consume **la geometría del perímetro de actuación y del límite legal** que usó (spec 018, T24b, DIFF-018g; RF-018-25, RF-018-29): los polígonos compilados de las restricciones
+activas de la versión (``gis_mskg_``), de donde la línea de cielo mide su distancia a uno y a otro. Sin ella, reproducir la corta sin el proyecto no podría dar bit a bit esas dos cifras (las máscaras congelan celdas,
+no geometría); con ella, si la geometría cambia, la corta queda obsoleta con su causa."""
 PIT_SKY_LAYER_ROLE = "sky_layer"
 """El papel de la capa de líneas de cielo de la versión (``des_sky_<vNN>``; no editable a mano)."""
 
@@ -4351,16 +4356,21 @@ _PIT_OPTIONAL: tuple[PitParam, ...] = (
 
 
 def pit_inputs(layer: str, start: str, masks: Iterable[Use] = (), supports: Iterable[str] = (), *, fixed: str | None = None,
-               noramp: str | None = None, points: Iterable[str] = ()) -> tuple[Use, ...]:
+               noramp: str | None = None, points: Iterable[str] = (), limits: str | None = None, sectors: str | None = None) -> tuple[Use, ...]:
     """Lo que consume ``des.pit`` (spec 018, T21; RF-018-01, 03, 05; plan 018 §5.2.3; RF-015-06, RF-015-15), en su orden y sin repetir: la
     capa de origen ``layer`` (:data:`ENTITY_LAYER_ROLE`: su geometría y su hash; un cambio de geometría en QGIS deja la corta obsoleta, uno
     de un campo no), las de bancos fijados ``fixed`` y de zonas sin rampa ``noramp`` si las hay (el mismo papel), la superficie de partida
     ``start`` (:data:`SURFACE_ROLE`; **ya resuelta**: el nombre de su dato), las máscaras de la versión ``masks`` y, **añadidas al crear**,
     lo que la corta pisa, ``supports`` (:data:`SUPPORTED_ON_ROLE`). ``points``: las capas de puntos de inicio de las rampas (T21b; el mismo
-    papel que las otras capas). ``ValueError`` si faltan los nombres; ``TypeError`` si ``supports`` es un texto."""
+    papel que las otras capas). T24b (DIFF-018g): ``limits``, el dato de los polígonos compilados de las restricciones de la versión (:data:`PIT_LIMITS_ROLE`: la geometría del perímetro de actuación y del
+    límite legal) y ``sectors``, la tabla de los sectores si la corta los nombra (:data:`SECTORS_ROLE`), **tras las máscaras**. ``ValueError`` si faltan los nombres; ``TypeError`` si ``supports`` es un texto."""
     found = [Use(_named(layer, "de la capa de origen de la corta"), ENTITY_LAYER_ROLE)]
     found += [Use(_named(name, "de una capa de la corta"), ENTITY_LAYER_ROLE) for name in (fixed, noramp, *_codes(points, "las capas de puntos de inicio")) if name is not None]
     found += [Use(_named(start, "de la superficie de partida"), SURFACE_ROLE), *masks]
+    if limits is not None:
+        found.append(Use(_named(limits, "de la geometría de los límites"), PIT_LIMITS_ROLE))
+    if sectors is not None:
+        found.append(Use(_named(sectors, "de la tabla de sectores"), SECTORS_ROLE))
     found += [Use(_named(name, "de una superficie en la que se apoya"), SUPPORTED_ON_ROLE) for name in _codes(supports, "las superficies de apoyo")]
     return _unique(found)
 
