@@ -221,7 +221,7 @@ label.en = "New pit…"
 label.es = "Nueva corta…"
 description.en = "Pit from the floor, the limit or the crest"
 description.es = "Corta desde el fondo, el límite o la cresta"
-entry = "R-35"
+entry = "018"
 action = "D"
 frequency = 1
 
@@ -231,7 +231,7 @@ label.en = "Expand bench…"
 label.es = "Expandir banco…"
 description.en = "Expand one bench of a pit into the next one with its profile, as a layer of 3D lines that you can edit in QGIS"
 description.es = "Expande un banco de una corta al siguiente con su perfil, como una capa de líneas con Z que se edita en QGIS"
-entry = "R-35"
+entry = "018"
 action = "D"
 frequency = 1
 
@@ -241,7 +241,7 @@ label.en = "Ramp…"
 label.es = "Rampa…"
 description.en = "Ramp definitions of the pit (spiral or zigzag), with their values, their source and the length they need per bench"
 description.es = "Definiciones de rampa de la corta (espiral o zigzag), con sus valores, su fuente y la longitud que piden por banco"
-entry = "R-35"
+entry = "018"
 action = "P"
 frequency = 1
 
@@ -251,7 +251,7 @@ label.en = "Slope rose…"
 label.es = "Roseta de taludes…"
 description.en = "Slope roses of the pit: the azimuth ranges with their face angle and berm, their source and the advance and overall slope derived from them"
 description.es = "Rosetas de taludes de la corta: los rangos de azimut con su ángulo de cara y su berma, su fuente y el avance y el talud general que se derivan de ellos"
-entry = "R-35"
+entry = "018"
 action = "P"
 frequency = 1
 
@@ -261,7 +261,7 @@ label.en = "Skyline…"
 label.es = "Línea de cielo…"
 description.en = "Figures of the skyline of a pit (where it comes out at the ground: parts, length, area, levels and distance to the legal limit and to the perimeter of the works) and its layer for QGIS"
 description.es = "Cifras de la línea de cielo de una corta (donde sale a superficie: partes, longitud, área, cotas y distancia al límite legal y al perímetro de actuación) y su capa para QGIS"
-entry = "R-35"
+entry = "018"
 action = "D"
 frequency = 1
 
@@ -271,18 +271,8 @@ label.en = "Surface and solid…"
 label.es = "Superficie y sólido…"
 description.en = "The TIN and the solid of the excavation of a pit as views, and its surface to GeoTIFF and its findings to CSV, with the warning before creating too many triangles"
 description.es = "El TIN y el sólido de excavación de una corta como vistas, y su superficie a GeoTIFF y sus hallazgos a CSV, con el aviso antes de crear demasiados triángulos"
-entry = "R-35"
+entry = "018"
 action = "D"
-frequency = 1
-
-[[menu.group.item.item]]
-key = "geoblender.des_create_design_surface"
-label.en = "Design surface and excavation solid"
-label.es = "Superficie de diseño y sólido de excavación"
-description.en = "The design surface and the solid of the excavation"
-description.es = "La superficie de diseño y el sólido de la excavación"
-entry = "R-35"
-action = "A"
 frequency = 1
 
 [[menu.group.item.item]]

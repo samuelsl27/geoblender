@@ -16,6 +16,7 @@ las capas), al que se le añade un perfil de pista con pm = 5 % y una espiral co
 - RF-018-03, RF-015-03, RF-015-02 (c): Calcular deja el cálculo abierto con su resumen y nada en el proyecto; Crear registra ``des.pit`` con sus datos y encadena la capa de entidades y las
   capas de la corta.
 - RF-018-19 (d): la pendiente media de la rampa por encima de pm no se crea sin la confirmación expresa ni sin su motivo; con ellos se crea y queda en los ajustes.
+- RF-015-18, RF-018-34 (j): una corta traída a otra versión se calcula desde «Calcular…» del menú «Entidad ▾» con su código y se crea al día.
 - RF-018-35, RF-015-29, RF-018-04 (e): Esc a mitad, Cancelar la confirmación y lo que se rechaza no dejan nada.
 - RF-018-32, RF-015-26 (f): «Vista previa» y sus campos; tras calcular, le da lo calculado; se quita al cancelar y al crear.
 - RF-018-34, RF-015-28 (h): la orden sale desactivada con su motivo con el proyecto en solo lectura.
@@ -400,6 +401,34 @@ class PitOpsTest(unittest.TestCase):
         self.assertFalse(entity.enabled(), "se quita al crear la corta por pasos")
         self.assertIn("Creada por pasos", [entry.record.name for entry in self.entities.registry(self.project, self.v01.uid)])
         self.assertEqual(self.rows("SELECT count(*) FROM gb_operation WHERE op_type = ? AND status = 'done'", PIT_TYPE)[0][0], 3)
+
+    # --- j: «Calcular…» de una corta traída ---------------------------------------------------------
+
+    def test_j_calculate_from_the_entity_menu_opens_a_brought_pit_and_creates_it_with_its_code(self) -> None:
+        """RF-015-18, RF-018-34, RF-018-35 (T35; M6): una corta traída a otra versión queda **sin calcular**; «Calcular…» del menú «Entidad ▾» la ofrece, abre «Nueva corta…» **con su código** y,
+        sin diálogo, la calcula con los parámetros que ya tiene (nada escrito hasta «Crear»); «Crear» la deja **al día con el mismo código** y sin otra entidad. La accesibilidad no se ofrece."""
+        self.addCleanup(lambda: bpy.ops.geoblender.core_set_active_version(version_uid=self.v01.uid))
+        self.entity_store.bring_entities(self.project, self.v01, self.v03, codes=["PIT-001"])
+        self.assertEqual(bpy.ops.geoblender.core_set_active_version(version_uid=self.v03.uid), {"FINISHED"})
+        record = lambda: self.entities.registry(self.project, self.v03.uid).get("PIT-001").record  # noqa: E731
+        self.assertEqual(record().state, self.entities.EntityState.UNCALCULATED)
+        before = self.counts()
+        opened: list[tuple[str, dict[str, Any]]] = []
+        with mock.patch.object(self.des_ops, "_invoke_later", lambda idname, _window, **kwargs: opened.append((idname, kwargs))):
+            self.assertEqual(bpy.ops.geoblender.des_entity_calculate("EXEC_DEFAULT", entity="PIT-001"), {"FINISHED"})
+        self.assertEqual(opened, [(PIT, {"code": "PIT-001"})])
+        self.assertEqual(self.counts(), before, "abrir el cálculo no escribe nada")
+        self.assertEqual(bpy.ops.geoblender.des_create_pit("EXEC_DEFAULT", code="PIT-001", in_steps=False), {"FINISHED"})
+        self.assertIsNotNone(self.des_ops.calculation())
+        self.assertEqual(self.counts(), before, "calcular no escribe nada")
+        self.assertEqual(self.create_pit(), {"FINISHED"})
+        self.assertEqual(record().state, self.entities.EntityState.CURRENT)
+        self.assertEqual([entry.record.code for entry in self.entities.registry(self.project, self.v03.uid) if entry.record.kind == self.entities.EntityKind.PIT], ["PIT-001"])
+        with mock.patch.object(self.des_ops, "_invoke_later") as later:  # ya con resultado: se rehúsa y no abre nada
+            with self.assertRaises(RuntimeError) as caught:
+                bpy.ops.geoblender.des_entity_calculate("EXEC_DEFAULT", entity="PIT-001")
+            self.assertIn("ya tiene resultado", str(caught.exception))
+            later.assert_not_called()
 
     # --- z: desactivar -----------------------------------------------------------------------------
 

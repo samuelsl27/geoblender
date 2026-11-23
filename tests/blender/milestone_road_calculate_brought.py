@@ -14,7 +14,7 @@ accesibilidad ``ACC-001`` «Alcanzable». Se trae V01 a V02 (que no tiene el per
 letras** sobre el mismo estado.
 
 - RF-015-18, RF-017-29 (b): la ventana de «Calcular…» ofrece la plataforma y las dos pistas **sin calcular** (no la accesibilidad, que no se trae), propone la primera y dice con qué se calcula; no
-  escribe nada. La orden se rehúsa con una accesibilidad (diciendo que solo una plataforma o una pista se calculan así), con una pista que ya tiene resultado y con una que no es de la versión.
+  escribe nada. La orden se rehúsa con una accesibilidad (diciendo que solo una plataforma, una pista o una corta se calculan así), con una pista que ya tiene resultado y con una que no es de la versión.
 - RF-015-18, RF-017-03, RF-015-04 (c): sin el perfil en V02 el cálculo se rehúsa **con su causa** (``des.road_profile_value_missing``) y el ramal, antes que su pista, también (su partida es la superficie de
   una pista aún sin calcular); ninguno deja nada (0 transacciones).
 - RF-015-18, RF-015-29 (d): la plataforma traída se calcula **igual que siempre** (``des_create_platform`` con su código); con el perfil ya en V02, **Esc a mitad de «Calcular»** una pista traída y **Esc entre
@@ -229,7 +229,7 @@ class BroughtRoadCalculateTest(steps.RoadStepsCase):
         self.activate(self.v01)
         self.refused("«Alcanzable» (", entity="ACC-001")  # la accesibilidad es de V01 y no se calcula desde aquí
         self.refused("no se calcula desde aquí", entity="ACC-001")
-        self.refused("solo una plataforma o una pista se calculan con sus parámetros guardados", entity="ACC-001")
+        self.refused("solo una plataforma, una pista o una corta se calculan con sus parámetros guardados", entity="ACC-001")
         self.refused("La entidad «Pista de la carga» (RDW-001) ya tiene resultado en V01", entity="RDW-001")
         self.activate(self.v02)
 

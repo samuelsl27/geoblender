@@ -5951,7 +5951,7 @@ class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperat
         label = entities.entity_type(record.kind).params.label
         if record.kind not in (entities.EntityKind.STOCKPILE, entities.EntityKind.BUTTRESS):
             raise ValueError(tr("«{name}» ({kind}) has no preview: only a platform, a detection of stockpiles (its marks), a buttress "
-                                "(its crown zone) and a road (its axis) have one", name=record.name, kind=label))
+                                "(its crown zone), a road (its axis) and a pit (its polylines) have one", name=record.name, kind=label))
         if entry.operation_uid is None:
             raise ValueError(tr("«{name}» ({kind}) is not calculated: there is nothing to preview", name=record.name, kind=label))
         with project.read() as conn:
@@ -6265,11 +6265,11 @@ CALCULATE_ENTITY = "geoblender.des_entity_calculate"
 
 
 def _calculable() -> tuple[Any, ...]:
-    """Los tipos de entidad que «Calcular…» calcula con sus parámetros guardados (spec 017, T33c): **la plataforma** y **la pista**, las dos órdenes de entidad que
+    """Los tipos de entidad que «Calcular…» calcula con sus parámetros guardados (spec 017, T33c; spec 018, T35): **la plataforma**, **la pista** y **la corta**, las órdenes de entidad que
     aceptan ``code``; ni la accesibilidad (no es una entidad: no se trae) ni los cuatro de la 016 (ninguna de sus órdenes lo tiene)."""
     from ...design import entities  # al usarlo: habilitar no carga las entidades
 
-    return (entities.EntityKind.PLATFORM, entities.EntityKind.ROAD)
+    return (entities.EntityKind.PLATFORM, entities.EntityKind.ROAD, entities.EntityKind.PIT)
 
 
 class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
@@ -6288,7 +6288,7 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
     candidates: CollectionProperty(type=GEOBLENDER_PG_des_bring_row, options=_FIELD)  # type: ignore[valid-type]
 
     def invoke(self, context: Any, event: Any) -> set[str]:
-        """Abre la ventana con las plataformas y las pistas **sin calcular** de la versión activa (por su nombre: una sin
+        """Abre la ventana con las plataformas, las pistas y las cortas **sin calcular** de la versión activa (por su nombre: una sin
         calcular no tiene objeto en la vista, así que no se elige seleccionándolo) y propone la dada o la primera; no
         escribe nada. Sin versión editable o sin ninguna entidad sin calcular de esos dos tipos, lo dice."""
         from ...design import entities  # al usarlo: habilitar no carga las entidades
@@ -6341,7 +6341,7 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
         parámetros y la dependencia «se apoya en» se detecta de nuevo). Sin entidad, con una que no es de la versión, que
         ya tiene resultado o está descartada, o sin su partida (``design.entity_store.entity_request`` y
         ``design.road_store.entity_road_request``), lo dice y no abre nada; con otro tipo (la accesibilidad, un acopio…),
-        dice que solo una plataforma o una pista se calculan así."""
+        dice que solo una plataforma, una pista o una corta se calculan así."""
         from ...design import entities  # al usarlo: habilitar no carga las entidades
 
         blocked = write_unavailable()
@@ -6361,17 +6361,19 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
             if found is None:
                 raise ValueError(tr("«{entity}» is not an entity of {version}", entity=wanted, version=active.code))
             if found.record.kind not in _calculable():
-                raise ValueError(tr("«{name}» ({kind}) is not calculated from here: it is made again with its own command; only a platform or a road "
+                raise ValueError(tr("«{name}» ({kind}) is not calculated from here: it is made again with its own command; only a platform, a road or a pit "
                                     "are calculated with their saved parameters", name=found.record.name,
                                     kind=entities.entity_type(found.record.kind).params.label))
             if found.record.kind == entities.EntityKind.ROAD:  # lo que rechazaría el cálculo, antes de abrir nada
                 _road_entity_request(project, active.uid, found.record.code)
+            elif found.record.kind == entities.EntityKind.PIT:
+                _pit_entity_request(project, active.uid, found.record.code)
             else:
                 _entity_request(project, active.uid, found.record.code)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
-        opens = CREATE_ROAD if found.record.kind == entities.EntityKind.ROAD else CREATE_PLATFORM
+        opens = {entities.EntityKind.ROAD: CREATE_ROAD, entities.EntityKind.PIT: provenance.PIT_COMMAND}.get(found.record.kind, CREATE_PLATFORM)
         _invoke_later(opens, getattr(context, "window", None) or _first_window(), code=found.record.code)
         return {"FINISHED"}
 
@@ -8323,6 +8325,14 @@ def _entity_param_text(entity: str, param: str) -> str:
         return tr("{kind}: no default value, you choose it", kind=kind)
     value = float(template.default)  # type: ignore[arg-type]
     return tr("By default: {value}{unit} · {kind}", value=i18n.format_number(value, 0 if value.is_integer() else 2), unit="", kind=kind)
+
+
+def _pit_entity_request(project: Any, version: str, code: str) -> Any:
+    """La petición de la corta **sin calcular** ``code`` de la versión ``version`` (spec 018, T35; RF-015-18; ``design.pit_store.entity_pit_request``: de los parámetros que ya tiene la
+    versión, como la repite el recálculo; solo lee)."""
+    from ...design import pit_store  # al usarlo: habilitar no carga el cálculo
+
+    return pit_store.entity_pit_request(project, version, code)
 
 
 def _road_entity_request(project: Any, version: str, code: str) -> Any:

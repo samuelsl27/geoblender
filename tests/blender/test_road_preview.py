@@ -291,7 +291,7 @@ class RoadPreviewTest(unittest.TestCase):
         access = SimpleNamespace(record=SimpleNamespace(kind=self.entities.EntityKind.ACCESS, code="ACC-001", name="Entradas"), operation_uid=None)
         with self.assertRaises(ValueError) as caught:
             self.des_ops.GEOBLENDER_OT_des_entity_preview._plan(SimpleNamespace(), VERSION, access)
-        self.assertIn("no tiene vista previa: solo la tienen una plataforma, una detección de acopios (sus marcas), un contrafuerte (su zona de coronación) y una pista (su eje)", str(caught.exception))
+        self.assertIn("no tiene vista previa: solo la tienen una plataforma, una detección de acopios (sus marcas), un contrafuerte (su zona de coronación), una pista (su eje) y una corta (sus polilíneas)", str(caught.exception))
 
     def test_f_a_preview_is_of_one_thing(self) -> None:
         """La vista previa de una entidad es de una sola cosa: ninguna, dos o una inserción con una pista son errores del programa; ``cross_segments`` da dos rayas por punto."""

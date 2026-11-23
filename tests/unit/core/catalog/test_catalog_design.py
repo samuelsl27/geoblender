@@ -33,6 +33,10 @@ de comandos.
   puestos de Diseño ▸ Pistas y entidades, **en ese orden y antes de «Entidades ▸»**, y la ventana del perfil, su interna. **Desaparecen** del catálogo
   ``des_draw_haul_road``, ``des_route_haul_road`` y ``des_burn_roads`` (las tres provisionales de ``R-40``: no queda ninguna referencia a ellas en los
   ficheros del catálogo). ``R-40`` sigue como entrada del roadmap, sin órdenes. El menú «Entidad ▾» no cambia: sirve a la pista con las órdenes de siempre.
+- La spec 018 (corta por bancos; T35, plan 018 §5.5, RF-018-34, D-20): la entrada ``018`` tiene su título en los dos idiomas y **entrega** sus órdenes: las seis del
+  submenú Diseño ▸ Corta por bancos («Nueva corta…», «Expandir banco…», «Rampa…», «Roseta de taludes…», «Línea de cielo…» y «Superficie y sólido…») y las dos internas de las
+  ventanas de la roseta y de la rampa. **Desaparecen** ``des_new_pit``, ``des_add_ramp``, ``des_compute_daylight`` y ``des_create_design_surface`` (las provisionales de ``R-35``: no queda
+  ninguna referencia a ellas en los datos del catálogo). ``R-35`` sigue como entrada del roadmap, sin órdenes; ``des_design_pit_from_shell`` y ``des_compare_with_shell`` (R-49) no se tocan.
 """
 
 import tomllib
@@ -83,6 +87,18 @@ ROADS_MENU_017 = {  # orden → (rótulo en español, acción, frecuencia), en e
 INTERNAL_017 = ("geoblender.des_save_road_profile",)
 GONE_017 = ("des_draw_haul_road", "des_route_haul_road", "des_burn_roads")
 """Las tres provisionales de R-40 que sustituyen las órdenes de la 017 (D-20)."""
+TITLE_018 = ("Pit by benches", "Corta por bancos")
+PIT_MENU_018 = {  # orden → (rótulo en español, acción, frecuencia), en el orden del submenú «Corta por bancos»
+    "geoblender.des_create_pit": ("Nueva corta…", "D", 1),
+    "geoblender.des_expand_bench": ("Expandir banco…", "D", 1),
+    "geoblender.des_edit_pit_ramp": ("Rampa…", "P", 1),
+    "geoblender.des_edit_pit_rose": ("Roseta de taludes…", "P", 1),
+    "geoblender.des_pit_skyline": ("Línea de cielo…", "D", 1),
+    "geoblender.des_pit_surface": ("Superficie y sólido…", "D", 1),
+}
+INTERNAL_018 = ("geoblender.des_save_pit_rose", "geoblender.des_save_pit_ramp")
+GONE_018 = ("des_new_pit", "des_add_ramp", "des_compute_daylight", "des_create_design_surface")
+"""Las cuatro provisionales de R-35 que sustituyen las órdenes de la 018 (D-20)."""
 
 
 class DesignCatalogTest(unittest.TestCase):
@@ -271,6 +287,51 @@ class DesignCatalogTest(unittest.TestCase):
                 self.assertFalse([file for file, text in data.items() if name in text], "algún fichero del catálogo sigue nombrándola")
         shown = [item.key for menu in self.cat.menus.values() for group in menu.groups for item in group.items]
         self.assertFalse([key for key in shown if key and key.removeprefix("geoblender.") in GONE_017])
+
+    def test_entry_018_delivers_its_commands(self) -> None:
+        """RF-018-34, D-20 (plan 018 §5.5, T35): la entrada ``018`` tiene el título de la spec en los dos idiomas y **entrega** sus órdenes: las seis del submenú y las dos internas de las
+        ventanas (y nada más); ``R-35`` sigue como entrada del roadmap, sin entregar y sin ninguna orden; las dos de R-49 no son de la 018."""
+        entry = self.cat.entries["018"]
+        self.assertEqual((entry.title, entry.title_es), TITLE_018)
+        self.assertTrue(entry.delivered)
+        self.assertEqual(catalog.entry_text(self.cat, "018", "es"), f"018 · {TITLE_018[1]}")
+        self.assertEqual(catalog.entry_text(self.cat, "018", "en"), f"018 · {TITLE_018[0]}")
+        self.assertEqual(sorted(command.key for command in self.cat.commands.values() if command.entry == "018"), sorted((*PIT_MENU_018, *INTERNAL_018)))
+        self.assertIn("R-35", self.cat.entries)
+        self.assertFalse(self.cat.entries["R-35"].delivered)
+        self.assertEqual(sorted(command.key for command in self.cat.commands.values() if command.entry == "R-35"), [],
+                         "ninguna orden es ya de R-35: las entrega la entrada 018 (T35)")
+        for key in ("geoblender.des_design_pit_from_shell", "geoblender.des_compare_with_shell"):
+            self.assertEqual(self.cat.commands[key].entry, "R-49", key)
+
+    def test_the_pit_submenu_has_the_six_orders(self) -> None:
+        """RF-018-34, D-20, M6: el submenú «Corta por bancos» de Diseño lleva **las seis órdenes en su orden**, después las dos de R-49; cada una es de ``des``, con su acción y
+        frecuencia, y su rótulo acaba en «…» en los dos idiomas; las internas no tienen casa."""
+        menu = self.cat.menus["GEOBLENDER_MT_des_pit"]
+        keys = [item.key for group in menu.groups for item in group.items if item.key is not None]
+        self.assertEqual(keys[:len(PIT_MENU_018)], list(PIT_MENU_018))
+        self.assertEqual(keys[len(PIT_MENU_018):], ["geoblender.des_design_pit_from_shell", "geoblender.des_compare_with_shell"])
+        for key, (label_es, action, frequency) in PIT_MENU_018.items():
+            with self.subTest(key=key):
+                command = self.cat.commands[key]
+                self.assertEqual((command.entry, command.module, command.kind, command.home), ("018", "des", "operator", "GEOBLENDER_MT_des_pit"))
+                self.assertEqual((command.label_es, command.action, command.frequency, command.background), (label_es, action, frequency, False))
+                self.assertTrue(command.label.endswith("…") and command.label_es.endswith("…"))
+        for key in INTERNAL_018:
+            command = self.cat.commands[key]
+            self.assertEqual((command.entry, command.module, command.kind, command.home), ("018", "des", "internal", ""))
+
+    def test_the_four_provisional_orders_of_r35_are_gone(self) -> None:
+        """RF-018-34, D-20 (M6): ``des_new_pit``, ``des_add_ramp``, ``des_compute_daylight`` y ``des_create_design_surface`` ya no están en el catálogo ni en ningún menú, atajo, acceso rápido,
+        menú circular, menú contextual, icono o disposición: **ningún fichero de datos del catálogo las nombra** (los comentarios, que cuentan la sustitución, no cuentan)."""
+        data = {path.name: "\n".join(line for line in path.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#"))
+                for path in DATA.rglob("*.toml")}
+        for name in GONE_018:
+            with self.subTest(orden=name):
+                self.assertNotIn(f"geoblender.{name}", self.cat.commands)
+                self.assertFalse([file for file, text in data.items() if f"geoblender.{name}" in text], "algún fichero del catálogo sigue nombrándola")
+        shown = [item.key for menu in self.cat.menus.values() for group in menu.groups for item in group.items]
+        self.assertFalse([key for key in shown if key and key.removeprefix("geoblender.") in GONE_018])
 
     def test_the_platform_and_the_internals_of_015(self) -> None:
         """RF-015-28 (D-14): «Plataforma…» es de la ``015`` y de ``des``, con su casa en Diseño ▸ Pistas y entidades ▸

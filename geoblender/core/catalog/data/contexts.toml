@@ -338,9 +338,6 @@ ref = "geoblender.res_compute_volume_between_surfaces"
 [[context.item]]
 ref = "geoblender.res_compare_versions"
 
-[[context.item]]
-ref = "geoblender.des_create_design_surface"
-
 [[context.icon]]
 ref = "geoblender.core_recompute_stale"
 
@@ -350,6 +347,7 @@ ref = "geoblender.des_check_rules"
 # El menú «Entidad ▾» (spec 015, T31; RF-015-28; D-14; PC §3.11): las órdenes reales de las entidades de diseño; lo que aún no es
 # una orden (editar el eje, las restricciones que declara) sigue marcado en R-36; «Acopio (detectar, retirar)…» es de la 016 (T35). La pista (spec 017, T33b)
 # usa este mismo menú con sus mismas órdenes (cada una toma la entidad seleccionada o su código): ninguna entrada nueva.
+# La corta (spec 018, T35; RF-018-34) también: «Calcular…» la calcula con sus parámetros guardados (abre «Nueva corta…» con su código) y «Vista previa» enseña sus polilíneas y su línea de cielo.
 [[context]]
 kind = "DESIGN_ENTITY"
 id = "GEOBLENDER_MT_des_context_entity"

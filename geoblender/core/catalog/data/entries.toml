@@ -127,6 +127,15 @@ title.en = "Haul roads and ramps"
 title.es = "Pistas y rampas"
 delivered = true
 
+# La spec 018 (corta por bancos) es R-35 (plan 018 §5.5, T31 a T35, D-20): sus seis órdenes (Nueva corta…, Expandir banco…, Rampa…, Roseta de taludes…, Línea de cielo… y Superficie y
+# sólido…, del submenú Diseño ▸ Corta por bancos, en ese orden) y las dos internas de las ventanas de la roseta y de la rampa pasan de R-35 a la 018 y las entrega la T35 con su menú;
+# **sustituyen** a las cuatro provisionales de R-35 (`des_new_pit`, `des_add_ramp`, `des_compute_daylight` y `des_create_design_surface`), que desaparecen del catálogo. R-35 sigue como
+# entrada del roadmap y ya no la usa ningún comando. `des_design_pit_from_shell` y `des_compare_with_shell` son de R-49 y no se tocan. El menú «Entidad ▾» (entrada 015) lleva también la corta.
+["018"]
+title.en = "Pit by benches"
+title.es = "Corta por bancos"
+delivered = true
+
 ["R-07"]
 title.en = "Versions and provenance"
 title.es = "Versiones y procedencia"

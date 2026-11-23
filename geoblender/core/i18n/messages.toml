@@ -10522,8 +10522,8 @@ es = "Cancelado: la detección está creada; las restricciones declaradas y las 
 ["Decision recorded on the candidate «{candidate}» of «{name}»: the detection is out of date until it is recomputed"]
 es = "Decisión anotada sobre el candidato «{candidate}» de «{name}»: la detección queda obsoleta hasta que se recalcule"
 
-["«{name}» ({kind}) has no preview: only a platform, a detection of stockpiles (its marks), a buttress (its crown zone) and a road (its axis) have one"]
-es = "«{name}» ({kind}) no tiene vista previa: solo la tienen una plataforma, una detección de acopios (sus marcas), un contrafuerte (su zona de coronación) y una pista (su eje)"
+["«{name}» ({kind}) has no preview: only a platform, a detection of stockpiles (its marks), a buttress (its crown zone), a road (its axis) and a pit (its polylines) have one"]
+es = "«{name}» ({kind}) no tiene vista previa: solo la tienen una plataforma, una detección de acopios (sus marcas), un contrafuerte (su zona de coronación), una pista (su eje) y una corta (sus polilíneas)"
 
 ["«{name}» ({kind}) is not calculated: there is nothing to preview"]
 es = "«{name}» ({kind}) no está calculada: no hay nada que previsualizar"
@@ -10570,8 +10570,8 @@ es = "La detección «{name}» no tiene candidatos: se detectó sin pedirlos o n
 ["Candidates of «{name}»"]
 es = "Candidatos de «{name}»"
 
-["«{name}» ({kind}) is not calculated from here: it is made again with its own command; only a platform or a road are calculated with their saved parameters"]
-es = "«{name}» ({kind}) no se calcula desde aquí: se hace de nuevo con su propia orden; solo una plataforma o una pista se calculan con sus parámetros guardados"
+["«{name}» ({kind}) is not calculated from here: it is made again with its own command; only a platform, a road or a pit are calculated with their saved parameters"]
+es = "«{name}» ({kind}) no se calcula desde aquí: se hace de nuevo con su propia orden; solo una plataforma, una pista o una corta se calculan con sus parámetros guardados"
 
 ["There is no surface in the project: import the ground or a survey first"]
 es = "No hay ninguna superficie en el proyecto: importe antes el terreno o un levantamiento"

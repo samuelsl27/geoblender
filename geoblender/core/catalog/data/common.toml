@@ -719,7 +719,7 @@ label.en = "Save slope rose…"
 label.es = "Guardar roseta de taludes…"
 description.en = "Create a slope rose, complete the ranges it lacks or rename it"
 description.es = "Crea una roseta de taludes, completa los rangos que le faltan o la renombra"
-entry = "R-35"
+entry = "018"
 action = "P"
 frequency = 1
 
@@ -730,7 +730,7 @@ label.en = "Save ramp…"
 label.es = "Guardar rampa…"
 description.en = "Create a ramp definition, complete the values it lacks or rename it"
 description.es = "Crea una definición de rampa, completa los valores que le faltan o la renombra"
-entry = "R-35"
+entry = "018"
 action = "P"
 frequency = 1
 
