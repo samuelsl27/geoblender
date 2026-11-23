@@ -65,3 +65,15 @@ class PitRequestTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeclaredSupportsTest(unittest.TestCase):
+    """RF-015-15, RF-015-17 (T25): lo que la persona declara en ``supports`` de una corta pasa por las reglas entre entidades al cambiarlo, como en la pista."""
+
+    def test_the_declared_supports_of_a_pit_are_ruled_like_the_ones_of_a_road(self) -> None:
+        entity_store = import_geoblender("design.entity_store")
+        entities = import_geoblender("design.entities")
+        self.assertTrue(entity_store._ruled("pit", "supports"))
+        self.assertTrue(entity_store._is_declared_supports(entities.EntityKind.PIT, "supports"))
+        self.assertFalse(entity_store._is_declared_supports(entities.EntityKind.PIT, "layer"))
+        self.assertFalse(entity_store._is_declared_supports(entities.EntityKind.PLATFORM, "supports"))

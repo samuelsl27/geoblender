@@ -45,7 +45,7 @@ import json
 import math
 import re
 import sqlite3
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Collection, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, Protocol
@@ -134,6 +134,7 @@ from .road_store import (
     _ROUTE_PREFIX,
     Lines3D,
     OtherReader,
+    _supportable,
     other_design_notices,
     other_designs,
     other_reader,
@@ -925,11 +926,27 @@ def _refuse_pending(project: StoreProject, version: Version, masks: access.MaskS
     yield
 
 
+# --- Lo que la corta pisa: lo que declara la persona (T25; RF-015-15) ------------------------------------------------------
+
+
+def _declared_supports(project: StoreProject, version: Version, registry: EntityRegistry, name: str, code: str, released: Collection[str]
+                       ) -> tuple[tuple[tuple[str, Any], ...], bool]:
+    """Las entidades en las que la persona **declara** que se apoya la corta ``code`` (``name``) en ``version`` (``des.pit.{e}.supports``: códigos separados por comas, RF-015-15), sin las que
+    ``released`` da por buenas sin su apoyo (descartadas: ni se piden ni se rechazan), cada una con su superficie y la tabla de su huella (``entity_store.EntitySurface``), y si la corta tiene la fila
+    (solo entonces la operación **lee** ese parámetro: ``begin_operation`` crearía una fila «sin confirmar» por cada corta que no declara nada, trampa de la T04). Una declarada que no existe, no está
+    calculada, se descartó, es la propia corta o cierra un ciclo se rechaza (``des.entity_supports_unknown``). La corta no deriva dependencias de ningún origen: solo lee las declaradas. Solo lee."""
+    record = ParameterStore(project).get(entity_key(code, PitParam.SUPPORTS), version=version.uid)
+    row = None if record is None else ("" if record.value is None else str(record.value))
+    found = tuple((target, _supportable(project, version, registry, name, code, target, entity_key(code, PitParam.SUPPORTS))[1])
+                  for target in entity_store._declared(row) if target not in released)
+    return found, record is not None
+
+
 # --- Preparar -------------------------------------------------------------------------------------------------------------
 
 
 def prepare_pit_units(project: StoreProject, request: PitRequest, version: Version, masks: access.MaskSet, *, code: str | None = None,
-                      supersedes: str | None = None) -> Generator[None, None, PreparedPit]:
+                      supersedes: str | None = None, released: Sequence[provenance.ReleasedSupport] = ()) -> Generator[None, None, PreparedPit]:
     """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan la corta ``request`` en la versión editable ``version`` con las
     máscaras al día ``masks`` (``store.masks_steps``; RF-015-06): el código y el nombre únicos (``code``: el de una entidad que ya está en su versión, que no
     choca consigo misma), la partida (``request.start``; en blanco, la última de la cadena) y la cadena, la capa de origen con sus rechazos (RF-018-04), los
@@ -941,7 +958,11 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
 
     T21b: los **bancos fijados** (:func:`_fixed_benches`), la **roseta** del perfil base y de los sectores (:func:`_roses`) y las **rampas** con su perfil de
     pista y su punto de inicio (:func:`_ramps`) se leen y se rechazan aquí, antes de calcular: los fijados con la capa y la roseta y las rampas tras los
-    parámetros."""
+    parámetros.
+
+    T25 (RF-015-15, RF-015-17): **lo que la persona declara** en ``supports`` (:func:`_declared_supports`) se lee y se comprueba (viva, calculada, ni ella ni un ciclo) y entra en las entradas con su
+    superficie (``supported_on``) y la tabla de su huella; ``released``: las entidades descartadas que la corta da por buenas sin su apoyo (se suman a las que ya soltaba ``supersedes``): lo declarado
+    en ellas no se pide ni se rechaza."""
     if masks.version_uid != version.uid:
         raise ValueError(f"las máscaras son de otra versión, no de {version.code}")
     chosen, registry = _identify(project, version, request, code)
@@ -1003,13 +1024,15 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
     sector_rows += [(segment, PitSectorParam.N_BERM, value, None) for segment, value in request.sector_n_berm]
     yield
     common = entity_store._common(project, version)
-    supported = ()
-    surfaces = () if support_name is None else (support_name,)
+    declared, has_row = _declared_supports(project, version, registry, name, chosen, entity_store._released_codes(project, supersedes, released))
+    supported = tuple(target for target, _found in declared)
+    surfaces = tuple(dict.fromkeys(([] if support_name is None else [support_name]) + [found.surface for _target, found in declared]))
     named_sectors = bool(request.sector_profiles or request.sector_roses or request.sector_n_berm)
     inputs = provenance.pit_inputs(request.layer, start_name, masks.uses(), surfaces, fixed=None if request.fixed is None else request.fixed.layer,
                                    noramp=None if request.noramp is None else request.noramp.layer, points=point_layers,
                                    limits=reader.limits_uid() if perimeter is not None or legal is not None else None,
                                    sectors=constraint_store.SECTOR_TABLE if named_sectors and constraint_store.SECTOR_TABLE in available_tables(project, version.uid) else None)
+    inputs = (*inputs, *(use for use in (Use(found.table, provenance.SUPPORT_FOOTPRINT_ROLE) for _target, found in declared) if use not in inputs))
     valued = [param.value for param in (PitParam.SUPPORT, PitParam.PROFILE, PitParam.TOP_LEVEL, PitParam.BOTTOM_LEVEL, PitParam.MAX_BENCHES,
                                         PitParam.MIN_FLOOR_WIDTH, PitParam.CLOSE_RADIUS, PitParam.AZ_WINDOW, PitParam.NORAMP_LAYER,
                                         PitParam.FIXED_LAYER, PitParam.ROSE, PitParam.RAMPS)
@@ -1017,7 +1040,7 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
     codes = tuple(item.code for item in profile_list)
     sector_keys = [pit_sector_key(chosen, param, segment) for segment, param, _value, _extra in sector_rows]
     begun = _start(project, provenance.PIT, name, version, masks, provenance.pit_settings(request, chosen), inputs,
-                   provenance.pit_params(chosen, valued=valued, profiles=codes, sectors=sector_keys, supports=bool(supported), roses=rose_counts,
+                   provenance.pit_params(chosen, valued=valued, profiles=codes, sectors=sector_keys, supports=has_row, roses=rose_counts,
                                          ramps=[(item.code, item.type == "zigzag") for item in ramps], road_profiles=[item.code for item in road_profile_list]),
                    supersedes)
     begun = replace(begun, carry=False)
@@ -1028,12 +1051,12 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
 
 
 def prepare_pit(project: StoreProject, request: PitRequest, *, version: str | None, masks: access.MaskSet | None = None, code: str | None = None,
-                supersedes: str | None = None) -> PreparedPit:
+                supersedes: str | None = None, released: Sequence[provenance.ReleasedSupport] = ()) -> PreparedPit:
     """La preparación entera de :func:`prepare_pit_units` de una vez (plan 018 §5.3.1; sin ceder el hilo): la :class:`PreparedPit`, con los mismos
     rechazos y sin escribir nada. ``version``: la versión activa (su uid o su código; ``VersionError`` ``core.version_required`` si no hay y
     ``core.version_not_editable`` si no se edita, RF-009-21); ``masks``: las de esa versión (al día; sin ellas se cargan, compilándolas antes si faltan)."""
     found = require_version(project, version, provenance.PIT)
-    work = prepare_pit_units(project, request, found, _loaded_masks(project, found, masks), code=code, supersedes=supersedes)
+    work = prepare_pit_units(project, request, found, _loaded_masks(project, found, masks), code=code, supersedes=supersedes, released=released)
     while True:
         try:
             next(work)
@@ -1203,12 +1226,29 @@ def other_designs_steps(job: PitJob, outcome: PitOutcome, names: Sequence[str], 
     return tuple(differing), tuple(found)
 
 
+def _without_dependents(project: StoreProject, version: Version, names: Sequence[str], own: str) -> tuple[str, ...]:
+    """Los ``names`` de otros diseños sin los que **dependen de lo que dejó la corta que se recalcula** (``own``: la operación que sustituye; T25; RF-015-16, RF-018-03): los que la consumen por cualquier
+    entrada —su partida, **lo que declaran en ``supports``** o la propia corta como otro diseño—, directamente o en cascada. Anotarlos como entrada la haría depender de lo que depende de ella (un
+    bucle que no se asienta: con otra corta que declara apoyarse en ella, cada recálculo dejaría obsoletas a las dos). Solo lee."""
+    with project.read() as conn:
+        written = [str(row[0]) for row in conn.execute("SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'out' AND item_kind = 'dataset'", (own,))]
+        later = {uid for uid, _type, _name in entity_store._dependents(conn, written, version.uid, exclude=(own,))}
+        kept = []
+        for name in names:
+            record = dataset_registry.get(conn, name, version_uid=version.uid)
+            if record is None or record.operation_uid not in later:
+                kept.append(name)
+    return tuple(kept)
+
+
 def compare_others(project: StoreProject, prepared: PreparedPit, outcome: PitOutcome, *, supersedes: str | None = None
                    ) -> Generator[Progress, None, PitOutcome]:
     """Los otros diseños de la versión de ``prepared`` (:func:`~design.road_store.other_designs`: los que no tienen a la partida como ancestro; ``supersedes``: la operación que se
     recalcula, que no cuenta) frente a su partida en la huella (:func:`other_designs_steps`, con el espesor mínimo de ``prepared.common``): devuelve ``outcome`` con ``other_designs`` y,
     tras sus avisos, el de cada uno que difiere. **Solo lee.** Sin otros diseños, el mismo ``outcome``."""
     names = other_designs(project, prepared.version, prepared.start_surface, own=supersedes)
+    if supersedes is not None and names:
+        names = _without_dependents(project, prepared.version, names, supersedes)
     if not names:
         return outcome
     thickness = _thickness(_project_number(prepared.common, VERIFY_MIN_THICKNESS))
@@ -1511,14 +1551,12 @@ def run_pit(project: StoreProject, request: PitRequest, *, version: str | None, 
     ``supersedes``— con lo que lee hoy y devuelve su ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama: calculan (:func:`compute_steps` con los otros diseños
     de la versión), escriben y completan la operación en una transacción (:func:`create_pit_steps` con el escritor reanudado; no escribe los parámetros, que ya están). El último paso lleva
     lo guardado (:class:`~.store.Stored`). **Un recálculo no confirma por la persona**: ``confirmed`` (lo confirmado al crear la que sustituye) se arrastra a la operación nueva y, si la
-    media nueva pasa de ello, ``des.pit_ramp_mean_over`` al avanzar, antes de escribir. ``released`` (apoyo retirado) es de la T25: no vacío es ``NotImplementedError``."""
-    if released:
-        raise NotImplementedError("dar por buena una corta sin una entidad en que se apoyaba lo hace la T25 de la 018")
-    prepared = prepare_pit(project, request, version=version, masks=masks, code=code, supersedes=supersedes)
+    media nueva pasa de ello, ``des.pit_ramp_mean_over`` al avanzar, antes de escribir. ``released`` (T25; RF-015-17, A7, P-6: **apoyo retirado**; :func:`~.entity_store.release_support`): la operación nueva **no lleva** las entradas de esas entidades descartadas (ni su superficie ni la tabla de su huella), anota el motivo y el decisor en sus ajustes (``supports_released``, acumulados con los de la que sustituye) y el gancho de las dependencias no vuelve a registrarlas; su superficie, su huella y sus datos no cambian."""
+    prepared = prepare_pit(project, request, version=version, masks=masks, code=code, supersedes=supersedes, released=released)
     start = prepared.start
     if confirmed:
         start = replace(start, settings={**start.settings, provenance.PIT_RAMP_CONFIRMED: [item.settings() for item in confirmed]})
-    handle = start.begin(project)
+    handle = start.with_released(released).begin(project)
     return handle, _pit_run(project, handle, prepared, tuple(confirmed), supersedes, budget_s)
 
 

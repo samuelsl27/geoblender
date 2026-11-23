@@ -264,6 +264,7 @@ from .model import (
 from .params import (
     PLATFORM_PARAMS,
     BodyParam,
+    PitParam,
     PitSectorParam,
     PlatformParam,
     RoadParam,
@@ -1514,7 +1515,7 @@ def _ruled(kind: str, param: str) -> bool:
 def _is_declared_supports(kind: str, param: str) -> bool:
     """Si ``param`` son las **dependencias que declara a mano la persona** (``supports``: códigos separados por comas) de una pista (spec 017, T49; hallazgo T47-2). Solo la pista: las demás
     entidades, sin cambio (su ciclo lo rechaza el cálculo, como siempre)."""
-    return kind == EntityKind.ROAD and param == RoadParam.SUPPORTS.value
+    return kind in (EntityKind.ROAD, EntityKind.PIT) and param == RoadParam.SUPPORTS.value
 
 
 def _is_point_reference(kind: str, param: str) -> bool:
@@ -4382,6 +4383,13 @@ def release_support(project: StoreProject, version: Version | str, target: str, 
     if op_type == provenance.PLATFORM:
         code = provenance.platform_code(settings)
         support = platform_parameters(project, found, code).get(PlatformParam.SUPPORT.value)
+        for item in picked:
+            if item.code is not None and entities.ref_code(support if isinstance(support, str) else None) == item.code:
+                raise DesignError("des.entity_release_support_param", obj=obj, field="superficie de apoyo",
+                                  value=support, entity=name, target=item.name)
+    elif op_type == provenance.PIT:  # la corta (spec 018, T25; RF-015-17, P-5): la superficie de apoyo es la única que toma de otra entidad (lo que declara en ``supports`` sí se suelta)
+        code = provenance.supported_code(settings)
+        support = entity_parameters(project, code, version=found).get(PitParam.SUPPORT.value)
         for item in picked:
             if item.code is not None and entities.ref_code(support if isinstance(support, str) else None) == item.code:
                 raise DesignError("des.entity_release_support_param", obj=obj, field="superficie de apoyo",
