@@ -128,6 +128,8 @@ LOADERS: tuple[tuple[str, str], ...] = (
     (design_provenance.BODY_THICKNESS_GRID, "Body thickness"),
     (design_provenance.BODY_BASE_GRID, "Body base"),
     (design_provenance.ACCESS_GRID, "Reachable by the roads"),
+    (design_provenance.PIT_POLYLINES_TABLE, "Pit TIN"),
+    (design_provenance.PIT_BENCHES_TABLE, "Pit excavation solid"),
 )
 """Las familias de datos que se cargan (``design.provenance``) con el ``msgid`` de su nombre en el
 nombre generado de sus objetos: las tres rejillas de un diseño de la 013, el recinto excavable de
@@ -137,7 +139,8 @@ transición con el terreno no afectado (T28), la superficie ajustada a un límit
 apoyados: la base, el espesor y el terreno sin acopios de una detección (por material, el terreno una por
 detección) y el espesor y la base de un cuerpo; solo tienen dato donde hay acopio o cuerpo (sin vértice en las
 demás celdas) y, de la 017 (T31), lo alcanzable de una accesibilidad (``des_acc_``: una zona, dibujada sobre su
-superficie, :func:`load_access_grid`). La superficie con que se detectó (``des_stp_``) y la de una entidad
+superficie, :func:`load_access_grid`) y, de la 018 (T30), el **TIN** (``des_pbl_``) y el **sólido de excavación** (``des_pbk_``) de una corta, vistas a petición
+con su aviso de triángulos (``bl.scene.pit_views``: su cargador y sus datos compañeros). La superficie con que se detectó (``des_stp_``) y la de una entidad
 (``des_psf_``) no tienen cargador propio: las dibuja el objeto de la entidad (``bl.scene.entity_views``)."""
 CLASS_ATTRIBUTE = "gb_class"
 """El atributo de cara con el código de su clase (``CellClass.code``: 0, 1 o 2)."""
@@ -345,7 +348,7 @@ def _check_references(project: object, raster: Raster, name: str) -> None:
 def loader_of(family: str) -> views.ViewLoader:
     """El cargador de los datos de la familia ``family`` de :data:`LOADERS`: el del recinto
     (:func:`load_area_grid`), el de la clasificación de una cantera (:func:`load_class_grid`), el de lo
-    alcanzable de una accesibilidad (:func:`load_access_grid`) o el de las rejillas de cotas de un diseño
+    alcanzable de una accesibilidad (:func:`load_access_grid`), los del TIN y el sólido de una corta (``bl.scene.pit_views``) o el de las rejillas de cotas de un diseño
     (:func:`load_design_grid`)."""
     if family == design_provenance.EXCAVATION_AREA_GRID:
         return load_area_grid
@@ -353,7 +356,20 @@ def loader_of(family: str) -> views.ViewLoader:
         return load_class_grid
     if family == design_provenance.ACCESS_GRID:
         return load_access_grid
+    if family in (design_provenance.PIT_POLYLINES_TABLE, design_provenance.PIT_BENCHES_TABLE):
+        from . import pit_views  # al registrar: pit_views importa este módulo
+
+        return pit_views.load_pit_tin if family == design_provenance.PIT_POLYLINES_TABLE else pit_views.load_pit_solid
     return load_design_grid
+
+
+def _companions_of(family: str) -> views.CompanionsReader | None:
+    """Los datos compañeros que declara el cargador de ``family`` (el TIN y el sólido de una corta; los demás, ninguno)."""
+    if family not in (design_provenance.PIT_POLYLINES_TABLE, design_provenance.PIT_BENCHES_TABLE):
+        return None
+    from . import pit_views  # al registrar: pit_views importa este módulo
+
+    return pit_views.COMPANIONS[family]
 
 
 def register() -> None:
@@ -361,7 +377,7 @@ def register() -> None:
     current = views.loaders()
     for family, label in LOADERS:
         if prefix(family) not in current:
-            views.register_loader(prefix(family), KIND, label, loader_of(family))
+            views.register_loader(prefix(family), KIND, label, loader_of(family), companions=_companions_of(family))
 
 
 def unregister() -> None:

@@ -4086,6 +4086,17 @@ CATALOG: tuple[Message, ...] = (
         "se descartó la accesibilidad «{name}»",
         "note",
     ),
+    # T30 (RF-018-30, RNF-018-09): el TIN y el sólido de una corta como vistas; el aviso de triángulos sale antes de crear nada.
+    Message(
+        "des.pit_view_large",
+        "Pit «{name}»: «{what}» would have about {value} triangles, over the limit of {limit} for a view; nothing is created until you confirm it.",
+        "Corta «{name}»: «{what}» tendría unos {value} triángulos, más del límite de {limit} de una vista; no se crea nada hasta que lo confirme.",
+    ),
+    Message(
+        "des.pit_view_empty",
+        "Pit «{name}»: «{what}» has nothing to show: {reason}.",
+        "Corta «{name}»: «{what}» no tiene nada que mostrar: {reason}.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

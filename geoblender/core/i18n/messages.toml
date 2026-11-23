@@ -11784,3 +11784,21 @@ es = "Inicio de «{ramp}»"
 
 ["Ramp «{code}»: {length} m · {gradient} % mean"]
 es = "Rampa «{code}»: {length} m · {gradient} % de media"
+
+["Pit TIN"]
+es = "TIN de la corta"
+
+["Pit excavation solid"]
+es = "Sólido de excavación de la corta"
+
+["The skyline of «{name}» crosses a bench line and could not be used as edges of the TIN: it is drawn without it"]
+es = "La línea de cielo de «{name}» cruza una línea de banco y no se pudo usar como aristas del TIN: se dibuja sin ella"
+
+["its lines do not enclose any area"]
+es = "sus líneas no encierran ninguna superficie"
+
+["the pit does not lower the start surface anywhere"]
+es = "la corta no baja la superficie de partida en ningún sitio"
+
+["the cells it lowers are too few to make a surface"]
+es = "las celdas que baja son muy pocas para hacer una superficie"

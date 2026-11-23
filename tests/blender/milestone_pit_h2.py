@@ -731,6 +731,7 @@ class PitH2Test(unittest.TestCase):
         la corta sale a superficie en bancos distintos por lado y la distancia mínima de la línea de cielo al límite legal (con su 2 m hacia dentro) es la de la
         cuenta a mano."""
         calculation, uid = self.create(self.request("Corta en ladera", start="inclinado"))
+        self.made["slope_uid"] = uid
         found = calculation.outcome
         self.assertTrue(found.skyline)
         for line in found.skyline:
@@ -745,6 +746,69 @@ class PitH2Test(unittest.TestCase):
         self.assertLess(west, 150.0)
         self.assertGreater(east, 250.0)
         REPORT.append(f"CE-018-07: línea de cielo de x = {west:.1f} a {east:.1f} m con la cota del terreno a ≤ 10⁻⁶ m; distancia al límite legal {legal:.2f} m")
+
+    def test_ha_the_tin_and_the_solid_of_the_pit_in_the_view_with_the_project(self) -> None:
+        """T30, RF-018-30, RNF-018-09, ADR-0005: con la corta en ladera ya creada, el TIN (``des_pbl_`` con su línea de cielo ``des_psk_``) y el sólido de excavación
+        (``des_pbk_``: entre la partida y la superficie de la corta) se cargan como vistas regenerables **sin escribir nada** en el proyecto: el TIN tiene cada banco a su cota
+        y coordenadas locales; el sólido es una malla de volumen positivo que ronda el de corte de la rejilla (la malla va por centros de celda); con un límite de triángulos
+        pequeño salen ``des.pit_view_large`` y ninguna malla."""
+        import bpy
+
+        pit_views = _module("bl.scene.pit_views")
+        views = _module("bl.scene.views")
+        registry = _module("core.datasets.registry")
+        mesh_module = _module("bl.scene.mesh")
+        name = "Corta en ladera"
+        before = self.counts()
+
+        def request(family: str) -> Any:
+            dataset = self.dprov.dataset_name(family, name)
+            with self.project.read() as conn:
+                record = registry.get(conn, dataset, version_uid=self.v01.uid)
+            self.assertIsNotNone(record, dataset)
+            return views.ViewRequest(self.project, record, f"Vista {dataset}", 0)
+
+        def load(loader: Any, asked: Any) -> Any:
+            steps = loader(asked)
+            while True:
+                try:
+                    next(steps)
+                except StopIteration as done:
+                    return done.value
+
+        meshes = len(bpy.data.meshes)
+        tin = load(pit_views.load_pit_tin, request(self.dprov.PIT_POLYLINES_TABLE))
+        (tin_obj,) = tin.objects
+        triangles = len(tin_obj.data.polygons)
+        local = mesh_module.mesh_vertices_local(tin_obj.data).astype(np.float64)
+        self.assertGreater(triangles, 100)
+        self.assertLess(float(np.abs(local[:, :2]).max()), 1000.0, "locales, no absolutas")
+        table = self.rows("SELECT locator FROM gb_dataset WHERE name = ? AND status = 'current'", self.dprov.dataset_name(self.dprov.PIT_POLYLINES_TABLE, name))[0][0]
+        levels = {round(float(row[0]), 3) for row in self.rows(f'SELECT z_m FROM "{table}"')}
+        self.assertTrue(levels, "la corta tiene polilíneas")
+        found = {round(float(value) + float(self.project.origin.z0), 3) for value in local[:, 2]}
+        for level in levels:
+            self.assertIn(level, found, "cada banco tiene vértices a su cota")
+        solid = load(pit_views.load_pit_solid, request(self.dprov.PIT_BENCHES_TABLE))
+        (solid_obj,) = solid.objects
+        faces = mesh_module.mesh_triangles(solid_obj.data)
+        points = mesh_module.mesh_vertices_local(solid_obj.data).astype(np.float64)
+        a, b, c = (points[faces[:, index]] for index in range(3))
+        volume = float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0)
+        cut = self.figures_of(self.made["slope_uid"])["des.pit_cut_m3"]
+        self.assertGreater(volume, 0.0)
+        self.assertLess(abs(volume / cut - 1.0), 0.1, "el volumen de la malla (centros de celda) ronda el de corte")
+        self.assertEqual(self.counts(), before, "las vistas no escriben nada")
+        for loader, family in ((pit_views.tin_loader(10), self.dprov.PIT_POLYLINES_TABLE), (pit_views.solid_loader(10), self.dprov.PIT_BENCHES_TABLE)):
+            with self.assertRaises(self.messages.DesignError) as caught:
+                load(loader, request(family))
+            self.assertEqual(caught.exception.code, "des.pit_view_large")
+        for obj in (tin_obj, solid_obj):
+            mesh = obj.data
+            bpy.data.objects.remove(obj)
+            bpy.data.meshes.remove(mesh)
+        self.assertEqual(len(bpy.data.meshes), meshes)
+        REPORT.append(f"T30: TIN de {triangles:,} triángulos y sólido de {volume:,.0f} m³ (malla) frente a {cut:,.0f} m³ de corte (rejilla)")
 
     # --- i: restricciones, banco fijado y hallazgos -------------------------------------------------------------------------
 
