@@ -372,12 +372,21 @@ def _companions_of(family: str) -> views.CompanionsReader | None:
     return pit_views.COMPANIONS[family]
 
 
+def _own_title_of(family: str) -> views.OwnTitleReader | None:
+    """El nombre propio que declara el cargador de ``family`` (el TIN y el sólido de una corta se llaman como la corta; los demás, ninguno)."""
+    if family not in (design_provenance.PIT_POLYLINES_TABLE, design_provenance.PIT_BENCHES_TABLE):
+        return None
+    from . import pit_views  # al registrar: pit_views importa este módulo
+
+    return pit_views.OWN_TITLES[family]
+
+
 def register() -> None:
     """Registra los cargadores de :data:`LOADERS` que aún no tengan uno; idempotente."""
     current = views.loaders()
     for family, label in LOADERS:
         if prefix(family) not in current:
-            views.register_loader(prefix(family), KIND, label, loader_of(family), companions=_companions_of(family))
+            views.register_loader(prefix(family), KIND, label, loader_of(family), companions=_companions_of(family), own_title=_own_title_of(family))
 
 
 def unregister() -> None:

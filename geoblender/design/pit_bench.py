@@ -254,10 +254,13 @@ def _ccw(ring: np.ndarray) -> np.ndarray:
     return ring[::-1] if _area(ring) < 0.0 else ring
 
 
-def _fixed_error(job: PitJob, fixed: _Fixed, other: object, place: str) -> DesignError:
+def _fixed_error(job: PitJob, fixed: _Fixed, other: object, point: np.ndarray, origin: np.ndarray, note: str = "") -> DesignError:
+    """``des.pit_fixed_cross`` en ``point`` (local; ``origin`` lo lleva a absoluto): las dos coordenadas van como números (``x``, ``y``, al decímetro), para que el mensaje las escriba con el formato
+    de las demás cifras (coma decimal y espacio de miles en español; T40e, H3-7), y ``note`` es lo que sigue al lugar."""
     name = job.request.name
+    x, y = point + origin
     return DesignError(PitCode.FIXED_CROSS.value, obj=name, field=fixed.item.name, value=fixed.label, name=name, bench=fixed.label,
-                       other=other, place=place)
+                       other=other, x=round(float(x), 1), y=round(float(y), 1), note=note)
 
 
 def _level_error(job: PitJob, item: FixedBench, value: float, bench: object, level: float) -> DesignError:
@@ -300,7 +303,7 @@ def _resolve_fixed(job: PitJob, origin: np.ndarray, *, up: bool, n: int) -> list
         for second in found[i + 1:]:
             point = _crossing(first.ring, second.ring)
             if point is not None:
-                raise _fixed_error(job, first, second.label, _place(point, origin))
+                raise _fixed_error(job, first, second.label, point, origin)
     return found
 
 
@@ -309,7 +312,7 @@ def _unused(job: PitJob, fixed: list[_Fixed], origin: np.ndarray) -> None:
     for item in fixed:
         if not item.used:
             above = item.bench - 1 if item.bench is not None else "anterior"
-            raise _fixed_error(job, item, above, _place(item.ring[0], origin) + " (la corta no llega a ese banco)")
+            raise _fixed_error(job, item, above, item.ring[0], origin, " (la corta no llega a ese banco)")
 
 
 def _prepared(job: PitJob, origin: np.ndarray, n: int = 1) -> list[_Source]:
@@ -448,7 +451,7 @@ def _ascend_units(job: PitJob) -> Generator[None, None, Benches]:
                     if point is None:
                         point = _near(mine.ring, crest, _CLEAR_TOL_M)
                     if point is not None or _inside(mine.ring[0], crest):
-                        raise _fixed_error(job, mine, mine.bench - 1, _place(mine.ring[0] if point is None else point, origin))
+                        raise _fixed_error(job, mine, mine.bench - 1, mine.ring[0] if point is None else point, origin)
                 active = [ring for ring in active if not _touch(ring.points, mine.ring)]
                 active.append(_Ring(mine.ring, "", params.simplify_m, mine.item))
                 mine.used = True
@@ -678,7 +681,7 @@ def _descend_limit(job: PitJob, source: PitSource, origin: np.ndarray, notices: 
             if face.result.holes:
                 notices.append(Notice(PitCode.HOLES.value, {"name": name, "bench": index, "count": len(face.result.holes)}))
             if item.fixed is not None and not mine:
-                raise _fixed_error(job, item.fixed, index + 1, _centroid_place(item.points, origin))
+                raise _fixed_error(job, item.fixed, index + 1, item.points.mean(axis=0), origin)
             if mine:
                 used.append(item)
                 feet.extend(mine)
@@ -744,9 +747,9 @@ def _use_fixed(job: PitJob, mine: _Fixed, carried: list[_Crest], feet: list[tupl
         if point is None:
             point = _near(mine.ring, foot, _CLEAR_TOL_M)
         if point is not None:
-            raise _fixed_error(job, mine, index, _place(point, origin))
+            raise _fixed_error(job, mine, index, point, origin)
     if not any(_inside(mine.ring[0], foot) for foot, _label_ in feet):
-        raise _fixed_error(job, mine, index, _place(mine.ring[0], origin))
+        raise _fixed_error(job, mine, index, mine.ring[0], origin)
     mine.used = True
     kept = [crest for crest in carried if crest not in hit]
     kept.append(_Crest(mine.ring, "", np.full(len(mine.ring), foot_z), job.params.simplify_m, mine))

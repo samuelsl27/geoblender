@@ -122,6 +122,19 @@ class BeforeCalculatingTest(unittest.TestCase):
         self.assertEqual((start.ramp, start.name, start.x, start.y), ("rampa", "Inicio A", base[0] + 50.0, base[1] + 60.0))
         self.assertEqual(pit_preview.job_parts(bra.spiral_job())["starts"], ())
 
+    def test_d2_a_ramp_that_starts_from_the_floor_is_said_so_and_not_counted_as_zero_starts(self) -> None:
+        """RF-018-32, RF-018-15, T40e (observación del H3): «inicios de rampa: 0» no dice que la rampa parte del fondo (sin punto): la vista previa cuenta las rampas que parten de la línea de un banco
+        (el fondo es el banco 0) y lo dice con las palabras de la corta; las que parten de un punto, no."""
+        base = pd.absolute(np.array([[0.0, 0.0]]))[0]
+        at_point = pit_model.RampStart("rampa", point=(float(base[0] + 50.0), float(base[1] + 60.0)), layer="gis_fea_inicios", name="Inicio A")
+        self.assertEqual((pit_preview.ramps_from_bench(bra.spiral_job()), pit_preview.ramps_from_bench(bra.spiral_job(at_point))), (1, 0))
+        values = {"entity": "Corta 1", "code": "PIT-001", "version": "V01", "surface": "terreno", "sources": 1, "arrows": 0, "starts": 0, "on_bench": 1, "noramp": 0, "fixed": 0}
+        text = preview.Notice("des.preview_pit_before", values).text("es")
+        self.assertIn("inicios de rampa en un punto: 0", text)
+        self.assertIn("rampas que parten de la línea de un banco (el fondo es el banco 0): 1", text)
+        self.assertNotIn("?", text)
+        self.assertIn("ramp starts at a point: 0, ramps that start from a bench line (the floor is bench 0): 1", preview.Notice("des.preview_pit_before", values).text("en"))
+
 
 class AfterCalculatingTest(unittest.TestCase):
     """RF-018-32: lo que se dibuja tras calcular sale de lo que dejó «Calcular»."""

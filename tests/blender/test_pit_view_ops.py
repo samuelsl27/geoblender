@@ -41,8 +41,8 @@ LAYER_TYPE = "des.pit_layer"
 PIT_NAME = "Corta de la vista"
 SKY_KEYS = ("des.pit_sky_parts", "des.pit_sky_len_m", "des.pit_sky_area_m2", "des.pit_sky_z_min_m", "des.pit_sky_z_max_m")
 HIDDEN = ("in_steps", "confirm_large", "confirm")
-SKYLINE_PROPERTIES = frozenset({"pit", "update_layer"})
-SURFACE_PROPERTIES = frozenset({"pit", "what", "filepath", "overwrite"})
+SKYLINE_PROPERTIES = frozenset({"pit", "pit_pick", "update_layer"})
+SURFACE_PROPERTIES = frozenset({"pit", "pit_pick", "what", "filepath", "overwrite"})
 
 
 class PitViewOpsTest(pit_ops.PitOpsTest):
@@ -76,6 +76,10 @@ class PitViewOpsTest(pit_ops.PitOpsTest):
         return self.commands.registered_class(SURFACE)
 
     # --- Ayudas -------------------------------------------------------------------------------
+
+    def pit_code(self) -> str:
+        """El código de la corta de la vista (el que ofrece la lista del diálogo)."""
+        return str(h2._module("design.pit_view").pit_datasets(self.project, self.v01.uid, PIT_NAME).code)
 
     def pit_operation(self) -> str:
         ((uid,),) = self.rows("SELECT uid FROM gb_operation WHERE op_type = 'des.pit' AND status = 'done' ORDER BY rowid DESC LIMIT 1")
@@ -211,6 +215,46 @@ class PitViewOpsTest(pit_ops.PitOpsTest):
                 self.assertGreater(len(shown[0].data.polygons), 10)
                 self.assertTrue(any("Cargado" in text or "vista" in text.lower() for text in reports), reports)
         self.assertEqual(self.counts(), counts, "las vistas no escriben nada")
+        self.unload()
+
+    def test_vd2_the_object_of_a_view_is_named_after_the_pit_not_after_its_data(self) -> None:
+        """RF-018-30, T40e (H3-6): el objeto del TIN y el del sólido se llaman como la corta («Corta de la vista»), no con el nombre de su dato («corta_de_la_vista»), al cargarlos y al refrescar la
+        marca; un título que da la persona manda."""
+        live = h2._module("bl.scene.live")
+        for what, family in (("TIN", self.dprov.PIT_POLYLINES_TABLE), ("SOLID", self.dprov.PIT_BENCHES_TABLE)):
+            with self.subTest(vista=what):
+                self.assertEqual(self.surface_run(what=what)[0], {"FINISHED"})
+                uid = self.record(family).uid
+                (shown,) = [obj for obj in bpy.data.objects if uid in self.views.loaded_uids([obj])]
+                self.assertIn(f"{PIT_NAME} · V01", shown.name)
+                self.assertNotIn("corta_de_la_vista", shown.name)
+                live.show_now(self.project)
+                self.assertIn(f"{PIT_NAME} · V01", shown.name, "al refrescar, el mismo nombre")
+        self.unload()
+
+    def test_vd3_the_dialog_offers_the_calculated_pits_in_a_list(self) -> None:
+        """RF-018-34, T40e (H3-6): «Línea de cielo…» y «Superficie y sólido…» piden la corta en una **lista** de las cortas calculadas de la versión activa (con su nombre y su código), no en un campo de
+        texto vacío; la del objeto seleccionado se propone elegida y la elegida llega a la orden; lo tecleado (desde un guion) manda sobre la lista."""
+        self.des_pit.refresh_pit_list(self.project)
+        offered = self.des_pit.pit_pick_items(None, None)
+        code = self.pit_code()
+        self.assertIn((code, f"{PIT_NAME} ({code})"), [(identifier, label) for identifier, label, _about in offered])
+        for cls, title in ((self.skyline, "Línea de cielo…"), (self.surface, "Superficie y sólido…")):
+            with self.subTest(orden=cls.bl_idname):
+                dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+                context = SimpleNamespace(window=platform_ops.window(), selected_objects=(), active_object=None, window_manager=SimpleNamespace(invoke_props_dialog=dialog))
+                fake = operator_self(cls, pit="", pit_pick=code, update_layer=False, what="TIN", filepath="", overwrite=False, confirm=False, confirm_large=False, in_steps=False)
+                with mock.patch.object(self.des_pit, "_entity_or_selected", return_value=code):
+                    self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+                self.assertEqual(dialog.call_args.kwargs["title"], title)
+                self.assertEqual((fake.pit, fake.pit_pick), ("", code), "la del objeto seleccionado, elegida en la lista")
+                shown = draw(cls, bpy.context, pit="", pit_pick=code, update_layer=False, what="TIN", filepath="", overwrite=False)
+                self.assertEqual([item.target for item in shown.items if item.target.startswith("pit")], ["pit_pick"], "la lista, no el campo de texto")
+        self.assertEqual(self.des_pit._chosen_pit(SimpleNamespace(pit="", pit_pick=code)), code)
+        self.assertEqual(self.des_pit._chosen_pit(SimpleNamespace(pit="Otra", pit_pick=code)), "Otra")
+        self.assertEqual(self.des_pit._chosen_pit(SimpleNamespace(pit="", pit_pick="none")), "")
+        result, reports = self.surface_run(pit="", what="TIN", pit_pick=code)
+        self.assertEqual(result, {"FINISHED"}, reports)
         self.unload()
 
     # --- e: el aviso de triángulos --------------------------------------------------------------

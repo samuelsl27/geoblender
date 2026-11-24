@@ -2301,9 +2301,9 @@ CATALOG: tuple[Message, ...] = (
     # La vista previa de la corta por bancos (spec 018, T29; RF-018-32): lo que dice antes de calcular, tras calcular y de una corta de la versión.
     Message(
         "des.preview_pit_before",
-        "Preview of «{entity}» ({code}) in {version}: pit on «{surface}»; polygons: {sources}, face direction arrows: {arrows}, ramp starts: {starts}, no-ramp zones: {noramp}, fixed benches: {fixed}; "
+        "Preview of «{entity}» ({code}) in {version}: pit on «{surface}»; polygons: {sources}, face direction arrows: {arrows}, ramp starts at a point: {starts}, ramps that start from a bench line (the floor is bench 0): {on_bench}, no-ramp zones: {noramp}, fixed benches: {fixed}; "
         "nothing is calculated or written.",
-        "Vista previa de «{entity}» ({code}) en {version}: corta sobre «{surface}»; polígonos: {sources}, flechas de la dirección de la cara: {arrows}, inicios de rampa: {starts}, zonas sin rampa: "
+        "Vista previa de «{entity}» ({code}) en {version}: corta sobre «{surface}»; polígonos: {sources}, flechas de la dirección de la cara: {arrows}, inicios de rampa en un punto: {starts}, rampas que parten de la línea de un banco (el fondo es el banco 0): {on_bench}, zonas sin rampa: "
         "{noramp}, bancos fijados: {fixed}; no se calcula ni se escribe nada.",
         "note",
     ),
@@ -3872,8 +3872,8 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.pit_fixed_cross",
-        "The fixed benches {bench} and {other} cross or leave no room near {place} (they coincide or are closer than 1 mm); the line of the user is not moved: separate it from the neighbouring bench by at least the berm, or fix another bench.",
-        "Los bancos fijados {bench} y {other} se cortan o no dejan sitio cerca de {place} (coinciden o están a menos de 1 mm); la línea del usuario no se mueve: sepárela del banco vecino al menos la berma o fije otro banco.",
+        "The fixed benches {bench} and {other} cross or leave no room near x = {x}, y = {y}{note} (they coincide or are closer than 1 mm); the line of the user is not moved: separate it from the neighbouring bench by at least the berm, or fix another bench.",
+        "Los bancos fijados {bench} y {other} se cortan o no dejan sitio cerca de x = {x}, y = {y}{note} (coinciden o están a menos de 1 mm); la línea del usuario no se mueve: sepárela del banco vecino al menos la berma o fije otro banco.",
     ),
     Message(
         "des.pit_ramp_mean_over",

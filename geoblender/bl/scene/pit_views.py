@@ -378,4 +378,30 @@ def solid_companions(conn: Any, record: DatasetRecord) -> tuple[DatasetRecord, .
 
 
 COMPANIONS: dict[str, Callable[[Any, DatasetRecord], tuple[DatasetRecord, ...]]] = {TIN_FAMILY: tin_companions, SOLID_FAMILY: solid_companions}
+
+
+def _pit_title(role: str) -> views.OwnTitleReader:
+    """El lector del nombre propio de los datos de la corta con el papel ``role``: el nombre de la corta (el de hoy: «Corta E1») de la que sale el dato ``name`` de la versión ``version_uid``, si es el
+    vigente suyo (spec 018, T40e, H3-6); si no, ``""`` (el nombre del dato)."""
+
+    def title(project: Any, conn: Any, version_uid: str, name: str) -> str:
+        from ...design import pit_layer  # al usarlo: habilitar no lo carga (RNF-001-03; trae las máscaras)
+
+        version = versions_read.version(conn, version_uid) if version_uid else None
+        if version is None:
+            return ""
+        for head in pit_layer.pit_heads(project, conn, version):
+            try:
+                _table, found = pit_layer.pit_data(conn, head, version, role, "")
+            except (DesignError, ValueError):
+                continue
+            if found == name:
+                return head.name
+        return ""
+
+    return title
+
+
+OWN_TITLES: dict[str, views.OwnTitleReader] = {TIN_FAMILY: _pit_title(design_provenance.PIT_POLYLINES_ROLE), SOLID_FAMILY: _pit_title(design_provenance.PIT_BENCHES_ROLE)}
+"""El nombre propio de los objetos del TIN y del sólido de una corta (``views.OwnTitleReader``): el nombre de la corta, no el del dato."""
 """Los datos compañeros de cada vista por familia (``des_views.register`` se los da al cargador)."""

@@ -129,6 +129,7 @@ class _Choices:
     profiles: list[tuple[str, str, str]] = field(default_factory=list)
     roses: list[tuple[str, str, str]] = field(default_factory=list)
     ramps: list[tuple[str, str, str]] = field(default_factory=list)
+    pits: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 _CHOICES = _Choices()
@@ -142,6 +143,7 @@ def _fixed_choices() -> None:
     _CHOICES.profiles = [(_NONE, NOT_SHOWN, tr("There are no bench profiles in the project"))]
     _CHOICES.roses = [(_NONE, tr("No rose"), tr("The benches have the face of the bench profile"))]
     _CHOICES.ramps = []
+    _CHOICES.pits = [(_NONE, NOT_SHOWN, tr("There are no calculated pits in the active version"))]
 
 
 def _version_layers(project: Any, version_uid: str, prefix: str) -> list[str]:
@@ -185,6 +187,47 @@ def refresh_pit_choices(project: Any) -> None:
         _CHOICES.profiles = [(_NONE, tr("No base profile"), tr("Every sector has its own profile")), *((item.code, item.name, tr("Bench profile")) for item in profiles)]
     _CHOICES.roses = [*_CHOICES.roses, *((item.code, item.name, tr("Rose of design slopes")) for item in roses)]
     _CHOICES.ramps = [(item.code, item.name, tr("Ramp definition")) for item in ramps]
+
+
+def refresh_pit_list(project: Any) -> None:
+    """Vuelve a leer de ``project`` la lista de las cortas **calculadas** de la versión activa (su código y su nombre) que ofrecen «Línea de cielo…» y «Superficie y sólido…» (spec 018, T40e, H3-6);
+    sin versión activa o sin cortas, «—». Solo lee; si no se puede leer, el error sigue."""
+    from ...design import pit_layer  # al usarlo: habilitar no carga el cálculo
+
+    _CHOICES.pits = [(_NONE, NOT_SHOWN, tr("There are no calculated pits in the active version"))]
+    version = scene_versions.active()
+    if version is None:
+        return
+    with project.read() as conn:
+        heads = pit_layer.pit_heads(project, conn, version)
+    if heads:
+        _CHOICES.pits = [(head.code, f"{head.name} ({head.code})", tr("Pit of the active version")) for head in heads]
+
+
+def pit_pick_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las cortas calculadas de la versión activa (una lista viva del módulo); sin ninguna, «—»."""
+    if not _CHOICES.pits:
+        _fixed_choices()
+    return _CHOICES.pits
+
+
+def _chosen_pit(operator: Any) -> str:
+    """La corta que pide el diálogo: la tecleada en ``pit`` (desde un guion: su código o su nombre) o, sin ella, la de la lista; ``""`` si no hay ninguna (la del objeto seleccionado, si lo hay)."""
+    typed = str(getattr(operator, "pit", "")).strip()
+    picked = str(getattr(operator, "pit_pick", _NONE))
+    return typed or ("" if picked == _NONE else picked)
+
+
+def _propose_pit(operator: Any, context: Any) -> None:
+    """Prepara el diálogo de una orden de una corta: la lista de las cortas leída de nuevo y, si no se dio ninguna, la del objeto seleccionado en la vista como la elegida."""
+    try:
+        refresh_pit_list(SESSION.project)
+        if not str(operator.pit).strip():
+            selected = _entity_or_selected("", context)
+            if selected in {item[0] for item in _CHOICES.pits}:
+                operator.pit_pick = selected
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.debug("No se pudo leer la lista de cortas", exc_info=True)
 
 
 def pit_layer_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
@@ -1580,7 +1623,9 @@ class GEOBLENDER_OT_des_pit_skyline(_EntitySteps, DesignCommandAware, Provenance
     provenance_op_type = provenance.PIT_LAYER
 
     pit: StringProperty(  # type: ignore[valid-type]
-        name="Pit", description="Code or name of the pit of the active version (empty: the one of the object selected in the 3D view)", options=_FIELD)
+        name="Pit", description="Code or name of the pit of the active version (empty: the one chosen in the list or, without it, the one of the object selected in the 3D view)", options=_FIELD)
+    pit_pick: EnumProperty(  # type: ignore[valid-type]
+        name="Pit", description="Pit of the active version, from the calculated ones", items=pit_pick_items, options=_FIELD)
     update_layer: BoolProperty(  # type: ignore[valid-type]
         name="Bring the layer up to date", description="If the layer of the skyline for QGIS is behind the pits of the version, bring it up to date (it is the only thing this command writes)", default=True,
         options=_FIELD)
@@ -1589,17 +1634,13 @@ class GEOBLENDER_OT_des_pit_skyline(_EntitySteps, DesignCommandAware, Provenance
     def invoke(self, context: Any, event: Any) -> set[str]:
         """El diálogo de la corta y de poner al día la capa; Intro la muestra. La corta del objeto seleccionado, si lo hay, se propone."""
         self.in_steps = getattr(context, "window", None) is not None
-        if not self.pit.strip():
-            try:
-                self.pit = _entity_or_selected("", context)
-            except (GeoblenderError, sqlite3.Error, OSError, ValueError):
-                LOGGER.debug("No se pudo leer la corta seleccionada", exc_info=True)
+        _propose_pit(self, context)
         return context.window_manager.invoke_props_dialog(self, width=DIALOG_WIDTH, translate=False, title=tr("Skyline…"), confirm_text=tr("Show"))
 
     def draw(self, context: Any) -> None:
         layout = self.layout
         layout.use_property_split = True
-        layout.prop(self, "pit", text=tr("Pit"), translate=False)
+        layout.prop(self, "pit_pick", text=tr("Pit"), translate=False)
         layout.prop(self, "update_layer", text=tr("Bring the layer up to date"), translate=False)
 
     def execute(self, context: Any) -> set[str]:
@@ -1614,7 +1655,7 @@ class GEOBLENDER_OT_des_pit_skyline(_EntitySteps, DesignCommandAware, Provenance
             return {"CANCELLED"}
         project, version = SESSION.project, scene_versions.active_version() or ""
         try:
-            shown = pit_view.skyline_report(project, version, _pit_of(self.pit, context))
+            shown = pit_view.skyline_report(project, version, _pit_of(_chosen_pit(self), context))
         except (GeoblenderError, sqlite3.Error, OSError, ValueError, TypeError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
@@ -1654,7 +1695,9 @@ class GEOBLENDER_OT_des_pit_surface(_EntitySteps, DesignCommand, _StepsModal, bp
     bl_options = {"REGISTER"}
 
     pit: StringProperty(  # type: ignore[valid-type]
-        name="Pit", description="Code or name of the pit of the active version (empty: the one of the object selected in the 3D view)", options=_FIELD)
+        name="Pit", description="Code or name of the pit of the active version (empty: the one chosen in the list or, without it, the one of the object selected in the 3D view)", options=_FIELD)
+    pit_pick: EnumProperty(  # type: ignore[valid-type]
+        name="Pit", description="Pit of the active version, from the calculated ones", items=pit_pick_items, options=_FIELD)
     what: EnumProperty(  # type: ignore[valid-type]
         name="What", description="The TIN or the solid of the pit as a view, or its surface to GeoTIFF or its findings to CSV", items=SURFACE_ITEMS, default="TIN", options=_FIELD)
     filepath: StringProperty(  # type: ignore[valid-type]
@@ -1676,17 +1719,13 @@ class GEOBLENDER_OT_des_pit_surface(_EntitySteps, DesignCommand, _StepsModal, bp
             self.overwrite = True
             return context.window_manager.invoke_confirm(self, event, title=tr("Replace the file"), confirm_text=tr("Replace"), translate=False,
                                                          message=tr("«{file}» already exists: replace it?", file=Path(self.filepath).name))
-        if not self.pit.strip():
-            try:
-                self.pit = _entity_or_selected("", context)
-            except (GeoblenderError, sqlite3.Error, OSError, ValueError):
-                LOGGER.debug("No se pudo leer la corta seleccionada", exc_info=True)
+        _propose_pit(self, context)
         return context.window_manager.invoke_props_dialog(self, width=DIALOG_WIDTH, translate=False, title=tr("Surface and solid…"), confirm_text=tr("Accept"))
 
     def draw(self, context: Any) -> None:
         layout = self.layout
         layout.use_property_split = True
-        layout.prop(self, "pit", text=tr("Pit"), translate=False)
+        layout.prop(self, "pit_pick", text=tr("Pit"), translate=False)
         layout.prop(self, "what", text=tr("What"), translate=False)
         if self.what in _SURFACE_FILES:
             layout.prop(self, "filepath", text=tr("File"), translate=False)
@@ -1707,7 +1746,7 @@ class GEOBLENDER_OT_des_pit_surface(_EntitySteps, DesignCommand, _StepsModal, bp
         try:
             if not version:
                 raise ValueError(tr("There is no active version: make the version of the pit the active one first"))
-            found = pit_view.pit_datasets(project, version, _pit_of(self.pit, context))
+            found = pit_view.pit_datasets(project, version, _pit_of(_chosen_pit(self), context))
             if self.what in ("TIN", "SOLID"):
                 return self._view(context, project, found)
             return self._export(context, project, found)
@@ -1715,7 +1754,7 @@ class GEOBLENDER_OT_des_pit_surface(_EntitySteps, DesignCommand, _StepsModal, bp
             interactive = self.in_steps and getattr(context, "window", None) is not None
             if exc.code == "gis.export_target_exists" and interactive:
                 self.report({"WARNING"}, error_text(exc))
-                _confirm_later({"pit": self.pit, "what": self.what, "filepath": self.filepath}, idname=SURFACE)
+                _confirm_later({"pit": _chosen_pit(self), "what": self.what, "filepath": self.filepath}, idname=SURFACE)
             else:
                 self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
@@ -1756,7 +1795,7 @@ class GEOBLENDER_OT_des_pit_surface(_EntitySteps, DesignCommand, _StepsModal, bp
             return {"FINISHED"}
         if large is not None and not self.confirm_large and self.in_steps and getattr(bpy.context, "window", None) is not None:
             self._report({"WARNING"}, design_error_text(large))
-            _confirm_later({"pit": self.pit or self._found.code, "what": self.what, "confirm_large": True}, idname=SURFACE)
+            _confirm_later({"pit": _chosen_pit(self) or self._found.code, "what": self.what, "confirm_large": True}, idname=SURFACE)
             return {"FINISHED"}  # no se ha creado nada: la pregunta sigue
         for text in outcome.errors:
             self._report({"ERROR"}, text)

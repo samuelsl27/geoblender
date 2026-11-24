@@ -54,7 +54,7 @@ class PitPreviewTest(unittest.TestCase):
         cls.addClassCleanup(blender_ext.release)
         for name, module in (("entity", "bl.draw.entity"), ("pit", "bl.draw.pit"), ("constraints", "bl.draw.constraints"), ("dpreview", "design.preview"), ("switcher", "bl.ui.switcher"),
                              ("ps", "bl.scene.project_session"), ("scene_versions", "bl.scene.versions"), ("i18n", "core.i18n"), ("des_ops", "bl.ops.des"), ("entities", "design.entities"), ("access", "gis.masks.access"),
-                             ("model", "core.project.model"), ("pit_model", "design.pit_model"), ("messages", "design.messages")):
+                             ("model", "core.project.model"), ("pit_model", "design.pit_model"), ("messages", "design.messages"), ("panels", "bl.ui.des_panels")):
             setattr(cls, name, _module(module))
         cls.addClassCleanup(cls.entity.disable)
 
@@ -195,6 +195,37 @@ class PitPreviewTest(unittest.TestCase):
         self.assertTrue(any(text.startswith("Rampa «Espiral»: ") for text in names), names)
         self.assertLessEqual(len([text for text in names if text.startswith("Rampa «Espiral»")]), dp.PIT_FINDING_LABELS)
         self.assertLessEqual(len(built.summary), 6)
+
+    def test_b3_the_names_of_two_opposite_arrows_are_both_written(self) -> None:
+        """RF-018-32, T40e (H3-8 de la T40): las flechas de una roseta de dos rangos (de 0° a 180° y de 180° a 360°) salen del mismo punto en sentidos opuestos y su nombre sale **junto a su punta**: el
+        del oeste termina en su punta (no empieza en ella y pisa el del este), así que **se escriben todos**; con el mismo ancho de texto, antes se saltaba el segundo."""
+        dp = self.dpreview
+        arrows = tuple(dp.PitArrow(WEST + 100.0, SOUTH + 100.0, az, 60.0, start, start + 180.0, 60.0, 6.0) for az, start in ((90.0, 0.0), (270.0, 180.0)))
+        built = self.build(dp.PitPreview("Corta 1", "PIT-001", "V01", self.access.MaskState.CURRENT, mode="up", start_surface="terreno", cell_m=2.0, arrows=arrows,
+                                         sources=(dp.PitShape("fondo", (self.ring(20.0),), 125.0),)))
+        labels = [label for label in built.lines.labels if label.text.startswith("Cara hacia")]
+        self.assertEqual([label.align for label in labels], ["left", "right"], "el nombre de la flecha que mira al oeste termina en su punta")
+        # Una matriz que lleva el metro local al píxel (la región, de 1000 × 600 px, con el origen en su centro), y textos de 400 px: sin la alineación se pisarían.
+        matrix = np.diag([0.002, 0.002, 1.0, 1.0])
+        shown = self.constraints._label_items(labels, matrix, (1000.0, 600.0), 1.0, lambda _text: 400.0)
+        self.assertEqual(len(shown), 2, "los dos nombres se escriben")
+        west, east = sorted(shown, key=lambda item: item.x)
+        self.assertLessEqual(west.x + 400.0, east.x, "no se pisan")
+
+    def test_b4_the_check_of_an_expanded_bench_alerts_only_when_the_deviation_shows(self) -> None:
+        """RF-018-22, RF-018-26, T40e (H3-5 de la T40): «Inclinación de la cara 60,00° (perfil: 60,00°)» no sale en alerta (la desviación del desfase es de una millonésima de grado y se escribe igual);
+        con una que se ve («61,20°» frente a «60,00°») o una berma que no llega («3,00 m» frente a «6,00 m»), sí."""
+        def lines(slope: float, berm: float, *, slope_ok: bool, berm_ok: bool, kind: str = "crest") -> list[tuple[str, bool]]:
+            summary = SimpleNamespace(kind=kind, level_m=165.0, lines=1, length_m=567.5, slope_deg=slope, slope_limit_deg=60.0, slope_ok=slope_ok, berm_min_m=berm, berm_limit_m=6.0, berm_ok=berm_ok)
+            return self.panels._expand_lines(SimpleNamespace(name="Banco", summary=summary))
+
+        same = lines(60.0000003, 6.0000002, slope_ok=False, berm_ok=False)
+        self.assertEqual([alert for _text, alert in same], [False] * len(same))
+        self.assertTrue(any("Inclinación de la cara 60,00° (perfil: 60,00°)" in text for text, _alert in same))
+        worse = lines(61.2, 3.0, slope_ok=False, berm_ok=False)
+        self.assertEqual({text.split(" (")[0]: alert for text, alert in worse if text.startswith(("Inclinación", "Berma"))}, {"Inclinación de la cara 61,20°": True, "Berma más estrecha 3,00 m": True})
+        fine = lines(59.0, 7.0, slope_ok=True, berm_ok=True)
+        self.assertFalse(any(alert for _text, alert in fine))
 
     # --- (c) el aviso en lugar del dibujo ------------------------------------------------------------
 

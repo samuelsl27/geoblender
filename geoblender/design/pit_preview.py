@@ -87,6 +87,11 @@ def job_parts(job: PitJob) -> dict[str, Any]:
     return {"sources": sources, "sectors": sectors, "arrows": rose_arrows(job), "starts": starts, "noramp": noramp, "fixed": fixed}
 
 
+def ramps_from_bench(job: PitJob) -> int:
+    """Cuántas rampas de la corta parten de la línea de un banco (el fondo es el banco 0) y no de un punto (T40e, observación del H3): la vista previa no tiene lugar que dibujar para ellas y lo dice."""
+    return sum(1 for item in job.ramp_starts if item.point is None)
+
+
 def outcome_parts(outcome: PitOutcome) -> dict[str, Any]:
     """Lo que dibuja la vista previa tras calcular, de lo que dejó «Calcular»: ``polylines``, ``skyline``, ``ramps``, ``findings``, ``bench_numbers``, ``stop`` y ``cut_m3``."""
     polylines = tuple(PitLine(str(item.kind.value), item.bench, item.vertices, item.closed) for item in outcome.polylines)
@@ -148,7 +153,7 @@ def _prepared(prepared: pit_store.PreparedPit, ask: PitAsk, state: access.MaskSt
         return PitPreview(head["entity"], prepared.code, prepared.version.code, state, calculated=True, notices=tuple(notices), **fields, **found)
     parts = job_parts(job)
     notices.append(Notice("des.preview_pit_before", {**head, "surface": prepared.start_surface, "sources": len(parts["sources"]), "arrows": len(parts["arrows"]),
-                                                      "starts": len(parts["starts"]), "noramp": len(parts["noramp"]), "fixed": len(parts["fixed"])}))
+                                                      "starts": len(parts["starts"]), "on_bench": ramps_from_bench(job), "noramp": len(parts["noramp"]), "fixed": len(parts["fixed"])}))
     notices.extend(prepared.notices)
     return PitPreview(head["entity"], prepared.code, prepared.version.code, state, notices=tuple(notices), **fields, **parts)
 

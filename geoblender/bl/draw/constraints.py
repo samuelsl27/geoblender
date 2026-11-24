@@ -224,6 +224,8 @@ class Label:
     xyz: tuple[float, float, float]
     color: Color
     rank: int | None = None
+    align: str = "left"
+    """``"left"``: el texto empieza junto a su sitio; ``"right"``: termina junto a él (el nombre de la punta de una flecha que mira al oeste no pisa el de la que mira al este; spec 018, T40e, H3-8)."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -755,8 +757,8 @@ def _label_items(labels: Sequence[Label], matrix: Any, size: tuple[float, float]
         distance = np.hypot(shown[index, 0] - centre[0], shown[index, 1] - centre[1])
         index = np.sort(index[np.argsort(distance, kind="stable")[:MAX_LABELS]])
     dx, dy = LABEL_OFFSET[0] * scale, LABEL_OFFSET[1] * scale
-    found = [Text(float(shown[i, 0]) + dx, float(shown[i, 1]) + dy, labels[i].text,
-                  labels[i].color) for i in index.tolist()]
+    found = [Text(float(shown[i, 0]) + dx - (float(measure(labels[i].text)) + 2.0 * dx if measure is not None and labels[i].align == "right" else 0.0), float(shown[i, 1]) + dy,
+                  labels[i].text, labels[i].color) for i in index.tolist()]
     ranks = [labels[i].rank for i in index.tolist()]
     if measure is None or all(rank is None for rank in ranks):
         return found

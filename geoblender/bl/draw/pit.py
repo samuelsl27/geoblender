@@ -248,23 +248,23 @@ def build_pit(request: Any, budget_s: float) -> Generator[None, None, tuple[desi
             if batch is not None:
                 batches.append(batch)
                 drawn.add(key)
-        named: list[tuple[str, tuple[float, float], constraints.Color, int]] = []
+        named: list[tuple[str, tuple[float, float], constraints.Color, int, str]] = []
         for item in found.arrows:
             tip = (item.x + item.length_m * float(np.sin(np.radians(item.azimuth_deg))), item.y + item.length_m * float(np.cos(np.radians(item.azimuth_deg))))
-            named.append((_arrow_text(item), tip, ARROW_COLOR, ARROW_RANK))
+            named.append((_arrow_text(item), tip, ARROW_COLOR, ARROW_RANK, "right" if np.sin(np.radians(item.azimuth_deg)) < -1e-9 else "left"))
         for start in found.starts:
             text = tr("Start of «{ramp}»: {name}", ramp=start.ramp, name=start.name) if start.name else tr("Start of «{ramp}»", ramp=start.ramp)
-            named.append((text, (start.x, start.y), START_COLOR, START_RANK))
+            named.append((text, (start.x, start.y), START_COLOR, START_RANK, "left"))
         for item in design_preview.finding_labels(found.findings):
-            named.append((_finding_text(item), item.place, FINDING_COLOR, FINDING_RANK))
+            named.append((_finding_text(item), item.place, FINDING_COLOR, FINDING_RANK, "left"))
         for ramp in found.ramps:
             middle = ramp.axis[len(ramp.axis) // 2]
             named.append((tr("Ramp «{code}»: {length} m · {gradient} % mean", code=ramp.code, length=format_number(ramp.length_m, 1), gradient=format_number(ramp.gradient_mean_pct, 1)),
-                          (float(middle[0]), float(middle[1])), RAMP_COLOR, RAMP_RANK))
+                          (float(middle[0]), float(middle[1])), RAMP_COLOR, RAMP_RANK, "left"))
         if named:
-            places = np.array([place for _text, place, _color, _rank in named], dtype=np.float64).reshape(-1, 2)
+            places = np.array([place for _text, place, _color, _rank, _align in named], dtype=np.float64).reshape(-1, 2)
             spots = yield from constraints.drape_points_steps(places, ground, origin, budget_s=budget_s)
-            labels.extend(Label(text, (float(x), float(y), float(z)), color, rank) for (text, _place, color, rank), (x, y, z) in zip(named, spots.tolist(), strict=True))
+            labels.extend(Label(text, (float(x), float(y), float(z)), color, rank, align) for (text, _place, color, rank, align), (x, y, z) in zip(named, spots.tolist(), strict=True))
     lines = constraints.Built(version_uid, request.version_code, found.masks.value, "" if ground is None else ground.name, tuple(batches), tuple(labels), _legend(request, found, ground, drawn),
                               request.stamp)
     return design_draw.Built(lines, None, (), found.lines(shown)), found

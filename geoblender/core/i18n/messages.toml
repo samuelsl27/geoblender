@@ -12459,8 +12459,17 @@ es = "Poniendo al día la capa de la línea de cielo… {percent} % · Esc: canc
 ["Cancelled: the layer has been left as it was; nothing has been left half-done"]
 es = "Cancelado: la capa se ha dejado como estaba; no queda nada a medias"
 
-["Code or name of the pit of the active version (empty: the one of the object selected in the 3D view)"]
-es = "Código o nombre de la corta de la versión activa (vacío: la del objeto seleccionado en la vista 3D)"
+["Code or name of the pit of the active version (empty: the one chosen in the list or, without it, the one of the object selected in the 3D view)"]
+es = "Código o nombre de la corta de la versión activa (vacío: la elegida en la lista o, sin ella, la del objeto seleccionado en la vista 3D)"
+
+["Pit of the active version, from the calculated ones"]
+es = "Corta de la versión activa, de entre las calculadas"
+
+["There are no calculated pits in the active version"]
+es = "No hay cortas calculadas en la versión activa"
+
+["Pit of the active version"]
+es = "Corta de la versión activa"
 
 ["If the layer of the skyline for QGIS is behind the pits of the version, bring it up to date (it is the only thing this command writes)"]
 es = "Si la capa de la línea de cielo para QGIS está atrasada respecto a las cortas de la versión, la pone al día (es lo único que escribe esta orden)"

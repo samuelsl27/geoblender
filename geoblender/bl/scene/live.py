@@ -279,7 +279,7 @@ def read_view(project: Project) -> tuple[dict[str, tuple[bpy.types.Object, ...]]
             states = state.view_states(project, items, project_uid=project.uid,
                                        origin=project.origin, view_stale=view_stale, conn=conn)
             live = views.live_reads(conn, _hooked(states))
-            shown = scene_versions.read_for_view(conn, groups)
+            shown = scene_versions.read_for_view(conn, groups, project)
         finally:
             conn.execute("ROLLBACK")
     return groups, states, live, shown

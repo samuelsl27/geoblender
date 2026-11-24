@@ -246,6 +246,11 @@ que dibuja su objeto (los vivos que lee: no los de otra versión que no lee). Cu
 contenido para «no al día». Solo lee."""
 
 
+OwnTitleReader = Callable[[Any, sqlite3.Connection, str, str], str]
+"""Lo que declara un cargador del **nombre propio** de sus datos (spec 018, T40e, H3-6): dado el proyecto, una conexión de lectura, el uid de la versión del dato y su nombre, el que lleva el
+objeto en lugar del nombre del dato (que es el del cálculo en minúsculas y sin acentos: «corta_e1»; la corta de la que sale se llama «Corta E1»); ``""``: el del dato. Solo lee."""
+
+
 @dataclass(frozen=True)
 class Loader:
     """Un cargador registrado: el comienzo del nombre de sus datos, el tipo de sus objetos
@@ -261,6 +266,7 @@ class Loader:
     live: LiveHook | None = None
     session_parts: SessionParts | None = None
     companions: CompanionsReader | None = None
+    own_title: OwnTitleReader | None = None
 
 
 @dataclass(frozen=True)
@@ -290,7 +296,8 @@ _VIEW_LISTENERS: list[ViewListener] = []
 
 
 def register_loader(prefix: str, kind: str, label: str, load: ViewLoader, *,
-                    companions: CompanionsReader | None = None) -> None:
+                    companions: CompanionsReader | None = None,
+                    own_title: OwnTitleReader | None = None) -> None:
     """Registra el cargador de los datos cuyo nombre empieza por ``prefix`` (D-10): sus
     objetos son del tipo ``kind`` (uno de :data:`BRANCHES`) y su nombre empieza por el
     ``msgid`` ``label``; con ``companions``, los otros datos del proyecto con que dibuja su
@@ -305,7 +312,7 @@ def register_loader(prefix: str, kind: str, label: str, load: ViewLoader, *,
         raise ValueError(f"ya hay un cargador para los datos «{prefix}…»")
     if companions is not None and not callable(companions):
         raise TypeError(f"los datos compañeros de un cargador los lee una función, no {companions!r}")
-    _LOADERS[prefix] = Loader(prefix, kind, label, load, companions=companions)
+    _LOADERS[prefix] = Loader(prefix, kind, label, load, companions=companions, own_title=own_title)
 
 
 def unregister_loader(prefix: str) -> None:
@@ -1017,12 +1024,35 @@ def _companions_of(project: Any, loader: Loader, record: DatasetRecord) -> str:
     return companions_text((item.uid, item.content_sha256) for item in found)
 
 
+def dataset_titles(project: Any, conn: sqlite3.Connection, uids: Iterable[str]) -> dict[str, tuple[str, str]]:
+    """La versión (su uid; ``''``, del proyecto) y el título de cada dato de ``uids`` (``core.versions.read.dataset_titles``) y, **en los que no tienen título**, el nombre propio que declara su
+    cargador (:data:`OwnTitleReader`; spec 018, T40e, H3-6: el TIN de una corta se llama como la corta). El título que dio la persona manda siempre. Solo lee."""
+    marks = versions_read.dataset_titles(conn, uids)
+    bare = [uid for uid, (owner, title) in marks.items() if owner and not title]
+    if not bare or not any(loader.own_title is not None for loader in _LOADERS.values()):
+        return marks
+    for uid in bare:
+        row = conn.execute("SELECT name FROM gb_dataset WHERE uid = ?", (uid,)).fetchone()
+        loader = None if row is None else loader_for(str(row[0]))
+        if loader is None or loader.own_title is None:
+            continue
+        try:
+            own = loader.own_title(project, conn, marks[uid][0], str(row[0]))
+        except (GeoblenderError, sqlite3.Error, ValueError):
+            LOGGER.debug("No se pudo leer el nombre propio de «%s»", row[0], exc_info=True)
+            continue
+        if own:
+            marks[uid] = (marks[uid][0], own)
+    return marks
+
+
 def _dataset_label(project: Any, uid: str) -> tuple[str, str, str]:
     """La versión (su uid y su código; '' del proyecto) y el título ('' sin él) del dato
-    ``uid`` del proyecto abierto ``project`` (spec 009, T22; ``core.versions.read``). No
+    ``uid`` del proyecto abierto ``project`` (spec 009, T22; ``core.versions.read``; el
+    nombre propio de su cargador, si no tiene título: :func:`dataset_titles`). No
     escribe."""
     with project.read() as conn:
-        owner, title = versions_read.dataset_titles(conn, [uid]).get(uid, ("", ""))
+        owner, title = dataset_titles(project, conn, [uid]).get(uid, ("", ""))
         version = versions_read.version(conn, owner) if owner else None
     return owner, "" if version is None else version.code, title
 

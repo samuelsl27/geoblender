@@ -1844,6 +1844,13 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Corregido
 
+- **Los detalles bajos del H3 de la corta por bancos** (spec 018, T40e; hallazgos H3-5 a H3-8 y una observación; no cambian ninguna cifra minera ni ningún requisito): «Expandir banco…» ya no enseña
+  en rojo «Inclinación de la cara 60,00° (perfil: 60,00°)» cuando no hay desviación que se vea (el desfase la deja a una millonésima de grado; lo mismo con la berma); «Línea de cielo…» y «Superficie y
+  sólido…» piden la corta en una **lista** de las cortas calculadas de la versión (con la del objeto seleccionado ya elegida) y no en un campo de texto vacío; el objeto del TIN y el del sólido se
+  llaman como la corta («TIN de la corta Corta E1 · V01») y no con el nombre de su dato («corta_e1»); el rechazo de un banco fijado escribe las coordenadas con el formato de las demás cifras
+  («x = 700185,7, y = 4400290»), no con punto en español; en la vista previa, el nombre de la flecha de la roseta que mira al oeste termina en su punta y ya no se salta por pisar al de la que mira
+  al este; y la vista previa de antes de calcular dice «inicios de rampa en un punto: 0, rampas que parten de la línea de un banco (el fondo es el banco 0): 1» cuando la rampa parte del fondo, en vez
+  de «inicios de rampa: 0».
 - **Un banco fijado que coincide con la cresta del banco vecino se rechaza con el banco, el lugar y qué hacer** (spec 018, T40b; hallazgo H3-1): «Nueva corta…» con la capa de «Expandir banco…» de la propia
   corta como banco fijado pasaba la comprobación de cortes (la línea coincidía, sin cortarla) y fallaba al calcular la superficie con «las aristas obligatorias … se cruzan», sin banco ni lugar.
   Ahora un banco fijado a menos de 1 mm de la cresta o del pie vecinos no deja sitio (RF-018-24) y se rechaza con los dos bancos, el lugar y la forma de arreglarlo (separarlo al menos la berma o fijar otro

@@ -2147,9 +2147,12 @@ def _expand_lines(calculation: Calculation) -> list[tuple[str, bool]]:
                     count=_number(count), length=length))
     lines = [(head, False)]
     if summary.slope_deg is not None:  # type: ignore[union-attr]
-        lines.append((tr("Face inclination {slope}° (profile: {limit}°)", slope=_number(summary.slope_deg, 2), limit=_number(summary.slope_limit_deg, 2)), not summary.slope_ok))  # type: ignore[union-attr]
+        slope, slope_limit = _number(summary.slope_deg, 2), _number(summary.slope_limit_deg, 2)  # type: ignore[union-attr]
+        # En alerta solo si hay desviación **que se vea**: el desfase deja la inclinación a una millonésima de grado de la del perfil y «60,00° (perfil: 60,00°)» en rojo no dice nada (T40e, H3-5).
+        lines.append((tr("Face inclination {slope}° (profile: {limit}°)", slope=slope, limit=slope_limit), not summary.slope_ok and slope != slope_limit))  # type: ignore[union-attr]
     if summary.berm_min_m is not None:  # type: ignore[union-attr]
-        lines.append((tr("Narrowest berm {berm} m (profile: {limit} m)", berm=_number(summary.berm_min_m, 2), limit=_number(summary.berm_limit_m, 2)), not summary.berm_ok))  # type: ignore[union-attr]
+        berm, berm_limit = _number(summary.berm_min_m, 2), _number(summary.berm_limit_m, 2)  # type: ignore[union-attr]
+        lines.append((tr("Narrowest berm {berm} m (profile: {limit} m)", berm=berm, limit=berm_limit), not summary.berm_ok and berm != berm_limit))  # type: ignore[union-attr]
     lines.append((tr("It is created as a layer of 3D lines that you can edit in QGIS: it changes no surface and is not an entity"), False))
     return lines
 

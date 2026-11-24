@@ -433,7 +433,7 @@ class VersionsRead:
     codes: Mapping[str, str] = field(default_factory=dict)
 
 
-def read_for_view(conn: sqlite3.Connection, dataset_uids: Iterable[str]) -> VersionsRead:
+def read_for_view(conn: sqlite3.Connection, dataset_uids: Iterable[str], project: Any = None) -> VersionsRead:
     """Lo que necesita la vista de las versiones y de los datos ``dataset_uids`` (los cargados),
     leído con ``conn`` (en la instantánea de quien llama: ``bl.scene.live.read_view``). Sin
     versiones (un proyecto del esquema 2 en solo lectura), nada. No escribe."""
@@ -441,7 +441,7 @@ def read_for_view(conn: sqlite3.Connection, dataset_uids: Iterable[str]) -> Vers
         return VersionsRead()
     found = versions_read.versions(conn)
     code_of = {version.uid: version.code for version in found}
-    marks = versions_read.dataset_titles(conn, dataset_uids)
+    marks = versions_read.dataset_titles(conn, dataset_uids) if project is None else views.dataset_titles(project, conn, dataset_uids)
     return VersionsRead(
         found, versions_read.latest_revisions(conn),
         {uid: title for uid, (_owner, title) in marks.items() if title},

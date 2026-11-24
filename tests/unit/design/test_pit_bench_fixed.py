@@ -229,7 +229,10 @@ class FixedBenchTest(unittest.TestCase):
                     text = str(caught.exception)
                     self.assertIn("2", text)
                     self.assertIn("1", text)
-                    self.assertRegex(text, r"\d{6}\.\d, \d{7}\.\d")
+                    # H3-7 (T40e): las coordenadas con el formato de las demás cifras (coma decimal en español, punto en inglés), no «700185.7, 4400290.0» en los dos
+                    self.assertRegex(text, r"x = \d{6}(,\d)?, y = \d{7}(,\d)? ")
+                    self.assertNotRegex(text, r"\d\.\d")
+                    self.assertRegex(caught.exception.text_in("en"), r"x = \d{6}(\.\d)?, y = \d{7}(\.\d)? ")
                     self.assertIn("berma", text)
 
     def test_a_fixed_bench_that_is_never_reached_is_rejected(self) -> None:
