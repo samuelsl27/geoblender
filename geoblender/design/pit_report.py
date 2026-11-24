@@ -43,7 +43,7 @@ from .provenance import pit_figures
 from .report import max_tangents, padded_rows
 from .zones import polygons_cells
 
-__all__ = ["BLOCK_PAIRS", "TERRAIN_TOL_M", "FLAT_TOL_M", "Figures", "figures", "findings", "findings_units"]
+__all__ = ["BLOCK_PAIRS", "inscribed_width", "TERRAIN_TOL_M", "FLAT_TOL_M", "Figures", "figures", "findings", "findings_units"]
 
 TERRAIN_TOL_M: float = 0.01
 """Lo que un trozo de polilínea puede estar por encima del terreno para contar como «existente» (m; P-14)."""
@@ -163,23 +163,59 @@ def _nearest(points: np.ndarray, line: np.ndarray, closed: bool) -> tuple[float,
     return _drain(_nearest_units(points, line, closed))
 
 
+_NEAREST_BLOCK = 32
+"""Los puntos y las aristas por cajita de :func:`_nearest_units` (T36)."""
+_NEAREST_DENSE_PAIRS = 1 << 16
+"""Hasta cuántas parejas (punto, arista) se miden todas, sin descartar por cajas."""
+
+
+def _pair_distances(p: np.ndarray, a: np.ndarray, delta: np.ndarray, length2: np.ndarray) -> np.ndarray:
+    """La distancia en planta de cada punto de ``p`` ``(m, 1, 2)`` a cada arista ``a → a + delta`` ``(1, e, 2)``: ``(m, e)``."""
+    w = p - a
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.clip(np.where(length2 > 0.0, (w * delta).sum(axis=2) / length2, 0.0), 0.0, 1.0)
+    near = a + t[:, :, None] * delta
+    return np.hypot(*(p - near).transpose(2, 0, 1))
+
+
 def _nearest_units(points: np.ndarray, line: np.ndarray, closed: bool) -> Generator[None, None, tuple[float, int]]:
-    """:func:`_nearest` con una unidad (``yield``) por bloque de parejas (T22: para ceder el hilo en ≤ 0,05 s)."""
+    """:func:`_nearest` con una unidad (``yield``) por bloque de parejas (T22: para ceder el hilo en ≤ 0,05 s). Con muchas parejas (T36: dos anillos de 1.300 vértices eran 1,8 M
+    parejas por banco y ≈ 12 s con 60 bancos) **descarta por cajas**: los puntos van en cajitas de :data:`_NEAREST_BLOCK` consecutivos y las aristas también, y una cajita de puntos solo se
+    mide contra las cajitas de aristas a menos de la mejor distancia conocida (una cota superior de una muestra de puntos); el mínimo y el punto que lo da (el menor índice entre los empates)
+    son los de la fuerza bruta, bit a bit."""
     a, b = _segments(line[:, :2], closed)
     delta = b - a
     length2 = (delta ** 2).sum(axis=1)
     best, where = math.inf, 0
-    block = max(1, BLOCK_PAIRS // max(1, len(a)))
-    for first in range(0, len(points), block):
-        p = points[first:first + block, None, :]
-        w = p - a[None, :, :]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            t = np.clip(np.where(length2 > 0.0, (w * delta).sum(axis=2) / length2, 0.0), 0.0, 1.0)
-        near = a[None, :, :] + t[:, :, None] * delta[None, :, :]
-        distance = np.hypot(*(p - near).transpose(2, 0, 1)).min(axis=1)
-        index = int(np.argmin(distance))
-        if float(distance[index]) < best:
-            best, where = float(distance[index]), first + index
+    if len(points) * len(a) <= _NEAREST_DENSE_PAIRS:
+        block = max(1, BLOCK_PAIRS // max(1, len(a)))
+        for first in range(0, len(points), block):
+            found = _pair_distances(points[first:first + block, None, :], a[None, :, :], delta[None, :, :], length2).min(axis=1)
+            index = int(np.argmin(found))
+            if float(found[index]) < best:
+                best, where = float(found[index]), first + index
+            yield
+        return best, where
+    step = max(1, len(points) // _NEAREST_BLOCK)
+    sample = points[::step]
+    bound = float(_pair_distances(sample[:, None, :], a[None, :, :], delta[None, :, :], length2).min())
+    yield
+    low_e, high_e = np.minimum(a, b), np.maximum(a, b)
+    chunks = [(first, min(first + _NEAREST_BLOCK, len(a))) for first in range(0, len(a), _NEAREST_BLOCK)]
+    box_low = np.array([low_e[x:y].min(axis=0) for x, y in chunks])
+    box_high = np.array([high_e[x:y].max(axis=0) for x, y in chunks])
+    for first in range(0, len(points), _NEAREST_BLOCK):
+        part = points[first:first + _NEAREST_BLOCK]
+        low_p, high_p = part.min(axis=0), part.max(axis=0)
+        gap = np.maximum(np.maximum(box_low - high_p, low_p - box_high), 0.0)
+        near = np.hypot(gap[:, 0], gap[:, 1]) <= bound * (1.0 + 1e-9) + 1e-9
+        if near.any():
+            edges = np.concatenate([np.arange(chunks[i][0], chunks[i][1]) for i in np.flatnonzero(near)])
+            found = _pair_distances(part[:, None, :], a[edges][None, :, :], delta[edges][None, :, :], length2[edges]).min(axis=1)
+            index = int(np.argmin(found))
+            if float(found[index]) < best:
+                best, where = float(found[index]), first + index
+                bound = min(bound, best)
         yield
     return best, where
 
@@ -288,7 +324,7 @@ def _berm_units(job: PitJob, polylines: Sequence[Polyline], tolerance_m: float) 
     return found
 
 
-def _inscribed_width(ring: np.ndarray) -> float:
+def inscribed_width(ring: np.ndarray) -> float:
     """El ancho útil de ``ring`` (m): el diámetro del mayor círculo inscrito, buscado desde una malla de candidatos dentro de la polilínea y refinado
     por tanteo a ≤ 1 mm (sin el motor de desfase, que con un anillo de cientos de vértices que se colapsa tarda minutos). Es una **estimación por
     abajo** (un máximo local de la distancia al borde); para un anillo convexo es exacta."""
@@ -338,7 +374,7 @@ def _floor_findings(job: PitJob, polylines: Sequence[Polyline], floor_width_m: f
     found = []
     if job.mode is PitMode.UP:
         for source in job.sources:
-            width = _inscribed_width(np.asarray(source.ring, dtype=np.float64))
+            width = inscribed_width(np.asarray(source.ring, dtype=np.float64))
             if width < minimum:
                 centre = np.asarray(source.ring).mean(axis=0)
                 found.append(Finding(FindingKind.FLOOR_WIDTH, width, minimum, (float(centre[0]), float(centre[1])), None, detail=source.name))

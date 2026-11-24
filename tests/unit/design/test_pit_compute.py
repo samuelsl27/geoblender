@@ -223,6 +223,7 @@ class SummaryTest(unittest.TestCase):
         cls.outcome, _times = run(cls.job)
 
     def test_the_summary_has_the_figures_and_the_obsolete_notes(self) -> None:
+        """RF-018-03: el resumen de la corta lleva su versión de partida y su perfil, las cifras, los bancos y lo que queda obsoleto con su causa (la entrada de la superficie de partida y la obsolescencia)."""
         obsolete = (preview.Obsolete(preview.ObsoleteKind.DEPENDENT, "Retirada 1", "des.stockpile_removal", "uid-1"),)
         summary = pit_store.summary_of(self.outcome, version="V01", profile="expl_10_60_6", obsolete=obsolete)
         self.assertIsInstance(summary, preview.PitSummary)

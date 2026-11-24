@@ -253,6 +253,7 @@ class BandTest(unittest.TestCase):
         cls.checked = pit_ramp.check_ramp(spiral_tramo(), job(cls.road), ramp(cls.road, "spiral", 8.0))
 
     def test_edges_are_w_over_two_from_the_axis_at_the_axis_level(self) -> None:
+        """RF-018-21: los bordes de la banda están a W/2 del eje, en planta, y a la cota de la rasante en cada abscisa."""
         band = self.checked.band
         left, axis, right = band.breaklines
         self.assertEqual(len(left), len(self.checked.axis.stations))

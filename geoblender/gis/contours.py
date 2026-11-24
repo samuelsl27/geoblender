@@ -63,7 +63,7 @@ from __future__ import annotations
 
 import math
 import numbers
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -94,6 +94,7 @@ __all__ = [
     "ContourLine",
     "contours_from_features",
     "contours_from_raster",
+    "contours_from_raster_steps",
     "contours_from_tin",
 ]
 
@@ -436,8 +437,34 @@ def contours_from_raster(
     progress: Progress | None = None,
     cancelled: Cancelled | None = None,
 ) -> list[ContourLine]:
+    """:func:`contours_from_raster_steps` hasta el final, sin ceder el hilo: las curvas de nivel de ``raster`` (RF-006-18; plan A14; ver el módulo). Los mismos parámetros y errores."""
+    work = contours_from_raster_steps(raster, interval_m=interval_m, base_m=base_m, index_every_m=index_every_m, index_offset_m=index_offset_m,
+                                      simplify_m=simplify_m, min_length_m=min_length_m, name=name, progress=progress, cancelled=cancelled)
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            lines: list[ContourLine] = done.value
+            return lines
+
+
+def contours_from_raster_steps(
+    raster: Raster,
+    *,
+    interval_m: float | None = None,
+    base_m: float = 0.0,
+    index_every_m: float | None = None,
+    index_offset_m: float | None = None,
+    simplify_m: float | None = None,
+    min_length_m: float | None = None,
+    name: str = "",
+    progress: Progress | None = None,
+    cancelled: Cancelled | None = None,
+) -> Generator[None, None, list[ContourLine]]:
     """Las curvas de nivel de ``raster`` (RF-006-18; plan A14; ver el módulo) por *marching
-    squares* sobre los cuadros de 4 centros con dato.
+    squares* sobre los cuadros de 4 centros con dato, **cediendo el hilo** (``yield``) tras cada
+    bloque de filas (T36 de la 018: la línea de cielo sobre 2,81 M celdas tardaba 0,3 s de una
+    vez) y antes del encadenado; el resultado es el valor de retorno del generador.
 
     ``interval_m``, ``index_every_m``, ``index_offset_m``, ``simplify_m`` y
     ``min_length_m``: los parámetros ``gis.contours.*`` (``None``, el valor por defecto; uno
@@ -473,6 +500,7 @@ def contours_from_raster(
         starts.append(start)
         ends.append(end)
         _block_done(progress, index, len(firsts))
+        yield
 
     def cuts(keys: np.ndarray) -> _Cuts:
         return _grid_cuts(keys, raster, levels, edge_count)

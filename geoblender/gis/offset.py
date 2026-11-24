@@ -574,8 +574,14 @@ def _offset_work(points: np.ndarray, dist: np.ndarray, side: int, tol: float, co
 
     # (1) Los lados que dos losas comparten (el mismo en sentidos opuestos: lo de los dos lados es
     # interior) o que van por la fuente no son borde; de dos iguales y en el mismo sentido, uno.
-    _, ident = np.unique(verts, axis=0, return_inverse=True)
-    ident = ident.reshape(-1)
+    # La identidad de cada vértice por su rango lexicográfico (x, y): lo mismo que ``np.unique(axis=0)`` y el doble de rápido (T36: el prólogo no se reparte en pasos).
+    order = np.lexsort((verts[:, 1], verts[:, 0]))
+    ranked = verts[order]
+    fresh = np.empty(total, dtype=bool)
+    fresh[0] = True
+    fresh[1:] = (ranked[1:] != ranked[:-1]).any(axis=1)
+    ident = np.empty(total, dtype=np.int64)
+    ident[order] = np.cumsum(fresh) - 1
     forward = ident * total + ident[nxt]
     backward = ident[nxt] * total + ident
     skip = on_source | (ident == ident[nxt]) | np.isin(forward, backward)

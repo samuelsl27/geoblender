@@ -22,19 +22,19 @@ Las entradas no se modifican. Perezoso (RNF-001-03): nada del arranque lo import
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
 from ..core.georef import CrsRef, VerticalRef
-from ..gis.contours import contours_from_raster
+from ..gis.contours import contours_from_raster_steps
 from ..gis.grid import Grid
 from ..gis.polygons import segment_distance
 from ..gis.ports import Cancelled, Progress
 from ..gis.raster import Raster, sample
 
-__all__ = ["BAND_M", "SkyDistance", "SkyPart", "Skyline", "limit_distances", "skyline"]
+__all__ = ["BAND_M", "SkyDistance", "SkyPart", "Skyline", "limit_distances", "skyline", "skyline_steps"]
 
 BAND_M: float = 0.9
 """El valor absoluto al que se acota la diferencia de cotas (m): menor que el intervalo de 1 m, para que solo cruce la cota 0."""
@@ -229,7 +229,21 @@ def _distance(parts: Sequence[SkyPart], limit: tuple[tuple[np.ndarray, ...], ...
 def skyline(start: np.ndarray, design: np.ndarray, grid: Grid, *, crs: CrsRef, vertical: VerticalRef,
             legal: Sequence[Sequence[np.ndarray]] | None = None, perimeter: Sequence[Sequence[np.ndarray]] | None = None,
             progress: Progress | None = None, cancelled: Cancelled | None = None) -> Skyline:
-    """La línea de cielo de la corta ``design`` (la de las polilíneas sola: ``NaN`` fuera del recinto) sobre la partida ``start`` (m, de la forma de
+    """:func:`skyline_steps` hasta el final, sin ceder el hilo: la línea de cielo de la corta ``design`` sobre la partida ``start`` (ver los pasos). Los mismos errores."""
+    work = skyline_steps(start, design, grid, crs=crs, vertical=vertical, legal=legal, perimeter=perimeter, progress=progress, cancelled=cancelled)
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            found: Skyline = done.value
+            return found
+
+
+def skyline_steps(start: np.ndarray, design: np.ndarray, grid: Grid, *, crs: CrsRef, vertical: VerticalRef,
+            legal: Sequence[Sequence[np.ndarray]] | None = None, perimeter: Sequence[Sequence[np.ndarray]] | None = None,
+            progress: Progress | None = None, cancelled: Cancelled | None = None) -> Generator[None, None, Skyline]:
+    """:func:`skyline` **por pasos** (T36, RNF-018-06: sobre 2,81 M celdas era una llamada de 0,4 s): cede el hilo (``yield``) tras la diferencia, tras cada bloque de filas de las curvas y antes de
+    las distancias; el resultado es el valor de retorno del generador. La línea de cielo de la corta ``design`` (la de las polilíneas sola: ``NaN`` fuera del recinto) sobre la partida ``start`` (m, de la forma de
     ``grid``), con las distancias a ``legal`` y a ``perimeter`` (partes de polígonos con sus anillos absolutos; ``None``: sin distancia).
     ``progress`` y ``cancelled`` (``JobCancelled``) por bloques del motor de curvas. :class:`ValueError` si un array no es de la forma de la
     rejilla (error del programa)."""
@@ -238,13 +252,15 @@ def skyline(start: np.ndarray, design: np.ndarray, grid: Grid, *, crs: CrsRef, v
     if start.shape != grid.shape or design.shape != grid.shape:
         raise ValueError(f"la partida {start.shape} y la corta {design.shape} son de la forma de la rejilla {grid.shape}")
     gap = _difference(start, design)
-    lines = contours_from_raster(Raster(grid, gap, crs, vertical), interval_m=1.0, base_m=0.0, simplify_m=0.0, min_length_m=0.0,
+    yield
+    lines = yield from contours_from_raster_steps(Raster(grid, gap, crs, vertical), interval_m=1.0, base_m=0.0, simplify_m=0.0, min_length_m=0.0,
                                  name="línea de cielo", progress=progress, cancelled=cancelled)
     terrain = Raster(grid, start, crs, vertical)
     parts: list[SkyPart] = []
     for line in lines:
         z = sample(terrain, line.xyz[:, :2])
         parts.append(SkyPart(np.column_stack([line.xyz[:, :2], z]), line.closed))
+    yield
     if not parts:
         return Skyline((), 0.0, 0.0, 0.0, None, None)
     origin = np.array([grid.west, grid.north - grid.nrows * grid.dy])

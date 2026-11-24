@@ -1174,7 +1174,9 @@ def compute_steps(job: PitJob, window: Window, common: Mapping[str, float], *, c
     if bool(outside.any()):
         raise ValueError("la ventana de trabajo no contiene todo el movimiento de la corta (error del programa)")
     yield Progress(_COMPUTE_PHASE, 2, 6, "Calculando la línea de cielo…")
-    sky = pit_sky.skyline(job.start, surface.stepped, job.grid, crs=crs, vertical=vertical, legal=job.legal, perimeter=job.perimeter)
+    sky = yield from pipeline.forward(pace_progress(
+        pit_sky.skyline_steps(job.start, surface.stepped, job.grid, crs=crs, vertical=vertical, legal=job.legal, perimeter=job.perimeter),
+        budget_s, phase=_COMPUTE_PHASE, running="Calculando la línea de cielo…", finished="Línea de cielo calculada"))
     yield Progress(_COMPUTE_PHASE, 3, 6, "Buscando los hallazgos…")
     found = yield from pipeline.forward(pace_progress(
         pit_report.findings_units(job, benches.polylines, surface, face_tolerance_deg=face_tolerance, ramps=ramps, floor_width_m=benches.floor_width_m),

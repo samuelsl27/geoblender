@@ -53,7 +53,7 @@ import numpy as np
 
 from ..core.project.model import Progress
 from ..gis.masks.compile import STEP_BUDGET_S
-from ..gis.offset import offset_ring, simplify_ring
+from ..gis.offset import simplify_ring
 from ..gis.polygons import chain, crossings, overlay
 from .messages import DesignError
 from .pit_bench_ramp import RampLoop, RingPlan as RampPlan
@@ -61,6 +61,7 @@ from .pit_model import (MAX_BENCHES, MAX_VERTICES, FixedBench, PitCode, PitJob, 
                         StopCriterion)
 from .pit_offset import PolylineOffset, Step, edge_distances, offset_polyline_steps
 from .pit_ramp import RampChecked
+from .pit_report import inscribed_width
 from .preview import Notice
 from .road_section import sample_terrain
 from .seeds import pace_progress
@@ -533,10 +534,6 @@ def ascend(job: PitJob) -> Benches:
 # --- La corta descendente (A6) ---------------------------------------------------------------------------------------------
 
 
-_BISECT_M = 5e-3
-"""La resolución de la bisección del ancho útil (m): el ancho sale a ≤ 1 cm."""
-
-
 @dataclass(slots=True, eq=False)
 class _Crest:
     points: np.ndarray
@@ -569,20 +566,15 @@ def _centroid_place(ring: np.ndarray, origin: np.ndarray) -> str:
 
 
 def _fits(job: PitJob, ring: np.ndarray, width_m: float) -> bool:
-    """Si ``ring`` contiene un círculo de diámetro ``width_m``: su desfase hacia dentro de ``width_m / 2`` no queda vacío (A6 i)."""
-    found = offset_ring(ring, np.full(len(ring), 0.5 * width_m), -1, tol=job.params.arc_tol_m, corner=str(job.params.corner))
-    return bool(found.rings)
+    """Si ``ring`` contiene un círculo de diámetro ``width_m`` (A6 i): su ancho útil (:func:`_useful_width`) lo supera. Antes era el desfase hacia dentro de ``width_m / 2``, que con un anillo de
+    cientos de vértices que se colapsa tardaba minutos (T36); el ancho inscrito no usa el motor."""
+    return _useful_width(job, ring) > width_m
 
 
 def _useful_width(job: PitJob, ring: np.ndarray) -> float:
-    """El ancho útil de ``ring`` (m): el doble de la distancia máxima a la que sobrevive su interior, por bisección sobre el mismo motor."""
-    ring = simplify_ring(ring, job.params.arc_tol_m)  # el error de la simplificación es el del arco: el ancho sale a ≤ 2·arc_tol_m
-    low, high = 0.0, 0.5 * float(min(np.ptp(ring[:, 0]), np.ptp(ring[:, 1]))) + _BISECT_M
-    while high - low > _BISECT_M:
-        middle = 0.5 * (low + high)
-        found = offset_ring(ring, np.full(len(ring), middle), -1, tol=job.params.arc_tol_m, corner=str(job.params.corner))
-        low, high = (middle, high) if found.rings else (low, middle)
-    return 2.0 * low
+    """El ancho útil de ``ring`` (m): el diámetro del mayor círculo inscrito (:func:`~design.pit_report.inscribed_width`: una estimación por abajo, exacta en un anillo convexo, a ≤ 1 mm),
+    sin el motor de desfase (T36: la bisección sobre él se colgaba minutos con un círculo de 720 vértices que se colapsa)."""
+    return inscribed_width(simplify_ring(ring, job.params.arc_tol_m))  # el error de la simplificación es el del arco: el ancho sale a ≤ 2·arc_tol_m
 
 
 def _first_anchor(z: np.ndarray, anchor_m: float, height_m: float) -> float:

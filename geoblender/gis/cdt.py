@@ -874,7 +874,9 @@ class PureTriangulator:
         total = n + len(constraints)
         step = max(1, PROGRESS_STEP)
         last = 0
-        for done, p in enumerate(_insertion_order(xy), start=1):
+        order = _insertion_order(xy)
+        yield  # el orden de inserción (Hilbert) de cientos de miles de puntos es una unidad aparte (T36: RNF-018-06)
+        for done, p in enumerate(order, start=1):
             try:
                 last = mesh.insert(p, last)
             except _Twin as twin:  # pragma: no cover - _check_points ya lo descarta
