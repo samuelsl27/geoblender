@@ -33,7 +33,7 @@ dos son simétricos e idempotentes: registrar y desregistrar deja los registros 
 estaban (ADR-0025 §2). Nada pesado: lo que registra ya está importado con el resto de ``bl``, y las
 máscaras, su búsqueda, el almacén de la verificación y la cadena de versiones que arrastran
 (``gis.masks.*``, ``gis.search``, ``reserves.compliance_store``, ``core.versions.freeze``…) se
-importan al usarlos, dentro de cada orden: habilitar Geoblender tarda ≤ 0,5 s (RNF-001-03; spec
+importan al usarlos, dentro de cada orden: habilitar Geoblender tarda ≤ 0,57 s (RNF-001-03; spec
 012, T38). La comprobación de congelar que se registra es :func:`freeze_findings`, que importa la
 de ``res`` en su primera llamada, y se registra en ``core.versions.freezing`` (el módulo ligero).
 

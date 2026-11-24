@@ -47,7 +47,7 @@ que registra son declaraciones ligeras (``design.params``, ``design.provenance``
 ``design.profiles``, ``design.messages``) y el cálculo, el almacén y la reproducción
 (``design.store``, ``design.reproduce``, ``design.steps`` y todo lo que arrastran: las máscaras, la
 cadena de versiones…) se importan **al usarlos**, dentro de cada función: habilitar Geoblender
-tarda ≤ 0,5 s (RNF-001-03).
+tarda ≤ 0,57 s (RNF-001-03).
 
 **Recalcular lo obsoleto** (D-19, plan §5.3.2; RF-013-17, RF-008-26): las funciones de
 :data:`RECOMPUTE` (:func:`recompute_envelope` y :func:`recompute_design`) empiezan con

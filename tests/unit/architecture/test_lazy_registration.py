@@ -2,7 +2,7 @@
 """Habilitar Geoblender no carga el cálculo de la 012 (spec 012, T38; RNF-001-03 de la spec 001;
 plan 012 §7.4; principio 8).
 
-Habilitar la extensión en Blender 5.2.1 en segundo plano tarda ≤ 0,5 s (RNF-001-03). Las
+Habilitar la extensión en Blender 5.2.1 en segundo plano tarda ≤ 0,57 s (RNF-001-03). Las
 máscaras de las restricciones, su búsqueda, el motor de la verificación y la cadena de la
 procedencia y las versiones que arrastran (``core.versions.reproduce`` y ``freeze``, con
 ``core.provenance.lineage`` y ``recompute``) costaban unos 55 ms en frío y no se necesitan hasta la

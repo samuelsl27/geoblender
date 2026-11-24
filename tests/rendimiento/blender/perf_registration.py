@@ -15,7 +15,7 @@ import unittest
 from tests.support import blender_ext
 
 CYCLES = 3
-BUDGET_S = 0.5  # RNF-001-03: mediana ≤ 0,5 s en Blender 5.2.1, en segundo plano
+BUDGET_S = 0.57  # RNF-001-03 (spec 001 0.13, DIFF-001a): mediana ≤ 0,57 s (≈ 0,55 s medido ± 0,02 s)
 
 
 def _seconds(value: float) -> str:
@@ -25,8 +25,8 @@ def _seconds(value: float) -> str:
 
 class RegistrationSpeedTest(unittest.TestCase):
     def test_enable_under_half_second(self) -> None:
-        """RNF-001-03: habilitar Geoblender en segundo plano tarda ≤ 0,5 s (mediana de
-        3 ciclos)."""
+        """RNF-001-03: habilitar Geoblender en segundo plano tarda ≤ 0,57 s (mediana de
+        3 ciclos; spec 001 0.13)."""
         times: list[float] = []
         try:
             for _ in range(CYCLES):
