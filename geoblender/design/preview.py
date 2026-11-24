@@ -141,6 +141,8 @@ __all__ = [
     "guard_zone_units",
     "held_notices",
     "limit_notices",
+    "PIT_FINDING_LABELS",
+    "finding_labels",
     "obsolete_names",
     "obsolete_notices",
     "quarry_summarize_steps",
@@ -2016,8 +2018,29 @@ class PitPreview:
         return bool(self.sources or self.sectors or self.arrows or self.starts or self.noramp or self.fixed or self.polylines or self.skyline or self.ramps)
 
     def lines(self, language: str = "es") -> tuple[tuple[str, bool], ...]:
-        """Todo lo que dice la vista previa en ``language``, línea a línea con si va en alerta."""
-        return _preview_lines(self.refusal, self.notices, language)
+        """Lo que dice la vista previa en ``language``, línea a línea con si va en alerta: **hasta** :data:`SUMMARY_PER_CODE` **avisos de cada código** y, tras ellos, «… y N avisos como éste»
+        (T40c; H3-2: 21 avisos de una rampa tapaban media vista); todos van en el informe de la operación."""
+        return _preview_lines(self.refusal, limit_notices(self.notices), language)
+
+
+PIT_FINDING_LABELS = 8
+"""Los hallazgos de una corta a los que la vista previa pone nombre junto a su cruz (T40c; H3-2: con 21 se solapaban); las cruces se dibujan todas. No es una cifra minera: es lo que se lee en la vista."""
+
+
+def finding_labels(findings: Iterable[Any]) -> tuple[Any, ...]:
+    """Los hallazgos de ``findings`` que llevan nombre en la vista previa (T40c; H3-2): **uno por lugar** (al metro: varios en el mismo punto se leerían uno sobre otro), el primero de cada uno, y
+    como mucho :data:`PIT_FINDING_LABELS`, en su orden."""
+    named: list[Any] = []
+    seen: set[tuple[int, int]] = set()
+    for item in findings:
+        place = (round(float(item.place[0])), round(float(item.place[1])))
+        if place in seen:
+            continue
+        seen.add(place)
+        named.append(item)
+        if len(named) >= PIT_FINDING_LABELS:
+            break
+    return tuple(named)
 
 
 def pit_preview_steps(project: StoreProject, ask: PitAsk, version_uid: str, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:

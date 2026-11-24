@@ -106,6 +106,24 @@ def _g(value: float) -> str:
     return format_number(value, 0 if float(value).is_integer() else 1)
 
 
+def _ramp_finding_text(detail: str) -> str:
+    """El nombre de un hallazgo de rampa: ``detail`` es «rampa: código del aviso» y se dice qué pasó, nunca la clave interna (T40c; H3-2)."""
+    ramp, _sep, code = str(detail).partition(": ")
+    if code == "des.pit_ramp_gradient":
+        what = tr("gradient over the maximum")
+    elif code == "des.pit_ramp_mean_gradient":
+        what = tr("mean gradient over the maximum")
+    elif code == "des.pit_ramp_radius_reduced":
+        what = tr("curve radius reduced")
+    elif code == "des.pit_ramp_radius_below_min":
+        what = tr("curve radius below the minimum")
+    elif code == "des.pit_ramp_prolonged":
+        what = tr("stretch beyond the side of the pit line")
+    else:
+        what = tr("requirement not met")
+    return tr("Ramp «{ramp}»: {what}", ramp=ramp, what=what)
+
+
 def _finding_text(found: Any) -> str:
     """El nombre de un hallazgo junto a su lugar: lo que es, su valor y su límite, y su banco."""
     kind = str(getattr(found.kind, "value", found.kind))
@@ -125,7 +143,7 @@ def _finding_text(found: Any) -> str:
     elif kind == "unexcavated":
         text = tr("Area not excavated because of a restriction: {value} {unit}", value=value, unit=unit)
     elif kind == "ramp":
-        text = tr("Ramp requirement not met: {detail}", detail=found.detail)
+        text = _ramp_finding_text(found.detail)
     else:
         text = tr("Bench without a profile")
     return text if found.bench is None else tr("{text} · bench {bench}", text=text, bench=found.bench)
@@ -237,7 +255,7 @@ def build_pit(request: Any, budget_s: float) -> Generator[None, None, tuple[desi
         for start in found.starts:
             text = tr("Start of «{ramp}»: {name}", ramp=start.ramp, name=start.name) if start.name else tr("Start of «{ramp}»", ramp=start.ramp)
             named.append((text, (start.x, start.y), START_COLOR, START_RANK))
-        for item in found.findings:
+        for item in design_preview.finding_labels(found.findings):
             named.append((_finding_text(item), item.place, FINDING_COLOR, FINDING_RANK))
         for ramp in found.ramps:
             middle = ramp.axis[len(ramp.axis) // 2]

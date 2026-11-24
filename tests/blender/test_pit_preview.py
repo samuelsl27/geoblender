@@ -179,6 +179,23 @@ class PitPreviewTest(unittest.TestCase):
         self.assertTrue(english.summary[0][0].startswith("Preview of «Corta 1» (PIT-001) in V01, as left by «Calculate»: 3 benches"))
         self.assertIn("Skyline", [row.text for row in english.lines.legend])
 
+    def test_b2_a_ramp_finding_is_named_without_its_internal_key_and_the_crowd_is_capped(self) -> None:
+        """RF-018-32, RF-018-31 (T40c; H3-2): el nombre de un hallazgo de rampa dice qué pasa (no la clave «des.…») y, con 21 hallazgos, se nombran como mucho ``PIT_FINDING_LABELS`` (uno por lugar)
+        aunque las 21 cruces se dibujan; el texto de arriba lleva «… y N avisos como éste»."""
+        dp, pit = self.dpreview, self.pit
+        base = self.after()
+        finds = tuple(self.pit_model.Finding("ramp", 15.0, 20.0, (WEST + 100.0 + 5.0 * (number % 12), SOUTH + 105.0), 1, "m", "Espiral: des.pit_ramp_radius_reduced") for number in range(21))
+        warnings = tuple(dp.Notice("des.pit_ramp_radius_reduced", {"entity": "Espiral", "bench": 1, "vertex": number, "fitted": 15.0, "radius": 20.0, "x": 1.0, "y": 2.0}) for number in range(21))
+        crowded = dp.PitPreview(base.name, base.code, base.version, base.masks, mode=base.mode, start_surface=base.start_surface, cell_m=base.cell_m, calculated=True, polylines=base.polylines,
+                                ramps=base.ramps, findings=finds, bench_numbers=base.bench_numbers, notices=(*base.notices, *warnings))
+        built = self.build(crowded)
+        self.assertEqual(self.batch(built, pit.FINDING).segments, 2 * 21)
+        names = [label.text for label in built.lines.labels]
+        self.assertTrue(all("des." not in text for text in names), names)
+        self.assertTrue(any(text.startswith("Rampa «Espiral»: ") for text in names), names)
+        self.assertLessEqual(len([text for text in names if text.startswith("Rampa «Espiral»")]), dp.PIT_FINDING_LABELS)
+        self.assertLessEqual(len(built.summary), 6)
+
     # --- (c) el aviso en lugar del dibujo ------------------------------------------------------------
 
     def test_c_what_calculating_would_refuse_or_missing_masks_are_the_warning_instead_of_the_drawing(self) -> None:

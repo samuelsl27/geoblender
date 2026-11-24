@@ -11728,8 +11728,26 @@ es = "Cresta sobre un área intocable: {value} {unit}"
 ["Area not excavated because of a restriction: {value} {unit}"]
 es = "Área sin excavar por una restricción: {value} {unit}"
 
-["Ramp requirement not met: {detail}"]
-es = "Incumplimiento de la rampa: {detail}"
+["Ramp «{ramp}»: {what}"]
+es = "Rampa «{ramp}»: {what}"
+
+["gradient over the maximum"]
+es = "pendiente por encima del máximo"
+
+["mean gradient over the maximum"]
+es = "pendiente media por encima del máximo"
+
+["curve radius reduced"]
+es = "radio de curva reducido"
+
+["curve radius below the minimum"]
+es = "radio de curva por debajo del mínimo"
+
+["stretch beyond the side of the pit line"]
+es = "tramo más allá del lado de la corta"
+
+["requirement not met"]
+es = "requisito sin cumplir"
 
 ["Bench without a profile"]
 es = "Banco sin perfil"

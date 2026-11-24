@@ -184,6 +184,30 @@ class PitPreviewTest(unittest.TestCase):
             self.assertTrue(found.msgid and found.es)
 
 
+class PitCrowdingTest(unittest.TestCase):
+    """RF-018-32, RF-018-31 (T40c; H3-2): el texto y las etiquetas de la vista previa de lo calculado no tapan la vista."""
+
+    def test_a_the_text_of_a_calculated_preview_lists_a_few_warnings_per_code_and_says_how_many_more(self) -> None:
+        """RF-018-32: 21 avisos de un mismo código no llenan la vista: la nota, 3 avisos y «… y 18 avisos como éste»; los de otros códigos, a su cuenta."""
+        note = preview.Notice("des.preview_pit_calculated", {"entity": "C", "code": "PIT-001", "version": "V01", "benches": 5, "cut": 1.0, "ramps": 1, "findings": 21, "by": "bench"})
+        radius = tuple(preview.Notice("des.pit_ramp_radius_reduced", {"entity": "Espiral", "bench": number, "vertex": 2, "fitted": 15.0, "radius": 20.0, "x": 1.0, "y": 2.0}) for number in range(21))
+        shown = preview.PitPreview("C", "PIT-001", "V01", access.MaskState.CURRENT, calculated=True, notices=(note, *radius)).lines("es")
+        self.assertEqual(len(shown), 5)
+        self.assertFalse(shown[0][1])
+        self.assertIn("18 avisos como éste", shown[-1][0])
+        self.assertEqual(sum("des.pit_ramp" in text for text, _alert in shown), 0, "ninguna clave interna")
+
+    def test_b_the_findings_that_get_a_name_are_one_per_place_and_at_most_a_few(self) -> None:
+        """RF-018-32: 21 hallazgos, 7 en un mismo lugar, se nombran como mucho ``PIT_FINDING_LABELS`` y ninguno en el lugar de otro; la cruz de todos se dibuja igual."""
+        found = [pit_model.Finding("ramp", 15.0, 20.0, (700_000.0 + 3.0 * (number // 7) * 50.0, 4_400_000.0 + 10.0 * (number % 3)), 1, "m", "Espiral: des.pit_ramp_radius_reduced")
+                 for number in range(21)]
+        named = preview.finding_labels(found)
+        self.assertLessEqual(len(named), preview.PIT_FINDING_LABELS)
+        self.assertEqual(len({(round(item.place[0]), round(item.place[1])) for item in named}), len(named))
+        self.assertEqual(preview.finding_labels(found[:2]), preview.finding_labels(found[:2]))
+        self.assertEqual(len(preview.finding_labels([])), 0)
+
+
 class PitScaleTest(unittest.TestCase):
     """RNF-018-08: el coste de preparar lo que se dibuja de una corta grande."""
 
