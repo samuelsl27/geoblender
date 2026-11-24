@@ -1645,6 +1645,7 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Cambiado
 
+- **El espejo del NAS nunca copia los datos de clientes** (spec 007, DIFF-007a): `Documentacion/datos_reales/` (la copia local de los datos de clientes, ignorada por git) queda excluida del espejo, como `dist/` y `.deps/`: no se copia, no se compara ni cuenta como cambio del NAS, y si ya hubiera una copia en el destino no se toca (el informe la nombra; la borra a mano quien publica). Una carpeta `datos_reales` en cualquier otro sitio sí se refleja.
 - **La comprobación de cada tarea cuesta unos 27 s más con la corta por bancos** (spec 018): de unos 105 s a unos 131 s, con 708 pruebas más. Samuel aceptó el 24/11/2026 ese coste medido como el nuevo techo
   en lugar de los 3 s que se permitían a las specs anteriores; no se mueve ni se borra ninguna prueba. Lo que sí queda fuera de esa comprobación son las pruebas pesadas con un proyecto de 2 m, que van al paso
   «hito» de `--completo`, como en las specs 016 y 017.

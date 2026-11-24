@@ -52,5 +52,7 @@ con `--python-exit-code 1` y un perfil temporal, nunca con el perfil real del us
   publica (una persona, o un agente al que ella se lo pida): nunca `git push` a mano ni
   fusiones en la web de GitHub. Si para con código 3 (`CAMBIOS EN EL DESTINO`), no la
   fuerces: enseña la lista a quien publica. `--rehacer-estado`, solo si ella lo pide.
+- Toda interfaz sigue `docs/sdd/diseno-de-interfaz.md` de la documentación: léelo antes de la
+  tarea con pantalla y pasa su checklist (sin claves internas, textos cortados ni patrones engañosos).
 - Sin `__pycache__` en el repositorio (`-B`); texto en UTF-8 sin BOM y LF; cabecera SPDX en
   cada `.py`; ningún enlace simbólico.

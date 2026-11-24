@@ -519,6 +519,35 @@ class MirrorTest(unittest.TestCase):
             self.assertFalse((m.dest / "dist").exists())
         self.assertIn(f"{CODE}/{layout.EXTENSION_DIR}/.deps/nota.txt", report.copied)
 
+    def test_client_data_never_mirrored(self) -> None:
+        """RF-007-22, D-17, EXP-01 (DIFF-007a): ``Documentacion/datos_reales/`` (datos de
+        clientes, ignorada por git) ni se lista, ni se copia, ni cuenta como sobrante del
+        PC; una copia ya existente en el destino ni se toca ni es un cambio del NAS; una
+        carpeta con ese nombre en otro sitio sí se refleja."""
+        data = "Documentacion/datos_reales/cliente/sondeos.csv"
+        with mirrored() as m:
+            m.write(m.project, data, "dato de cliente")
+            m.write(m.project, "docs/datos_reales/nota.txt", "nota")
+            source = safe_mirror.scan_source(m.project)
+            self.assertNotIn(data, source.files)
+            self.assertNotIn("Documentacion/datos_reales", source.folders)
+            self.assertIn("docs/datos_reales/nota.txt", source.files)
+            self.assertTrue(safe_mirror.is_excluded("documentacion/DATOS_REALES", True))
+            report = m.mirror()
+            self.assertFalse((m.dest / "Documentacion" / "datos_reales").exists())
+            self.assertTrue((m.dest / "docs" / "datos_reales" / "nota.txt").is_file())
+            self.assertNotIn(data, report.copied)
+            m.write(m.dest, "Documentacion/datos_reales/viejo.txt", "copia antigua")
+            self.assertEqual(m.kinds(), [])
+            self.assertIn(
+                "Documentacion/datos_reales/", safe_mirror.scan_destination(m.dest).excluded
+            )
+            m.mirror()
+            self.assertEqual(
+                (m.dest / "Documentacion" / "datos_reales" / "viejo.txt").read_bytes(),
+                "copia antigua".encode(),
+            )
+
     def test_order_objects_files_refs_deletions(self) -> None:
         """RF-007-22: primero los objetos de git, después los ficheros de trabajo, el
         resto de cada ``.git``, sus referencias (``refs/``, ``packed-refs``, ``HEAD``,

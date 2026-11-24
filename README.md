@@ -239,6 +239,10 @@ de expedientes de clientes…) o si la configuración de git lleva credenciales.
 en orden, ejecuta `tools/check.py --completo` y `tools/check_docs.py`, sube la rama actual con sus
 etiquetas sin forzar y hace el espejo: copia solo lo que cambió y comprueba el resultado.
 
+El espejo no copia nunca `Documentacion/datos_reales/` (datos de clientes, solo en el PC), ni `dist/` y
+`.deps/` de la raíz de cada repositorio, `__pycache__/`, `*.pyc` y similares; si el NAS ya tuviera una
+copia de `datos_reales`, no la toca y el informe la nombra (se borra a mano).
+
 El espejo **avisa y no borra**: guarda en `%LOCALAPPDATA%\Geoblender\espejo` el estado del
 último espejo de cada destino y, si desde entonces alguien creó, cambió o borró algo en el
 NAS, para con el código 3 (`CAMBIOS EN EL DESTINO`), lo lista y dice cómo traerlo al PC; no

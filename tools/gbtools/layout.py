@@ -62,12 +62,13 @@ ENV_DOCS_DIR = "GEOBLENDER_DOCS_DIR"
 ENV_NAS_MIRROR = "GEOBLENDER_NAS_ESPEJO"
 
 # Lo que el espejo no copia ni borra (sintaxis de gbtools.ignore); dist y .deps,
-# anclados a la raíz de cada repositorio (D-17).
+# anclados a la raíz de cada repositorio (D-17), y los datos de clientes copiados.
 MIRROR_EXCLUDED: tuple[str, ...] = (
     "/dist/",
     "/.deps/",
     f"/{CODE_DIR_IN_DOCS}/dist/",
     f"/{CODE_DIR_IN_DOCS}/.deps/",
+    "/Documentacion/datos_reales/",  # datos de clientes (EXP-01; DIFF-007a): nunca al NAS
     "__pycache__/",
     "*.pyc",
     "*.blend[0-9]",
