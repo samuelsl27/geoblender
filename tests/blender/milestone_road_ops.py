@@ -817,10 +817,10 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
     def test_g_d_a_check_is_called_without_a_version_only_if_it_asked_for_it(self) -> None:
         """RF-015-08, RF-017-04, RF-017-07 (T49; hallazgo T47-1): ``core_provenance.check_parameter_change`` sigue sin llamar a ninguna comprobación con el cambio **del proyecto** (sin versión)
         —las reglas de las entidades de la 015 y la 016 son de una versión: sin cambio—, **salvo a la que se registró con ``project_scope=True``**, que recibe ``None`` por versión; con versión,
-        a todas las de su principio. ``des`` la pide solo para los valores del perfil de pista (``des.roadprofile.``): ningún principio de entidad la lleva. Volver a registrar un principio sin
+        a todas las de su principio. ``des`` la pide para los valores del perfil de pista (``des.roadprofile.``) y, desde la 018 (T41), los de la roseta y la rampa de la corta: ningún principio de entidad la lleva. Volver a registrar un principio sin
         ``project_scope`` se la quita y desregistrar quita la comprobación y el aviso."""
         core, des_ops = platform_ops._module("bl.ops.core_provenance"), platform_ops._module("bl.ops.des")
-        self.assertEqual(core._PROJECT_SCOPE_CHECKS, {des_ops.ROAD_PROFILE_PARAMETER_PREFIX})  # noqa: SLF001
+        self.assertEqual(core._PROJECT_SCOPE_CHECKS, {des_ops.ROAD_PROFILE_PARAMETER_PREFIX, *des_ops.PIT_VALUE_PARAMETER_PREFIXES})  # noqa: SLF001  (018, T41: la roseta y la rampa de la corta también)
         self.assertIs(core._PARAMETER_CHECKS[des_ops.ROAD_PROFILE_PARAMETER_PREFIX], des_ops._check_road_profile_parameter)  # noqa: SLF001
         calls: list[tuple[str, str | None]] = []
 
