@@ -173,20 +173,16 @@ API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
                 "### 4.3 Lo que entrega la spec 015 (R-36)",
                 "### 4.4 Lo que entrega la spec 016 (R-36)",
                 "### 4.5 Lo que entrega la spec 017 (R-40)",
-                "### 4.5.1 Lo que entrega la spec 018 (R-35; en curso: lo hecho hasta T04)")
+                "### 4.5.1 Lo que entrega la spec 018 (R-35)")
 
 # El mecanismo de la 014, la 015, la 016 y la 017 para una spec que añade API pública mientras se construye: cada tarea
 # añade aquí sus nombres (y los módulos nuevos, que aún no tienen fila en la ficha) y la tarea de documentación los
 # lleva a la ficha y vacía estos dos conjuntos. Vacíos desde la T34 de la 015 (la ficha, ``des.md`` §4.3, nombra todo lo
 # público de ``design``), otra vez desde su T47, **desde la T38 de la 016** (``des.md`` §4.4 nombra los siete módulos
 # nuevos y lo que la 016 añade a los demás) y **desde la T35 de la 017** (``des.md`` §4.5 nombra los trece módulos nuevos
-# de las pistas y la accesibilidad y lo que la 017 añade a los demás); una spec posterior los usará con los suyos. El nombre
+# de las pistas y la accesibilidad y lo que la 017 añade a los demás) y **desde la T37 de la 018** (``des.md`` §4.5.1 nombra todo lo público de la corta); una spec posterior los usará con los suyos. El nombre
 # ``PENDING_015_*`` se conserva porque otras pruebas lo importan.
-PENDING_015_API: frozenset[str] = frozenset({
-    "PitParam", "pit_operation_defs", "reproduce_pit",  # T02
-    "PitRampParam", "PitSectorParam", "RoseParam", "check_pitramp_value", "check_rose_value", "pit_sector_key", "pitramp_key", "rose_key",  # T03: params
-    "RampConfirmation", "pit_expand_figures", "pit_figures", "ramp_confirmation", "ramp_confirmed",  # T03: provenance
-    "reproduce_pit_expand"})  # spec 018, T02 y T03: la tarea de documentación de la 018 los cita
+PENDING_015_API: frozenset[str] = frozenset()
 PENDING_015_MODULES: frozenset[str] = frozenset()
 
 

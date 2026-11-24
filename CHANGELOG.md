@@ -41,7 +41,9 @@ apoyaba a la vista, hace el contrafuerte con el pie libre en lo que se admite y 
 la verificación de los límites distingue el corte de terreno del de acopios (spec 016, cerrada el 20/11/2026 y vista
 en pantalla con eventos simulados, sin ratón real). Y traza pistas y rampas con su perfil, su ruta de mínimo coste con 16 rumbos, su eje con
 curvas, su rasante acotada y su sección grabada, y dice a dónde se llega a pie y qué bermas, plataformas y zonas «requiere acceso» quedan
-comunicadas, que la verificación de los límites ya comprueba (spec 017, cerrada el 22/11/2026 y vista en pantalla con eventos simulados, sin ratón real). Lo de
+comunicadas, que la verificación de los límites ya comprueba (spec 017, cerrada el 22/11/2026 y vista en pantalla con eventos simulados, sin ratón real). Y saca
+los bancos de una corta como polilíneas con cota, desde un fondo o desde un límite, con una roseta de taludes, rampas en espiral y en zig-zag, la línea de cielo y la
+superficie de la corta (spec 018, hecha, pendiente de verla en pantalla, de contrastarla con el proyecto de referencia y de cerrarla). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -126,6 +128,36 @@ QGIS 4.2 con su ventana, las medidas en `Z:`, la comparación con el proyecto de
 clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
+
+- **Corta por bancos** (spec 018, R-35; en `main`, sin publicar y sin cerrar: no se ha visto en pantalla y no se ha contrastado con el proyecto de referencia, y esta entrada está pendiente de la
+  revisión de Samuel). Hasta ahora Geoblender diseñaba en la rejilla: daba la envolvente y el escalonado, pero no las líneas de cada banco. Lo que se hace con un programa minero es otra cosa: se parte de
+  una línea de fondo, o de la cresta de un límite legal, se da una altura de banco, un ángulo de cara y una berma, y salen los bancos uno a uno, como polilíneas con su cota, con las rampas que los comunican
+  y dónde cada banco sale al terreno. Eso es lo que se entrega a perforación y voladura y lo que se contrasta con la propiedad. Ahora está en `Diseño ▸ Corta por bancos`: `Nueva corta…`,
+  `Expandir banco…`, `Rampa…`, `Roseta de taludes…`, `Línea de cielo…` y `Superficie y sólido…`.
+  - **Dos modos.** **Ascendente**: desde uno o más fondos, cada uno a su cota, los bancos suben hacia fuera hasta salir al terreno (o hasta la cota de coronación que se dé).
+    **Descendente**: desde uno o más límites, cuya cresta sigue al terreno o está a una cota, los bancos bajan hacia dentro hasta el primer criterio de parada que se cumpla: el ancho mínimo del
+    fondo, la cota de fondo o el número máximo de bancos (los tres sin valor por defecto; se pide al menos uno). El primer banco de una descendente sobre un terreno inclinado tiene altura variable.
+  - **Roseta de taludes y sectores.** El ángulo de cara y la berma cambian con el azimut de la cara (la dirección hacia la que baja la pared; no es el rumbo geológico) y con el sector de diseño, sin
+    huecos entre ellos. La roseta es una tabla con nombre de rangos de azimut sin huecos ni solapes, y el avance y el talud general de cada rango salen de ella. Con **bancos dobles** la berma se deja
+    cada *n* bancos. El desfase nunca empina una cara más de lo que permiten sus tolerancias y, si no se puede verificar, la corta se rechaza diciendo el banco, el lugar y el defecto.
+  - **Rampas en espiral y en zig-zag**, definidas una vez y reutilizables: tipo, sentido, punto de inicio, pendiente de diseño, perfil de pista, transición y, en el zig-zag, radio de giro y plataforma de
+    retorno. Siguen las reglas de las pistas de la 017: el radio no baja del mínimo del perfil, la pendiente se avisa con su banco y su lugar, y si la **pendiente media pasa del máximo del perfil la corta no se
+    crea sin una confirmación expresa y un motivo**, que queda registrado con quién y cuándo. Una rampa que no cabe se rechaza diciendo por qué y proponiendo otro tipo, otro sentido u otro inicio, sin
+    cambiarlos.
+  - **La línea de cielo, la superficie y los hallazgos.** La corta da su línea de cielo (donde sale al terreno) con su distancia al límite legal y al perímetro de actuación, su superficie en la rejilla del
+    proyecto (la oficial; el TIN y el sólido de excavación son vistas que se crean a petición, con un aviso antes de pasar de 300.000 triángulos), 21 cifras con su tipo y su procedencia, el volumen por banco
+    y una lista de **hallazgos** con su lugar (una berma menor que la pedida, una cresta fuera del perímetro, un fondo estrecho, una rampa que no cumple…) que nunca se corrigen por su cuenta. Se contrasta con el
+    escalonado de la 013 y se avisa si la ascendente lo supera en más de una altura de banco.
+  - **Edición asistida.** `Expandir banco…` propone el banco siguiente de una línea sin escribir nada y, al confirmar, lo deja como una capa de líneas con Z que se edita en QGIS; esas líneas, u otras con Z,
+    se pueden **fijar** como banco: la corta las usa tal cual y completa los demás. Nunca se mueve una línea suya.
+  - **Entidad de diseño.** La corta se aplica en cadena (de cada superficie parte una) y no declara restricciones: su zona se excava, no se protege. No mueve nada fuera del perímetro de actuación ni donde las
+    máscaras lo impiden. Cambiar un perfil, una roseta, una rampa o el límite la deja obsoleta con su causa y con ella lo que parte de ella; se puede reproducir meses después, sin el proyecto, bit a bit.
+    En QGIS salen dos capas por versión que no se editan a mano (las polilíneas y las líneas de cielo) y la capa de «Expandir banco…», que sí.
+  - **Cifras con su tipo.** Ninguna cifra minera tiene valor por defecto. Las **cuatro tolerancias del desfase** (el arco, la simplificación, el radio de cierre y la ventana del azimut) y el radio de
+    giro y la plataforma mínima del zig-zag son **HIPÓTESIS** sin valor por defecto: las confirma una persona. Solo tienen valor por defecto los bancos por berma (1) y la esquina (redondeada).
+  - **Lo que no hace todavía:** no parte de la concha óptima (R-49) ni diseña la corta de forma automática (R-55); no admite polígonos con huecos; no mezcla bancos por berma distintos entre sectores; la rampa de la
+    descendente no se calcula con bancos dobles, con varios límites con rampa ni sobre el primer banco de altura variable; una rampa se ha medido sobre 20 bancos en espiral y 5 en zig-zag. Esta guía
+    y lo anterior se han comprobado sin pantalla; falta verlo con el ratón y contrastarlo con el proyecto de referencia. Guía de uso: `docs/usuario/corta-por-bancos.md`.
 
 - **Pistas y rampas** (spec 017, R-40; cerrada el 22/11/2026: verificada y vista en pantalla con eventos simulados, sin ratón real, a falta de
   contrastarla con el proyecto de referencia). En el proyecto de referencia las pistas se resolvieron con cinco métodos sucesivos repartidos en varios
@@ -1613,6 +1645,9 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Cambiado
 
+- **La comprobación de cada tarea cuesta unos 27 s más con la corta por bancos** (spec 018): de unos 105 s a unos 131 s, con 708 pruebas más. Samuel aceptó el 24/11/2026 ese coste medido como el nuevo techo
+  en lugar de los 3 s que se permitían a las specs anteriores; no se mueve ni se borra ninguna prueba. Lo que sí queda fuera de esa comprobación son las pruebas pesadas con un proyecto de 2 m, que van al paso
+  «hito» de `--completo`, como en las specs 016 y 017.
 - **Una unidad antrópica nueva nace «Suelto»** (spec 011, ventana de Cubicación ▸ Materiales y densidades…; decidido con la spec 016): al
   elegir la clase «Antrópica» (el acopio, el escombro) en una unidad de la columna, su estado pasa a «Suelto», porque un acopio no está in situ
   y se pesa con V·ρ/K, no con V·ρ. Antes toda unidad nacía «In situ» y, si no se cambiaba a mano, el acopio salía un 23 % más pesado sin
