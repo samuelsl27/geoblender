@@ -770,14 +770,19 @@ def _profiles(reader: PitReader, request: PitRequest, code: str, sector_codes: M
     built = pipeline.bench_profiles(_bench_values(reader, codes), codes)
     base = None if request.profile is None else built[request.profile]
     by_sector = {sector_codes[segment]: built[profile] for segment, profile in request.sector_profiles}
-    ordered = [item for item in (base, *by_sector.values()) if item is not None]
+    check_same_shape(request.name, code, [item for item in (base, *by_sector.values()) if item is not None])
+    return base, by_sector
+
+
+def check_same_shape(name: str, code: str, ordered: Sequence[BenchProfile]) -> None:
+    """Los perfiles ``ordered`` de la corta ``name`` (de código ``code``) son **de la misma altura y ancla** (RF-018-06): ``des.pit_profiles_differ`` con los dos y sus valores si el primero y
+    otro no lo son. Lo comparten preparar la corta (:func:`_profiles`) y «Cambiar parámetro…» del perfil de un sector (T41, hallazgo F-1)."""
     first = ordered[0]
     for other in ordered[1:]:
         if other.height_m != first.height_m or other.anchor_m != first.anchor_m:
-            raise DesignError(PitCode.PROFILES_DIFFER.value, obj=f"Corta «{request.name}»", field=entity_key(code, PitParam.PROFILE), value=first.code,
-                              name=request.name, profile=first.code, other=other.code,
+            raise DesignError(PitCode.PROFILES_DIFFER.value, obj=f"Corta «{name}»", field=entity_key(code, PitParam.PROFILE), value=first.code,
+                              name=name, profile=first.code, other=other.code,
                               other_value=f"h = {other.height_m} m, z₀ = {other.anchor_m} m") from None
-    return base, by_sector
 
 
 def _sector_codes(request: PitRequest, code: str, refs: Sequence[Any]) -> dict[str, str]:

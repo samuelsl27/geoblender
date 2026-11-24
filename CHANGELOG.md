@@ -1844,6 +1844,11 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Corregido
 
+- **«Cambiar parámetro…» de una roseta de taludes, de una definición de rampa y de un valor por sector de una corta pasa por las reglas de crearlos** (spec 018, T41; hallazgo F-1): se escribían
+  con la sola comprobación de tipo y rango. Ahora una roseta sin huecos ni solapes de azimut (con todos sus valores), la pendiente de una rampa dentro de la máxima del perfil de pista
+  elegido (`g ≤ pd`) y, por sector, el perfil de la misma altura y ancla que el base, el mismo número de bancos por berma y una roseta que existe, se comprueban **antes de escribir** y
+  sin escribir nada, nombrando la roseta, la rampa o la corta, el campo y el valor. Con el ámbito proyecto también en la roseta y la rampa. Como consecuencia, un azimut de una roseta
+  ya no se mueve de uno en uno con «Cambiar parámetro…» (cada paso dejaría un hueco o un solape).
 - Las cifras de una pista **ya no llevan ruido de coma flotante**: una pista cuya rasante sigue el terreno a la última cifra enseñaba en la barra N «Relleno de la
   sección = 3,41e-13 m³», «Mayor altura de terraplén = 1,42e-14 m» y «Volumen neto = −3,41e-13 m³», que se leen como un fallo; ahora el corte y el relleno de
   la sección y del borde, el neto, las alturas máximas y la pared valen **0** cuando están por debajo de la exactitud de esas cifras (10⁻⁹ m, m² y m³) y, si no,

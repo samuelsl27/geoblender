@@ -353,6 +353,9 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertIs(adjusts.get(road_prefix), m.des_ops._adjust_entity_parameter)  # noqa: SLF001  (017, T29c: la cota que da la persona)
         for prefix in m.des_ops.PARAMETER_PREFIXES:  # los de cada tipo de entidad, también los de la pista y la accesibilidad (017)
             self.assertIs(checks.get(prefix), m.des_ops._check_entity_parameter, prefix)  # noqa: SLF001
+        for prefix in m.des_ops.PIT_VALUE_PARAMETER_PREFIXES:  # la roseta y la rampa, con las reglas de crearlas y con el ámbito proyecto (018, T41; F-1)
+            self.assertIs(checks.get(prefix), m.des_ops._check_pit_value_parameter, prefix)  # noqa: SLF001
+            self.assertIn(prefix, core_prov._PROJECT_SCOPE_CHECKS, prefix)  # noqa: SLF001
         self.assertIn(m.des_ops._layers_after_recompute, after_recompute)  # noqa: SLF001  (T43)
         for _ in range(2):
             m.des_ops.unregister()
@@ -364,6 +367,9 @@ class DesignRegisteredTest(unittest.TestCase):
             for prefix in m.des_ops.PARAMETER_PREFIXES:
                 self.assertNotIn(prefix, checks, prefix)
                 self.assertNotIn(prefix, afters, prefix)
+            for prefix in m.des_ops.PIT_VALUE_PARAMETER_PREFIXES:
+                self.assertNotIn(prefix, checks, prefix)
+                self.assertNotIn(prefix, core_prov._PROJECT_SCOPE_CHECKS, prefix)  # noqa: SLF001
             self.assertNotIn(m.des_ops._layers_after_recompute, after_recompute,  # noqa: SLF001
                              "…y lo que sigue a «Recalcular lo obsoleto» (T43)")
         for _ in range(2):
@@ -376,6 +382,8 @@ class DesignRegisteredTest(unittest.TestCase):
             self.assertEqual(after_recompute.count(m.des_ops._layers_after_recompute), 1)  # noqa: SLF001
             for prefix in m.des_ops.PARAMETER_PREFIXES:
                 self.assertIs(checks.get(prefix), m.des_ops._check_entity_parameter, prefix)  # noqa: SLF001
+            for prefix in m.des_ops.PIT_VALUE_PARAMETER_PREFIXES:
+                self.assertIs(checks.get(prefix), m.des_ops._check_pit_value_parameter, prefix)  # noqa: SLF001
 
         m.des_ops.unregister()
         others.extend(self.register_others())

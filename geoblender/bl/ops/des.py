@@ -1052,6 +1052,27 @@ def _check_entity_parameter(project: Any, key: str, value: Any, version_uid: str
     from ...design import entity_store  # al usarlo: habilitar no carga las entidades
 
     entity_store.check_parameter_change(project, key, value, version=version_uid)
+    if key.startswith(f"{design_params.PIT_ENTITY.key_prefix}."):  # un valor por sector de una corta (``des.pit.{e}.<valor>.{s}``), que el almacén no reconoce (spec 018, T41; F-1)
+        from ...design import pit_param_check
+
+        pit_param_check.check_pit_sector_change(project, key, value, version=version_uid)
+
+
+PIT_VALUE_PARAMETER_PREFIXES: tuple[str, ...] = ("des.rose.", "des.pitramp.")
+"""El principio de las claves de los valores de una roseta de taludes y de una definición de rampa (spec 018, T41; hallazgo F-1; RF-018-04, 07, 15): no son de una entidad (son del
+proyecto, con valores por versión), así que no están en :data:`PARAMETER_PREFIXES`; los vigilan :func:`_check_pit_value_parameter`, con el ámbito proyecto también."""
+
+
+def _check_pit_value_parameter(project: Any, key: str, value: Any, version_uid: str | None) -> None:
+    """Lo que ``des`` registra en «Cambiar parámetro…» de un valor de una roseta o de una definición de rampa (:func:`~.core_provenance.register_parameter_check`; spec 018, T41; F-1): las
+    reglas de crearlas (``design.pit_param_check``: la roseta sin huecos ni solapes, ``g ≤ pd`` de la rampa) antes de que la orden escriba. **También con el ámbito proyecto**
+    (``version_uid`` es ``None``): el valor del proyecto llega a las versiones que no tienen el suyo. Importa el módulo al usarlo, no al habilitar."""
+    from ...design import pit_param_check
+
+    if key.startswith("des.rose."):
+        pit_param_check.check_pit_rose_change(project, key, value, version=version_uid)
+    else:
+        pit_param_check.check_pit_ramp_change(project, key, value, version=version_uid)
 
 
 ROAD_PROFILE_PARAMETER_PREFIX = "des.roadprofile."
@@ -1162,6 +1183,9 @@ def register() -> None:
         _UNDO.append(functools.partial(unregister_parameter_after, prefix, _after_entity_parameter))
     register_parameter_check(ROAD_PROFILE_PARAMETER_PREFIX, _check_road_profile_parameter, project_scope=True)  # los valores de un perfil de pista, con las reglas de «Perfil de pista…» (T40), también con el ámbito proyecto (T49)
     _UNDO.append(functools.partial(unregister_parameter_check, ROAD_PROFILE_PARAMETER_PREFIX, _check_road_profile_parameter))
+    for prefix in PIT_VALUE_PARAMETER_PREFIXES:  # los valores de una roseta y de una rampa, con las reglas de crearlas, también con el ámbito proyecto (spec 018, T41; F-1)
+        register_parameter_check(prefix, _check_pit_value_parameter, project_scope=True)
+        _UNDO.append(functools.partial(unregister_parameter_check, prefix, _check_pit_value_parameter))
     register_parameter_adjust(ROAD_PARAMETER_PREFIX, _adjust_entity_parameter)  # la cota y las dependencias que da la persona a mano (T29c y T40)
     _UNDO.append(functools.partial(unregister_parameter_adjust, ROAD_PARAMETER_PREFIX, _adjust_entity_parameter))
     register_recompute_after(_layers_after_recompute)
