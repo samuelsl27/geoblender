@@ -3872,8 +3872,8 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.pit_fixed_cross",
-        "The fixed benches {bench} and {other} cross or leave no room near {place}; the line of the user is not moved.",
-        "Los bancos fijados {bench} y {other} se cortan o no dejan sitio cerca de {place}; la línea del usuario no se mueve.",
+        "The fixed benches {bench} and {other} cross or leave no room near {place} (they coincide or are closer than 1 mm); the line of the user is not moved: separate it from the neighbouring bench by at least the berm, or fix another bench.",
+        "Los bancos fijados {bench} y {other} se cortan o no dejan sitio cerca de {place} (coinciden o están a menos de 1 mm); la línea del usuario no se mueve: sepárela del banco vecino al menos la berma o fije otro banco.",
     ),
     Message(
         "des.pit_ramp_mean_over",

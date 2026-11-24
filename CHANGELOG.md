@@ -1844,6 +1844,10 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Corregido
 
+- **Un banco fijado que coincide con la cresta del banco vecino se rechaza con el banco, el lugar y qué hacer** (spec 018, T40b; hallazgo H3-1): «Nueva corta…» con la capa de «Expandir banco…» de la propia
+  corta como banco fijado pasaba la comprobación de cortes (la línea coincidía, sin cortarla) y fallaba al calcular la superficie con «las aristas obligatorias … se cruzan», sin banco ni lugar.
+  Ahora un banco fijado a menos de 1 mm de la cresta o del pie vecinos no deja sitio (RF-018-24) y se rechaza con los dos bancos, el lugar y la forma de arreglarlo (separarlo al menos la berma o fijar otro
+  banco); la línea del usuario no se mueve. No cambia ninguna cifra minera.
 - **«Cambiar parámetro…» de una roseta de taludes, de una definición de rampa y de un valor por sector de una corta pasa por las reglas de crearlos** (spec 018, T41; hallazgo F-1): se escribían
   con la sola comprobación de tipo y rango. Ahora una roseta sin huecos ni solapes de azimut (con todos sus valores), la pendiente de una rampa dentro de la máxima del perfil de pista
   elegido (`g ≤ pd`) y, por sector, el perfil de la misma altura y ancla que el base, el mismo número de bancos por berma y una roseta que existe, se comprueban **antes de escribir** y

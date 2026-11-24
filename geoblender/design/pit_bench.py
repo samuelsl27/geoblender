@@ -78,6 +78,8 @@ _LATTICE_TOL_M = 1e-6
 """Lo que una cota de fondo puede apartarse de ``z₀ + j·h`` (m)."""
 _LEVEL_TOL_M = 1e-9
 """Lo que la Z de un banco fijado puede apartarse de la cota de su banco (m, RF-018-23)."""
+_CLEAR_TOL_M = 1e-3
+"""Lo que un banco fijado debe separarse como mínimo de la cresta o el pie vecinos (m, RF-018-24: «no deja sitio»): una berma de menos de un milímetro no existe."""
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -223,6 +225,24 @@ def _crossing(first: np.ndarray, second: np.ndarray) -> np.ndarray | None:
         return None
     found = crossings(first, np.roll(first, -1, axis=0), second, np.roll(second, -1, axis=0))
     return found[4][0] if len(found[4]) else None
+
+
+def _near(first: np.ndarray, second: np.ndarray, tol_m: float) -> np.ndarray | None:
+    """El primer vértice de un anillo a menos de ``tol_m`` del otro (el punto), o ``None``: dos anillos que casi coinciden no dejan sitio entre ellos (T40b: una línea
+    fijada igual a la cresta calculada, a una milésima, pasaba por «sin cortes» y la triangulación de la superficie la rechazaba sin banco ni lugar)."""
+    for ring, other in ((first, second), (second, first)):
+        a, b = other, np.roll(other, -1, axis=0)
+        edge = b - a
+        length2 = np.maximum((edge * edge).sum(axis=1), 1e-300)
+        for start in range(0, len(ring), 256):
+            chunk = ring[start:start + 256]
+            t = np.clip(((chunk[:, None, :] - a[None]) * edge[None]).sum(axis=2) / length2[None], 0.0, 1.0)
+            nearest = a[None] + t[:, :, None] * edge[None]
+            distance = np.hypot(*(chunk[:, None, :] - nearest).transpose(2, 0, 1))
+            hit = np.flatnonzero(distance.min(axis=1) < tol_m)
+            if hit.size:
+                return chunk[int(hit[0])]
+    return None
 
 
 def _touch(first: np.ndarray, second: np.ndarray) -> bool:
@@ -425,6 +445,8 @@ def _ascend_units(job: PitJob) -> Generator[None, None, Benches]:
             if mine.bench is not None and mine.bench * n == level_index:
                 for crest in crests_below:
                     point = _crossing(mine.ring, crest)
+                    if point is None:
+                        point = _near(mine.ring, crest, _CLEAR_TOL_M)
                     if point is not None or _inside(mine.ring[0], crest):
                         raise _fixed_error(job, mine, mine.bench - 1, _place(mine.ring[0] if point is None else point, origin))
                 active = [ring for ring in active if not _touch(ring.points, mine.ring)]
@@ -719,6 +741,8 @@ def _use_fixed(job: PitJob, mine: _Fixed, carried: list[_Crest], feet: list[tupl
     _check_level(job, mine, foot_z)
     for foot, _label_ in feet:
         point = _crossing(mine.ring, foot)
+        if point is None:
+            point = _near(mine.ring, foot, _CLEAR_TOL_M)
         if point is not None:
             raise _fixed_error(job, mine, index, _place(point, origin))
     if not any(_inside(mine.ring[0], foot) for foot, _label_ in feet):

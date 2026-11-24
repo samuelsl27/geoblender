@@ -209,6 +209,29 @@ class FixedBenchTest(unittest.TestCase):
                     pit_bench.ascend(job(fixed=(fixed("b2", line, bench=2),)))
                 self.assertEqual(caught.exception.code, "des.pit_fixed_cross")
 
+    def test_a_fixed_bench_that_coincides_with_the_crest_below_is_rejected_with_bench_and_place(self) -> None:
+        """T40b, RF-018-24, RF-018-23, RF-018-22: el banco fijado que es la expansión de la propia corta (la cresta del banco anterior, tal cual o a 1e-13 a
+        1e-10 m, como sale de una capa guardada) no deja sitio: se rechaza con el banco, el otro banco, el lugar y qué hacer, no con un error del triangulador
+        al calcular la superficie. Con la roseta de dos rangos (E3) y sin ella; uno apartado 0,3 m sigue rechazado y uno a la berma, admitido."""
+        pit_rose = import_geoblender("design.pit_rose")
+        rose = tuple(pit_rose.RoseRange(r.from_deg, r.to_deg, r.face_deg, r.berm_m) for r in pd.ROSE_TWO_RANGES)
+        for with_rose in (False, True):
+            changes = {"params": params(n_berm=2), **({"rose": rose} if with_rose else {})}
+            crest = of_kind(pit_bench.ascend(job(**changes)), "crest", 1)[0]
+            for eps in (0.0, 1e-13, 1e-10, 1e-7, 0.3):
+                with self.subTest(rose=with_rose, noise_m=eps):
+                    vertices = crest.vertices.copy()
+                    if eps:
+                        vertices[:, :2] += np.random.default_rng(3).normal(0.0, eps, (len(vertices), 2))
+                    with self.assertRaises(messages.DesignError) as caught:
+                        pit_bench.ascend(job(fixed=(fixed("b2", vertices, bench=2),), **changes))
+                    self.assertEqual(caught.exception.code, "des.pit_fixed_cross")
+                    text = str(caught.exception)
+                    self.assertIn("2", text)
+                    self.assertIn("1", text)
+                    self.assertRegex(text, r"\d{6}\.\d, \d{7}\.\d")
+                    self.assertIn("berma", text)
+
     def test_a_fixed_bench_that_is_never_reached_is_rejected(self) -> None:
         """Un fijado en un banco que la corta no alcanza (el 9, a 215 m, sobre el terreno) se rechaza, no se ignora."""
         with self.assertRaises(messages.DesignError) as caught:
