@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La comparación del banco de la corta con datos sintéticos (spec 018, T38; CE-018-12; RF-018-27; D-11).
+"""La comparación del banco de la corta con datos sintéticos (spec 018, T38 y T38b; CE-018-12; DIFF-018l; RF-018-27; D-11).
 
 ``tests/banco/silvestre/test_pit.py`` solo lo ejecuta el arnés de los bancos con el banco real. Aquí se comprueba, en el «verde», que se omite sin la
 variable y la comparación (``outside``, ``excavation_m3``, ``perimeter_of``) con arrays sintéticos, sin banco."""
@@ -7,6 +7,7 @@ variable y la comparación (``outside``, ``excavation_m3``, ``perimeter_of``) co
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import os
 import unittest
@@ -19,6 +20,8 @@ from tests.support import pit_data as pd
 from tests.support.package import import_geoblender
 
 grid_mod = import_geoblender("gis.grid")
+design_model = import_geoblender("design.model")
+EXPL = design_model.BenchProfile(**dataclasses.asdict(pd.EXPL))
 
 
 class SkippedTest(unittest.TestCase):
@@ -61,6 +64,51 @@ class ComparisonTest(unittest.TestCase):
         ring = bank.perimeter_of(area, grid, pd.CRS, pd.VERTICAL)
         closed = np.vstack([ring, ring[:1]])
         self.assertAlmostEqual(float(np.hypot(*np.diff(closed, axis=0).T).sum()), 80.0, delta=3.0)
+
+
+class FloorsTest(unittest.TestCase):
+    """DIFF-018l: los fondos de la referencia y la corta ascendente desde ellos, con una referencia sintética de dos fondos (sin banco)."""
+
+    cell = 2.0
+
+    def _two_floor_reference(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        grid = pd.GRID
+        start = pd.flat_terrain(grid, 175.0)
+        west = pd.circle_surface(grid, pd.EXPL, 25.0, 5, 175.0, 125.0, center=(100.0, 200.0))
+        east = pd.circle_surface(grid, pd.EXPL, 25.0, 3, 175.0, 145.0, center=(300.0, 200.0))
+        return start, np.minimum(west, east), np.ones(grid.shape, bool)
+
+    def test_floors_are_the_plateaus_without_lower_ground_around_and_not_the_berms(self) -> None:
+        """Dos cortas circulares a 125 y a 145 m: ``floors_of`` da exactamente sus dos fondos (sus cotas y su centro), no las bermas (que tienen su cara hacia dentro)."""
+        start, reference, area = self._two_floor_reference()
+        floors = bank.floors_of(reference, start, area, 125.0, 10.0, float(pd.GRID.cell_area))
+        self.assertEqual(sorted(level for level, _ in floors), [125.0, 145.0])
+        x, y = pd.local_centers(pd.GRID)
+        for level, mask in floors:
+            centre = 100.0 if level == 125.0 else 300.0
+            self.assertAlmostEqual(float(x[mask].mean()), centre, delta=1.0)
+            self.assertAlmostEqual(float(y[mask].mean()), 200.0, delta=1.0)
+
+    def test_a_pit_rebuilt_from_its_own_floors_matches_the_reference_within_one_percent(self) -> None:
+        """Ida y vuelta (D-11): la corta ascendente desde los dos fondos detectados, con el perfil de la referencia, excava lo de la referencia a ≤ 1 %."""
+        start, reference, area = self._two_floor_reference()
+        grid = pd.GRID
+        floors = bank.floors_of(reference, start, area, 125.0, 10.0, float(grid.cell_area))
+        surface = bank.pit_surface_from_floors(floors, start, grid, pd.CRS, pd.VERTICAL, EXPL)
+        found = bank.excavation_m3(start, surface, area, float(grid.cell_area))
+        expected = bank.excavation_m3(start, reference, area, float(grid.cell_area))
+        self.assertGreater(expected, 0.0)
+        self.assertFalse(bank.outside(found, expected), f"{found} frente a {expected}")
+
+    def test_without_a_floor_there_are_none(self) -> None:
+        """Un terreno sin excavar no tiene fondos; una referencia sin meseta a una cota de la retícula, tampoco."""
+        grid = pd.GRID
+        start = pd.flat_terrain(grid, 175.0)
+        area = np.ones(grid.shape, bool)
+        self.assertEqual(bank.floors_of(start.copy(), start, area, 125.0, 10.0, float(grid.cell_area)), [])
+        x, _ = pd.local_centers(grid)
+        slope = start - np.clip((x - 100.0) * 0.1, 0.0, 30.0)
+        self.assertEqual(bank.floors_of(slope, start, area, 125.0, 10.0, float(grid.cell_area)), [])
 
 
 if __name__ == "__main__":
