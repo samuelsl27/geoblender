@@ -55,6 +55,8 @@ CLASSES = {"des_create_pit": "GEOBLENDER_OT_des_create_pit", "des_expand_bench":
 # siga en la guía y que no haya ninguno más.
 PIT_EXAMPLES: tuple[str, ...] = (
     "polilínea", "cadena", "cumple",
+    # El objeto del TIN se llama como la corta (T40e, H3-6): el nombre de la corta del ejemplo no es del catálogo.
+    "TIN de la corta Corta E1 · V01",
 )
 
 # Los valores de la tabla de §12 de la guía: cada uno con su familia en el código.
