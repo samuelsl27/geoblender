@@ -108,7 +108,9 @@ PIT_CORNER_ITEMS = [
     ("ROUND", "Rounded", "The corners are rounded with arcs"),
     ("MITER", "Mitred", "The corners are kept sharp, mitred")]
 """La esquina del desfase (RF-018-10, D-14)."""
-_PIT_HIDDEN = frozenset({"confirm", "in_steps", "preview", "confirm_mean", "code"})
+_PIT_HIDDEN = frozenset({"confirm", "in_steps", "preview", "confirm_mean", "code", "show_more"})
+_FOLDED_TEXT = ("sector_profiles", "sector_roses", "sector_n_berm", "arc_tol", "simplify", "close_radius", "az_window")
+"""Los campos de texto que el diálogo de «Nueva corta…» pliega en «Más opciones» (con el de la esquina del desfase): si alguno tiene valor, se enseñan."""
 """Las propiedades ocultas del diálogo: las pone quien lo lanza (el botón de su ventana)."""
 _NONE = des_panels.NO_ZONE
 """El identificador de «ninguno» de las listas opcionales (el mismo que usa «Plataforma…»)."""
@@ -398,6 +400,8 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
     in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     preview: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     confirm_mean: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    # «Más opciones»: despliega lo que casi nunca se toca (valores por sector y tolerancias); solo cambia lo que dibuja el diálogo (H3-3).
+    show_more: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     # Calcular una corta traída o heredada «sin calcular» (RF-015-18): el código de la corta que ya está en la versión; con él no hay diálogo: se calcula con los parámetros que ya tiene
     # (``design.pit_store.entity_pit_request``), con su código, sin escribir ninguno.
     code: StringProperty(default="", options=_HIDDEN)  # type: ignore[valid-type]
@@ -476,10 +480,14 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
         benches.prop(self, "profile", text=tr("Bench profile"), translate=False)
         benches.prop(self, "rose", text=tr("Rose of slopes"), translate=False)
         benches.prop(self, "n_berm", text=tr("Benches per berm"), translate=False)
-        sectors = layout.box()
-        sectors.prop(self, "sector_profiles", text=tr("Profiles by sector"), translate=False)
-        sectors.prop(self, "sector_roses", text=tr("Roses by sector"), translate=False)
-        sectors.prop(self, "sector_n_berm", text=tr("Benches per berm by sector"), translate=False)
+        more = self._more_shown()
+        fold = layout.row()  # lo que casi nunca se toca va plegado: así «Calcular» y «Cancelar» caben en 1920 × 1001 (H3-3)
+        fold.prop(self, "show_more", text=tr("More options"), icon="TRIA_DOWN" if more else "TRIA_RIGHT", emboss=False, translate=False)
+        if more:
+            sectors = layout.box()
+            sectors.prop(self, "sector_profiles", text=tr("Profiles by sector"), translate=False)
+            sectors.prop(self, "sector_roses", text=tr("Roses by sector"), translate=False)
+            sectors.prop(self, "sector_n_berm", text=tr("Benches per berm by sector"), translate=False)
         parts = layout.box()
         parts.prop(self, "ramps", text=tr("Ramps"), translate=False)
         parts.prop(self, "noramp", text=tr("Zones without a ramp"), translate=False)
@@ -490,16 +498,21 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
         stops.prop(self, "bottom_level", text=tr("Floor elevation (m)"), translate=False)
         stops.prop(self, "max_benches", text=tr("Maximum number of benches"), translate=False)
         stops.prop(self, "min_floor_width", text=tr("Minimum width of the floor (m)"), translate=False)
-        tolerances = layout.box()
-        tolerances.prop(self, "corner", text=tr("Corner of the offset"), translate=False)
-        for prop, param in _tolerance_rows():
-            label = {"arc_tol": tr("Arc tolerance (m)"), "simplify": tr("Simplification tolerance (m)"), "close_radius": tr("Closing radius (m)"),
-                     "az_window": tr("Azimuth window (m)")}[prop]
-            tolerances.prop(self, prop, text=label, translate=False)
-            tolerances.label(text=_pit_param_text(param), translate=False)  # el tipo de cada tolerancia (RF-018-10, D-14)
+        if more:
+            tolerances = layout.box()
+            tolerances.prop(self, "corner", text=tr("Corner of the offset"), translate=False)
+            for prop, param in _tolerance_rows():
+                label = {"arc_tol": tr("Arc tolerance (m)"), "simplify": tr("Simplification tolerance (m)"), "close_radius": tr("Closing radius (m)"),
+                         "az_window": tr("Azimuth window (m)")}[prop]
+                tolerances.prop(self, prop, text=label, translate=False)
+                tolerances.label(text=_pit_param_text(param), translate=False)  # el tipo de cada tolerancia (RF-018-10, D-14)
         layout.prop(self, "start", text=tr("Start surface"), translate=False)
         layout.prop(self, "support", text=tr("Support surface"), translate=False)
         _draw_entity_preview_button(layout, self, CREATE_PIT, _pit_fields())  # «Vista previa» (RF-018-32)
+
+    def _more_shown(self) -> bool:
+        """Si el diálogo enseña lo plegado (los valores por sector y las tolerancias del desfase): lo pidió quien lo abrió o ya hay algo escrito (no se esconde lo escrito)."""
+        return bool(self.show_more or self.corner != "DEFAULT" or any(getattr(self, prop).strip() for prop in _FOLDED_TEXT))
 
     # --- Lo pedido ----------------------------------------------------------------------------
 

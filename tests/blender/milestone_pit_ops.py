@@ -45,7 +45,7 @@ PIT_TYPE = "des.pit"
 PERSON = h2.PERSON
 REASON = "Prueba de la orden «Nueva corta…»"
 ESCAPE = SimpleNamespace(type="ESC", value="PRESS")
-HIDDEN = ("confirm", "in_steps", "preview", "confirm_mean", "code")
+HIDDEN = ("confirm", "in_steps", "preview", "confirm_mean", "code", "show_more")
 PROPERTIES = frozenset({
     "name", "mode", "layer", "name_field", "level_field", "start", "support", "profile", "rose", "n_berm", "sector_profiles", "sector_roses", "sector_n_berm", "ramps",
     "noramp", "fixed", "fixed_field", "top_level", "bottom_level", "max_benches", "min_floor_width", "corner", "arc_tol", "simplify", "close_radius", "az_window", "mean_reason"})
@@ -123,7 +123,7 @@ class PitOpsTest(unittest.TestCase):
                                  "profile": "none", "rose": "none", "n_berm": "", "sector_profiles": "", "sector_roses": "", "sector_n_berm": "", "ramps": set(),
                                  "noramp": "none", "fixed": "none", "fixed_field": "", "top_level": "", "bottom_level": "", "max_benches": "", "min_floor_width": "",
                                  "corner": "DEFAULT", "arc_tol": "", "simplify": "", "close_radius": "", "az_window": "", "mean_reason": "", "confirm": False,
-                                 "in_steps": False, "preview": False, "confirm_mean": False, "code": ""}
+                                 "in_steps": False, "preview": False, "confirm_mean": False, "code": "", "show_more": False}
         properties = values.pop("properties", SimpleNamespace(is_property_set=lambda name: False))
         return operator_self(self.pit, report=lambda kind, text: None, properties=properties, **{**shown, **values})
 
@@ -187,7 +187,7 @@ class PitOpsTest(unittest.TestCase):
         self.assertEqual((given.name, given.layer, given.start), ("Mía", h2.FLOORS_SQUARE, self.terrain["cuadrado"]), "lo dado no cambia")
 
         shown = draw(cls, bpy.context, **{**self.fake().__dict__, "mode": "UP"})
-        texts = shown.texts()
+        texts = draw(cls, bpy.context, **{**self.fake().__dict__, "mode": "UP", "show_more": True}).texts()  # los campos plegados, desplegados (test_a2)
         for heading in ("Nombre", "Modo", "Capa de origen", "Campo del nombre", "Campo de cota", "Perfil de banco", "Roseta de taludes", "Bancos por berma", "Perfiles por sector",
                         "Rosetas por sector", "Rampas", "Zonas sin rampa", "Bancos fijados", "Superficie de partida", "Superficie de apoyo", "Vista previa",
                         "Tolerancia del arco (m)", "Tolerancia de simplificación (m)"):
@@ -197,9 +197,42 @@ class PitOpsTest(unittest.TestCase):
         self.assertLessEqual(len(rows), MAX_ROWS, f"{len(rows)} filas")
         hypothesis = [text for text in texts if text.startswith("HIPÓTESIS: ")]
         self.assertGreaterEqual(len(hypothesis), 2, "las tolerancias del desfase dicen su tipo: sin valor por defecto")
-        down = draw(cls, bpy.context, **{**self.fake().__dict__, "mode": "DOWN"}).texts()
+        down = draw(cls, bpy.context, **{**self.fake().__dict__, "mode": "DOWN", "show_more": True}).texts()
         self.assertIn("Cota de fondo (m)", down)
         self.assertNotIn("Campo de cota", down)
+
+    ROW_PX, LABEL_PX, BUTTON_PX, BOX_PX, CHROME_PX, WINDOW_PX = 25, 20, 30, 10, 100, 1001
+    """El modelo del diálogo a 1920 × 1001 con las escalas efectivas de la 003: 25 px por campo, 20 por etiqueta, 30 por botón, 10 de margen por caja, 100 de título y botones («Calcular» y
+    «Cancelar»), y la ventana del H3. Calibrado con el diálogo de antes (≈ 1.000 px, hallazgo H3-3)."""
+
+    def height(self, shown: Any) -> int:
+        """Lo que mide el diálogo dibujado en ``shown`` según el modelo."""
+        kinds = [item.kind for item in shown.items]
+        boxes = len({id(item.layout) for item in shown.items if item.layout.parent is not None and item.layout.parent.parent is None and item.kind != "operator"})
+        return (kinds.count("prop") + kinds.count("prop_search")) * self.ROW_PX + kinds.count("label") * self.LABEL_PX + kinds.count("operator") * self.BUTTON_PX \
+            + boxes * self.BOX_PX + self.CHROME_PX
+
+    def test_a2_the_dialog_fits_the_window_and_folds_what_is_rarely_touched(self) -> None:
+        """RF-018-34, H3-3 (M1): «Nueva corta…», en cualquiera de los dos modos, mide menos de 1001 px (los botones «Calcular» y «Cancelar» a la vista) con **lo que casi nunca se toca
+        plegado** (los valores por sector y las tolerancias del desfase con su ventana del azimut y su radio de cierre); al desplegarlo vuelve todo; si algún campo plegado ya tiene valor,
+        se enseña (no se esconde lo escrito)."""
+        cls = self.pit
+        for mode in ("UP", "DOWN"):
+            with self.subTest(modo=mode):
+                folded = draw(cls, bpy.context, **{**self.fake().__dict__, "mode": mode, "show_more": False})
+                self.assertLessEqual(self.height(folded), self.WINDOW_PX, f"{self.height(folded)} px")
+                texts = folded.texts()
+                for hidden in ("Perfiles por sector", "Rosetas por sector", "Bancos por berma por sector", "Tolerancia del arco (m)", "Radio de cierre (m)", "Ventana del azimut (m)"):
+                    self.assertNotIn(hidden, texts)
+                self.assertIn("Más opciones", texts)
+                self.assertTrue([item for item in folded.items if item.target == "show_more"])
+                opened = draw(cls, bpy.context, **{**self.fake().__dict__, "mode": mode, "show_more": True})
+                for shown in ("Perfiles por sector", "Rosetas por sector", "Bancos por berma por sector", "Tolerancia del arco (m)", "Radio de cierre (m)", "Ventana del azimut (m)"):
+                    self.assertIn(shown, opened.texts())
+        for field, value in (("sector_profiles", "sector_1=a"), ("arc_tol", "0,1"), ("corner", "MITER"), ("az_window", "5")):
+            with self.subTest(campo=field):
+                held = draw(cls, bpy.context, **{**self.fake().__dict__, "show_more": False, field: value})
+                self.assertIn("Tolerancia del arco (m)", held.texts(), "lo escrito en un campo plegado se enseña")
 
     # --- b: la petición -----------------------------------------------------------------------
 

@@ -11901,6 +11901,9 @@ es = "Perfil de banco de cada sector de diseño, escrito sector=perfil y separad
 ["Roses by sector"]
 es = "Rosetas por sector"
 
+["More options"]
+es = "Más opciones"
+
 ["Rose of design slopes of each design sector, written sector=rose and separated by «;»"]
 es = "Roseta de taludes de diseño de cada sector de diseño, escrita sector=roseta y separada por «;»"
 
