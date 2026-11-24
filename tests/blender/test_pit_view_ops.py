@@ -257,6 +257,42 @@ class PitViewOpsTest(pit_ops.PitOpsTest):
         self.assertEqual(result, {"FINISHED"}, reports)
         self.unload()
 
+    def test_vd4_the_dialog_offers_the_fields_of_the_layer_in_lists(self) -> None:
+        """RF-018-01, T40f (hallazgo del ensayo de CE-018-13): «Campo del nombre» y «Campo de cota» de «Nueva corta…» son **listas** con los campos de la capa elegida (el nombre, los de texto; la cota,
+        los numéricos), no texto libre; la propiedad de texto sigue valiendo desde un guion y manda; cambiar de capa vuelve las listas a la propuesta."""
+        cls = self.pit
+        self.refresh()
+        offered_names = [identifier for identifier, _label, _about in self.des_pit.pit_name_items(SimpleNamespace(layer=h2.FLOORS), None)]
+        offered_levels = [identifier for identifier, _label, _about in self.des_pit.pit_level_items(SimpleNamespace(layer=h2.FLOORS), None)]
+        self.assertEqual(offered_names[0], "none")
+        self.assertEqual(offered_levels[0], "none")
+        self.assertIn("nombre", offered_names)
+        self.assertNotIn("cota_m", offered_names, "la cota es numérica: no es un nombre")
+        self.assertIn("cota_m", offered_levels)
+        self.assertNotIn("nombre", offered_levels, "el nombre es texto: no es una cota")
+        self.assertEqual([identifier for identifier, _label, _about in self.des_pit.pit_name_items(SimpleNamespace(layer="sin_capa"), None)], ["none"], "de una capa que no se leyó, solo la propuesta")
+        labels = {identifier: label for identifier, label, _about in self.des_pit.pit_name_items(SimpleNamespace(layer=h2.FLOORS), None)}
+        self.assertEqual(labels["none"], "Automático")
+        asked = cls._request(self.fake(name_pick="nombre", level_pick="cota_m"))
+        self.assertEqual((asked.fields.name_field, asked.level_field), ("nombre", "cota_m"), "lo elegido en las listas llega a la petición")
+        asked = cls._request(self.fake(name_pick="nombre", level_pick="cota_m", name_field="otro", level_field="cota"))
+        self.assertEqual((asked.fields.name_field, asked.level_field), ("otro", "cota"), "lo tecleado (desde un guion) manda sobre la lista")
+        asked = cls._request(self.fake())
+        self.assertEqual((asked.fields.name_field, asked.level_field), (None, None), "sin elegir, ninguno: lo resuelve el dominio")
+        shown = draw(cls, bpy.context, **{**self.fake().__dict__, "mode": "UP"})
+        targets = [item.target for item in shown.items]
+        self.assertIn("name_pick", targets)
+        self.assertIn("level_pick", targets)
+        self.assertNotIn("name_field", targets, "la lista, no el campo de texto")
+        self.assertNotIn("level_field", targets)
+        down = [item.target for item in draw(cls, bpy.context, **{**self.fake().__dict__, "mode": "DOWN"}).items]
+        self.assertIn("name_pick", down)
+        self.assertNotIn("level_pick", down, "la cota del campo es de la ascendente")
+        changed = SimpleNamespace(layer=h2.FLOORS, name_pick="nombre", level_pick="cota_m")
+        with mock.patch.object(self.des_pit, "_refresh_pit_preview"):
+            self.des_pit._layer_changed(changed, None)
+        self.assertEqual((changed.name_pick, changed.level_pick), ("none", "none"), "otra capa: las listas vuelven a la propuesta")
+
     # --- e: el aviso de triángulos --------------------------------------------------------------
 
     def test_ve_over_the_limit_the_warning_comes_before_anything_is_created(self) -> None:

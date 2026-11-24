@@ -155,6 +155,10 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     En QGIS salen dos capas por versión que no se editan a mano (las polilíneas y las líneas de cielo) y la capa de «Expandir banco…», que sí.
   - **Cifras con su tipo.** Ninguna cifra minera tiene valor por defecto. Las **cuatro tolerancias del desfase** (el arco, la simplificación, el radio de cierre y la ventana del azimut) y el radio de
     giro y la plataforma mínima del zig-zag son **HIPÓTESIS** sin valor por defecto: las confirma una persona. Solo tienen valor por defecto los bancos por berma (1) y la esquina (redondeada).
+  - **«Nueva corta…» más clara** (tras el ensayo en pantalla del 25/11/2026). «Campo del nombre» y «Campo de cota» son listas con los campos de la capa elegida (los de texto y los
+    numéricos), no texto libre; «Más opciones» tiene su explicación en español; la pestaña «Proyecto» de la barra lateral parte en líneas lo que no cabe (el CRS, el modo, la ventana de
+    trabajo) y, en solo lectura, dice en rojo qué es. La guía explica cómo abrir un proyecto, los dos campos y las tolerancias del desfase con sus valores de partida (los de las pruebas,
+    siguen siendo HIPÓTESIS sin valor por defecto). El botón «Cancelar» del diálogo es el de Blender y sale en el idioma de Blender.
   - **Lo que no hace todavía:** no parte de la concha óptima (R-49) ni diseña la corta de forma automática (R-55); no admite polígonos con huecos; no mezcla bancos por berma distintos entre sectores; la rampa de la
     descendente no se calcula con bancos dobles, con varios límites con rampa ni sobre el primer banco de altura variable; una rampa se ha medido sobre 20 bancos en espiral y 5 en zig-zag. Esta guía
     y lo anterior se han comprobado sin pantalla; falta verlo con el ratón y contrastarlo con el proyecto de referencia. Guía de uso: `docs/usuario/corta-por-bancos.md`.

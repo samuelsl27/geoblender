@@ -263,7 +263,7 @@ class NamesAndInterfaceTest(CheckoutOpsTestCase):
         targets = {item.target: item.text for item in layout.of_kind("operator")}
         self.assertEqual(targets.get("geoblender.core_publish_project"), "Publicar en la red…")
         self.assertNotIn("geoblender.core_checkout_project", targets)
-        self.assertIn("Modo: escritura en una copia local de trabajo", layout.texts())
+        self.assertIn("Modo: escritura en una copia local de trabajo", " ".join(layout.texts()))  # partido en líneas en la barra estrecha (T40f)
         self.assertEqual(ext("core.i18n").missing_translations(), [])
 
 

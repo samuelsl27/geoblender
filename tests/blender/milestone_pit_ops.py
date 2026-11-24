@@ -47,7 +47,7 @@ REASON = "Prueba de la orden «Nueva corta…»"
 ESCAPE = SimpleNamespace(type="ESC", value="PRESS")
 HIDDEN = ("confirm", "in_steps", "preview", "confirm_mean", "code", "show_more")
 PROPERTIES = frozenset({
-    "name", "mode", "layer", "name_field", "level_field", "start", "support", "profile", "rose", "n_berm", "sector_profiles", "sector_roses", "sector_n_berm", "ramps",
+    "name", "mode", "layer", "name_pick", "level_pick", "name_field", "level_field", "start", "support", "profile", "rose", "n_berm", "sector_profiles", "sector_roses", "sector_n_berm", "ramps",
     "noramp", "fixed", "fixed_field", "top_level", "bottom_level", "max_benches", "min_floor_width", "corner", "arc_tol", "simplify", "close_radius", "az_window", "mean_reason"})
 STRINGS = ("level_field", "n_berm", "sector_profiles", "sector_roses", "sector_n_berm", "fixed_field", "top_level", "bottom_level", "max_benches", "min_floor_width", "arc_tol",
            "simplify", "close_radius", "az_window")
@@ -119,7 +119,7 @@ class PitOpsTest(unittest.TestCase):
 
     def fake(self, **values: Any) -> Any:
         """El operador de mentira con todas las propiedades del diálogo en su valor por defecto y lo que se dé."""
-        shown: dict[str, Any] = {"name": "Corta", "mode": "UP", "layer": h2.FLOORS, "name_field": "", "level_field": "", "start": self.terrain["llano"], "support": "none",
+        shown: dict[str, Any] = {"name": "Corta", "mode": "UP", "layer": h2.FLOORS, "name_pick": "none", "level_pick": "none", "name_field": "", "level_field": "", "start": self.terrain["llano"], "support": "none",
                                  "profile": "none", "rose": "none", "n_berm": "", "sector_profiles": "", "sector_roses": "", "sector_n_berm": "", "ramps": set(),
                                  "noramp": "none", "fixed": "none", "fixed_field": "", "top_level": "", "bottom_level": "", "max_benches": "", "min_floor_width": "",
                                  "corner": "DEFAULT", "arc_tol": "", "simplify": "", "close_radius": "", "az_window": "", "mean_reason": "", "confirm": False,
@@ -163,7 +163,12 @@ class PitOpsTest(unittest.TestCase):
                 keywords = cls.__annotations__[prop].keywords
                 self.assertTrue(keywords["name"] and keywords["description"])
                 self.assertNotEqual(keywords["name"], "")
-        for prop in HIDDEN:  # las pone quien la lanza: sin nombre ni descripción
+        for prop in HIDDEN:  # las pone quien la lanza: sin nombre ni descripción (salvo «Más opciones», que se ve y tiene su tooltip: T40f)
+            if prop == "show_more":
+                keywords = cls.__annotations__[prop].keywords
+                self.assertEqual(keywords["name"], "Más opciones")
+                self.assertTrue(keywords["description"] and "show_more" not in keywords["description"])
+                continue
             self.assertNotIn("name", cls.__annotations__[prop].keywords)
         for prop in STRINGS:
             self.assertIs(cls.__annotations__[prop].function, bpy.props.StringProperty, prop)

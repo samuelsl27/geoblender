@@ -130,6 +130,8 @@ class _Choices:
     roses: list[tuple[str, str, str]] = field(default_factory=list)
     ramps: list[tuple[str, str, str]] = field(default_factory=list)
     pits: list[tuple[str, str, str]] = field(default_factory=list)
+    text_fields: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)
+    number_fields: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)
 
 
 _CHOICES = _Choices()
@@ -144,6 +146,8 @@ def _fixed_choices() -> None:
     _CHOICES.roses = [(_NONE, tr("No rose"), tr("The benches have the face of the bench profile"))]
     _CHOICES.ramps = []
     _CHOICES.pits = [(_NONE, NOT_SHOWN, tr("There are no calculated pits in the active version"))]
+    _CHOICES.text_fields = {}
+    _CHOICES.number_fields = {}
 
 
 def _version_layers(project: Any, version_uid: str, prefix: str) -> list[str]:
@@ -170,6 +174,9 @@ def refresh_pit_choices(project: Any) -> None:
     if polygons:
         _CHOICES.layers = [(name, constraint_panels.layer_label(name), tr("Layer of polygons")) for name in polygons]
         _CHOICES.noramp = [*_CHOICES.noramp, *_CHOICES.layers]
+        for source in gis_store.feature_sources(project, polygons):
+            _CHOICES.text_fields[source.name] = field_choices(source.columns, numeric=False)
+            _CHOICES.number_fields[source.name] = field_choices(source.columns, numeric=True)
     fixed = [(record.name, constraint_panels.layer_label(record.name), tr("Layer of 3D lines"))
              for record in gis_store.list_gis_datasets(project, families=(gis_provenance.BREAKLINES,))]
     version = scene_versions.active()
@@ -187,6 +194,39 @@ def refresh_pit_choices(project: Any) -> None:
         _CHOICES.profiles = [(_NONE, tr("No base profile"), tr("Every sector has its own profile")), *((item.code, item.name, tr("Bench profile")) for item in profiles)]
     _CHOICES.roses = [*_CHOICES.roses, *((item.code, item.name, tr("Rose of design slopes")) for item in roses)]
     _CHOICES.ramps = [(item.code, item.name, tr("Ramp definition")) for item in ramps]
+
+
+def field_choices(columns: Any, *, numeric: bool) -> list[tuple[str, str, str]]:
+    """Las opciones de la lista de campos de una capa (spec 018, T40f): primero la propuesta («Automático» para el nombre, que la orden resuelve; «Elija un campo» para la cota) y después
+    los campos de la capa **de texto** (``numeric`` falso) o **numéricos** (enteros o reales); cada uno con su nombre tal cual lo tiene la capa. Un campo binario no se ofrece."""
+    if numeric:
+        first = (_NONE, tr("Choose a field"), tr("The ascending pit needs the field with the elevation of each floor"))
+    else:
+        first = (_NONE, tr("Automatic"), tr("The field «nombre» or «name» or, without it, the number (fid)"))
+    wanted = ("INTEGER", "DOUBLE") if numeric else ("TEXT",)
+    kind = tr("Numeric field of the layer") if numeric else tr("Text field of the layer")
+    return [first, *((column.field, column.field, kind) for column in columns if column.sql_type in wanted)]
+
+
+def _field_items(self: Any, numeric: bool) -> list[tuple[str, str, str]]:
+    """Los campos de la capa elegida en ``self`` (una lista viva del módulo); de una capa que no se leyó, solo la propuesta."""
+    found = (_CHOICES.number_fields if numeric else _CHOICES.text_fields).get(str(getattr(self, "layer", "")))
+    return found if found else field_choices((), numeric=numeric)
+
+
+def pit_name_items(self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Los campos de texto de la capa de origen (el nombre de cada polígono)."""
+    return _field_items(self, False)
+
+
+def pit_level_items(self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Los campos numéricos de la capa de origen (la cota de cada fondo)."""
+    return _field_items(self, True)
+
+
+def _chosen_field(typed: str, picked: str) -> str | None:
+    """El campo que pide el diálogo: el tecleado (desde un guion) y, sin él, el de la lista; ``None`` si no hay ninguno."""
+    return typed.strip() or (None if picked in ("", _NONE) else picked)
 
 
 def refresh_pit_list(project: Any) -> None:
@@ -318,6 +358,17 @@ def _pit_fields() -> tuple[str, ...]:
     return tuple(name for name in GEOBLENDER_OT_des_create_pit.__annotations__ if name not in _PIT_HIDDEN and name != "mean_reason")
 
 
+def _layer_changed(self: Any, context: Any) -> None:
+    """El ``update`` de la capa de origen: los campos elegidos eran de la capa anterior, vuelven a la propuesta; y la vista previa, como con cualquier campo."""
+    for prop in ("name_pick", "level_pick"):
+        try:
+            if getattr(self, prop) != _NONE:
+                setattr(self, prop, _NONE)
+        except (TypeError, ValueError):
+            LOGGER.debug("El campo %s no vuelve a la propuesta", prop, exc_info=True)
+    _refresh_pit_preview(self, context)
+
+
 def _refresh_pit_preview(self: Any, _context: Any) -> None:
     """El ``update`` de cada campo de «Nueva corta…» (RF-018-32, RF-015-26): con la vista previa **de esa corta** activa (la de una corta de la versión no), la redibuja con lo que dice
     ahora el diálogo. Un diálogo a medias (un campo sin escribir, un número que no lo es) no la cambia: sigue la última completa. Solo lee."""
@@ -364,7 +415,13 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
         items=PIT_MODE_ITEMS, default="UP", options=_FIELD, update=_refresh_pit_preview)
     layer: EnumProperty(  # type: ignore[valid-type]
         name="Source layer", description="Layer of polygons of the project the pit is taken from: its floors (ascending) or its limits (descending)",
-        items=pit_layer_items, options=_FIELD, update=_refresh_pit_preview)
+        items=pit_layer_items, options=_FIELD, update=_layer_changed)
+    name_pick: EnumProperty(  # type: ignore[valid-type]
+        name="Name field", description="Field of the layer with the name of each polygon: a text field (automatic: the field «nombre» or «name» or, without it, the number (fid))",
+        items=pit_name_items, options=_FIELD, update=_refresh_pit_preview)
+    level_pick: EnumProperty(  # type: ignore[valid-type]
+        name="Elevation field", description="Field of the layer with the elevation of the floor of each polygon, in metres: a numeric field (ascending: each floor at its elevation)",
+        items=pit_level_items, options=_FIELD, update=_refresh_pit_preview)
     name_field: StringProperty(  # type: ignore[valid-type]
         name="Name field", description="Field of the layer with the name of each polygon (empty: the field «nombre» or «name» or, without it, the number (fid))", options=_FIELD,
         update=_refresh_pit_preview)
@@ -444,7 +501,8 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
     preview: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     confirm_mean: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     # «Más opciones»: despliega lo que casi nunca se toca (valores por sector y tolerancias); solo cambia lo que dibuja el diálogo (H3-3).
-    show_more: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    show_more: BoolProperty(  # type: ignore[valid-type]
+        name="More options", description="Show or hide the options that are rarely touched: the values by sector and the tolerances of the offset", default=False, options=_HIDDEN)
     # Calcular una corta traída o heredada «sin calcular» (RF-015-18): el código de la corta que ya está en la versión; con él no hay diálogo: se calcula con los parámetros que ya tiene
     # (``design.pit_store.entity_pit_request``), con su código, sin escribir ninguno.
     code: StringProperty(default="", options=_HIDDEN)  # type: ignore[valid-type]
@@ -516,9 +574,9 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
         layout.prop(self, "mode", text=tr("Mode"), translate=False)
         origin = layout.box()
         origin.prop(self, "layer", text=tr("Source layer"), translate=False)
-        origin.prop(self, "name_field", text=tr("Name field"), translate=False)
+        origin.prop(self, "name_pick", text=tr("Name field"), translate=False)  # la lista de los campos de texto; ``name_field`` es para los guiones
         if self.mode == "UP":
-            origin.prop(self, "level_field", text=tr("Elevation field"), translate=False)
+            origin.prop(self, "level_pick", text=tr("Elevation field"), translate=False)  # la de los numéricos; ``level_field``, para los guiones
         benches = layout.box()
         benches.prop(self, "profile", text=tr("Bench profile"), translate=False)
         benches.prop(self, "rose", text=tr("Rose of slopes"), translate=False)
@@ -580,8 +638,8 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
 
         fixed, noramp = chosen(self.fixed), chosen(self.noramp)
         return pit_model.PitRequest(
-            name, road_model.LayerFields(self.layer, self.name_field.strip() or None), self.mode.lower(), self.start,
-            level_field=(self.level_field.strip() or None) if up else None, support=chosen(self.support),
+            name, road_model.LayerFields(self.layer, _chosen_field(self.name_field, self.name_pick)), self.mode.lower(), self.start,
+            level_field=_chosen_field(self.level_field, self.level_pick) if up else None, support=chosen(self.support),
             fixed=None if fixed is None else road_model.LayerFields(fixed, None), fixed_field=self.fixed_field.strip() or None,
             noramp=None if noramp is None else road_model.LayerFields(noramp, None), profile=chosen(self.profile), rose=chosen(self.rose),
             n_berm=_whole(self.n_berm, tr("Benches per berm")),

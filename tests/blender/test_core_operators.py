@@ -713,14 +713,14 @@ class PanelTest(OperatorsTestCase):
         proyecto; ningún texto se queda sin traducir."""
         self.new_project()
         layout = draw(self.panel, bpy.context)
-        texts = "\n".join(layout.texts())
+        texts = " ".join(layout.texts()).replace("  ", " ")  # en la barra estrecha cada dato va en las líneas que caben, sin el doble espacio (T40f)
         thin = self.THIN
         for expected in (
             "Nombre: Cantera Prueba",
             "Modo: escritura (disco local)",
             "CRS horizontal: EPSG:25830 · ETRS89 / UTM zone 30N",
             "CRS vertical: EPSG:5782",
-            f"GeoOrigin: X 700{thin}000  Y 4{thin}400{thin}000  Z 0 m",
+            f"GeoOrigin: X 700{thin}000 Y 4{thin}400{thin}000 Z 0 m",
             f"Ventana de trabajo: X 699{thin}500 – 700{thin}501, Y 4{thin}399{thin}500 – "
             f"4{thin}400{thin}501 m",
             "Paso de rejilla: 1,0 m",
@@ -744,20 +744,22 @@ class PanelTest(OperatorsTestCase):
         root = self.create_closed(session=self.other_session())
         self.run_open(directory=str(root))
         layout = draw(self.panel, bpy.context)
-        (mode,) = [item for item in layout.of_kind("label") if item.text.startswith("Modo:")]
-        self.assertIn("solo lectura", mode.text)
-        self.assertIn("andres", mode.text)
-        self.assertTrue(mode.alert)
+        shown = [item for item in layout.of_kind("label") if item.alert]
+        text = " ".join(item.text for item in shown)
+        self.assertIn("Modo: solo lectura", text)
+        self.assertIn("andres", text)
+        self.assertIn("Solo lectura: no se puede guardar nada en el proyecto", text, "el rojo dice qué es (T40f)")
+        self.assertTrue(all(len(item.text) < 60 for item in shown), "partido en líneas que caben en la barra estrecha")
 
     def test_english_interface(self) -> None:
         """RF-002-34 (ADR-0012): con el idioma en inglés, los mismos datos en inglés y las
         coordenadas sin separador de miles."""
         self.new_project()
         self.i18n.set_language("en")
-        texts = "\n".join(draw(self.panel, bpy.context).texts())
+        texts = " ".join(draw(self.panel, bpy.context).texts()).replace("  ", " ")
         self.assertIn("Name: Cantera Prueba", texts)
         self.assertIn("Mode: writing (local disk)", texts)
-        self.assertIn("GeoOrigin: X 700000  Y 4400000  Z 0 m", texts)
+        self.assertIn("GeoOrigin: X 700000 Y 4400000 Z 0 m", texts)
         self.assertIn("Grid step: 1.0 m", texts)
 
     def test_without_project_and_notices(self) -> None:

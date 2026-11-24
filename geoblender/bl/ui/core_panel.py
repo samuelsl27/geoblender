@@ -74,6 +74,16 @@ def project_rows(project: Any) -> list[tuple[str, str]]:
     ]
 
 
+def _rows(column: Any, text: str, icon: str, width_px: float, *, alert: bool = False) -> None:
+    """``text`` como una etiqueta con ``icon`` si cabe en ``width_px`` (tal cual, con sus espacios) y, si no, en las líneas que caben (``labels.wrapped``; la primera con el icono, las demás con
+    su hueco), todas en alerta si ``alert``: Blender corta con «…» una etiqueta que no cabe y el dato no se lee (spec 018, T40f)."""
+    lines = labels.wrapped(text, width_px, icon=True)
+    for index, line in enumerate(lines if len(lines) > 1 else [text]):
+        row = column.row()
+        row.alert = alert
+        row.label(text=line, icon=icon if index == 0 else "BLANK1", translate=False)
+
+
 def journal_text(project: Any) -> str:
     """El diario de la base (clásico o WAL), mirado como mucho cada 5 s."""
     key = str(project.root)
@@ -126,11 +136,13 @@ class GEOBLENDER_PT_core_project(bpy.types.Panel):
             return
         box = layout.box()
         column = box.column(align=True)
-        for icon, text in project_rows(project):
-            row = column.row()
-            row.alert = icon == "LOCKED"
-            row.label(text=text, icon=icon, translate=False)
-        column.label(text=journal_text(project), icon="FILE_BLEND", translate=False)
+        width = labels.sidebar_width(context)
+        for icon, text in project_rows(project):  # cada dato en las líneas que caben: la barra lateral estrecha no los corta con «…» (T40f)
+            locked = icon == "LOCKED"
+            _rows(column, text, icon, width, alert=locked)
+            if locked:  # el rojo dice qué es: el proyecto no admite cambios
+                _rows(column, tr("Read-only: nothing can be saved in the project; the reason is above"), "BLANK1", width, alert=True)
+        _rows(column, journal_text(project), "FILE_BLEND", width)
         if _view_is_stale():
             row = layout.row()
             row.alert = True

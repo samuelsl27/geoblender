@@ -12602,3 +12602,30 @@ es = "Sin hallazgos: todo lo medido está dentro de sus límites"
 
 ["… and {more} more findings (the whole list is in the findings of the pit)"]
 es = "… y {more} hallazgos más (la lista entera está en los hallazgos de la corta)"
+
+["Choose a field"]
+es = "Elija un campo"
+
+["The ascending pit needs the field with the elevation of each floor"]
+es = "La corta ascendente necesita el campo con la cota de cada fondo"
+
+["The field «nombre» or «name» or, without it, the number (fid)"]
+es = "El campo «nombre» o «name» o, sin él, el número (fid)"
+
+["Numeric field of the layer"]
+es = "Campo numérico de la capa"
+
+["Text field of the layer"]
+es = "Campo de texto de la capa"
+
+["Field of the layer with the name of each polygon: a text field (automatic: the field «nombre» or «name» or, without it, the number (fid))"]
+es = "Campo de la capa con el nombre de cada polígono: uno de texto (automático: el campo «nombre» o «name» o, sin él, el número (fid))"
+
+["Field of the layer with the elevation of the floor of each polygon, in metres: a numeric field (ascending: each floor at its elevation)"]
+es = "Campo de la capa con la cota del fondo de cada polígono, en metros: uno numérico (ascendente: cada fondo a su cota)"
+
+["Show or hide the options that are rarely touched: the values by sector and the tolerances of the offset"]
+es = "Muestra u oculta las opciones que casi nunca se tocan: los valores por sector y las tolerancias del desfase"
+
+["Read-only: nothing can be saved in the project; the reason is above"]
+es = "Solo lectura: no se puede guardar nada en el proyecto; el motivo está arriba"
