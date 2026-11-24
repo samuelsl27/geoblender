@@ -83,7 +83,7 @@ def run_case(regime: str, case: Any) -> Outcome:
     limit = oracle.edge_limits(case.ring, found.ring, found.distance, simplify_m)
     limit = limit - H.arc_m - simplify_m
     for loop in loops:
-        shortfall = max(shortfall, oracle.capsule_shortfall(loop, case.ring, limit))
+        shortfall = max(shortfall, oracle.capsule_shortfall(loop, case.ring, limit, -1 if case.descending else 1))
     return Outcome(case, result.verified, result.defect, result.defect_at is not None,
                    oracle.crossing_count(loops), shortfall, result.max_defect_m)
 
@@ -191,7 +191,7 @@ class AlignedVerticesRobustnessTest(unittest.TestCase):
         if result.verified:
             self.assertEqual(oracle.crossing_count(loops), 0, (label, side, "no simple"))
             for loop in loops:
-                self.assertLessEqual(oracle.capsule_shortfall(loop, ring, dist - H.arc_m), SLACK_M, (label, side, "distancia"))
+                self.assertLessEqual(oracle.capsule_shortfall(loop, ring, dist - H.arc_m, side), SLACK_M, (label, side, "distancia"))
         return result.verified
 
     def test_constant_distance_is_never_rejected(self) -> None:
@@ -211,7 +211,76 @@ class AlignedVerticesRobustnessTest(unittest.TestCase):
             for side in (1, -1):
                 done += int(self.run_ring(ring, dist, side, label))
         print(f"\ndistancia con escalón y vértices alineados: {done} de {2 * len(self.cases())} verificados")
-        self.assertGreater(done, 0)
+        self.assertEqual(done, 2 * len(self.cases()), "T09d (DIFF-018k): el criterio cuenta solo el lado del desfase, ningún caso se rechaza")
+
+
+class OneSidedCriterionRobustnessTest(unittest.TestCase):
+    """T09d (DIFF-018k): semillas **nuevas** (no las de la T09, T09b ni T09c) con distancias distintas por arista y cuellos estrechos:
+    ningún rechazo y ningún defecto con el oráculo de un solo lado. (1) Anillos rugosos de ``pit_data`` desde el índice 300 (semillas
+    1300 a 1359), con y sin roseta, ascendentes y descendentes; (2) L, C y mancuerna giradas, con vértices alineados y distancias
+    aleatorias (de 0,5 a 12 m, por tramos), semillas 7000 a 7039."""
+
+    NEW_ROUGH = range(pd.ROUGH_CASES, pd.ROUGH_CASES + 60)
+    NEW_SEEDS = range(7000, 7040)
+
+    def test_new_rough_cases_are_verified_and_correct(self) -> None:
+        rejected = []
+        for index in self.NEW_ROUGH:
+            case = pd.rough_case(index)
+            row = run_case("noise", case)
+            label = (index, case.vertices, round(case.noise_m, 2), case.descending, case.with_rose)
+            if not row.verified:
+                rejected.append((label, row.cause))
+                continue
+            self.assertEqual(row.crossings, 0, ("no simple", label))
+            self.assertLessEqual(row.shortfall_m, SLACK_M, ("más cerca que d − arco − simplificación", label))
+        self.assertEqual(rejected, [])
+
+    @staticmethod
+    def random_ring(seed: int, low: float, high: float) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(seed)
+        shapes = (L_SHAPE, DUMBBELL, C_SHAPE)
+        ring = sampled(rotated(shapes[seed % 3], math.radians(float(rng.uniform(0.0, 90.0)))), float(rng.uniform(0.5, 3.0)))
+        runs = int(rng.integers(2, 6))
+        cut = np.sort(rng.integers(1, len(ring), runs))
+        levels = rng.uniform(low, high, runs + 1)
+        return ring, levels[np.searchsorted(cut, np.arange(len(ring)), side="right")]
+
+    def run_ring(self, ring: np.ndarray, dist: np.ndarray, side: int, label: object) -> tuple[bool, Any]:
+        """Verificado (con el oráculo de un solo lado: simple y a la distancia) o el resultado rechazado con su lugar y su causa."""
+        result = offset.offset_ring(ring, dist, side, tol=H.arc_m)
+        loops = list(result.rings) + list(result.holes)
+        if not result.verified:
+            self.assertIn(result.defect, CAUSES, (label, "rechazo sin causa"))
+            self.assertIsNotNone(result.defect_at, (label, "rechazo sin lugar"))
+            return False, result
+        self.assertEqual(oracle.crossing_count(loops), 0, (label, "no simple"))
+        for loop in loops:
+            self.assertLessEqual(oracle.capsule_shortfall(loop, ring, dist - H.arc_m, side), SLACK_M, (label, "distancia"))
+        return True, result
+
+    def test_random_distances_within_the_rose_span_are_verified_and_correct(self) -> None:
+        """Distancias aleatorias por tramos entre 5 y 10 m (la amplitud de una roseta: la de CE-018-02 va de 5,77 a 10 m) y cuellos de 4 m:
+        80 desfases (40 semillas, fuera y dentro), ninguno rechazado y todos correctos."""
+        rejected = []
+        for seed in self.NEW_SEEDS:
+            ring, dist = self.random_ring(seed, 5.0, 10.0)
+            for side in (1, -1):
+                if not self.run_ring(ring, dist, side, (seed, side))[0]:
+                    rejected.append((seed, side))
+        self.assertEqual(rejected, [])
+
+    def test_extreme_random_distances_are_never_wrong_in_silence(self) -> None:
+        """Distancias de 0,5 a 12 m (cocientes de hasta 24) con cuellos más estrechos que la mayor: lo que se da por bueno es correcto y lo
+        que no, se rechaza con causa y lugar. Medido el 24/11/2026: 8 de 80 rechazados por ``distance`` (la unión de losas deja un hueco
+        de ≈ 0,3 m² en un cuello cuando el cociente de distancias pasa de ≈ 2; ver el hallazgo de la T09d)."""
+        rejected = 0
+        for seed in self.NEW_SEEDS:
+            ring, dist = self.random_ring(seed, 0.5, 12.0)
+            for side in (1, -1):
+                rejected += int(not self.run_ring(ring, dist, side, (seed, side))[0])
+        print(f"\ndistancias extremas con cuellos: {rejected} de {2 * len(self.NEW_SEEDS)} rechazados con aviso")
+        self.assertLess(rejected, len(self.NEW_SEEDS))
 
 
 if __name__ == "__main__":

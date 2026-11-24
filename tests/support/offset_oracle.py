@@ -57,15 +57,23 @@ def edge_limits(ring: np.ndarray, worked: np.ndarray, worked_distance: np.ndarra
     return per_sample.reshape(3, len(ring)).min(axis=0)
 
 
-def capsule_shortfall(points: np.ndarray, ring: np.ndarray, limit: np.ndarray) -> float:
+def capsule_shortfall(points: np.ndarray, ring: np.ndarray, limit: np.ndarray, side: int = 0) -> float:
     """Lo que más le falta a un punto de ``points`` para estar a ``limit[e]`` o más de **cada** arista ``e`` de ``ring`` (0 si ninguno
     se queda corto): el desfase con distancia por arista es el borde de la unión de las cápsulas de sus aristas (cada una, a su
-    distancia), y no hay punto suyo a menos de ``limit[e]`` de la arista ``e``."""
+    distancia), y no hay punto suyo a menos de ``limit[e]`` de la arista ``e``. Con ``side`` ``+1`` (fuera) o ``-1`` (dentro) de un
+    anillo antihorario (DIFF-018k, T09d), de cada arista cuenta **solo el lado del desfase** (el de la normal ``side·(ty, −tx)``);
+    con 0, los dos lados."""
     a, b = ring, np.roll(ring, -1, axis=0)
+    along = b - a
     worst = 0.0
     for low in range(0, len(points), BLOCK):
-        gap = _segment_gaps(points[low:low + BLOCK], a, b)
-        worst = max(worst, float((limit[None, :] - gap).max()))
+        chunk = points[low:low + BLOCK]
+        gap = limit[None, :] - _segment_gaps(chunk, a, b)
+        if side:
+            w = chunk[:, None, :] - a[None, :, :]
+            turn = side * (along[None, :, 1] * w[..., 0] - along[None, :, 0] * w[..., 1])
+            gap = np.where(turn >= -1e-9 * np.hypot(along[:, 0], along[:, 1])[None, :], gap, -np.inf)
+        worst = max(worst, float(gap.max()))
     return max(worst, 0.0)
 
 

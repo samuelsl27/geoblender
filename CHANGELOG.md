@@ -1844,6 +1844,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Corregido
 
+- **El desfase de las bancadas de la corta ya no rechaza con aviso anillos con distancias distintas y un cuello estrecho** (spec 018, T09d, DIFF-018k, pedido por Samuel el 24/11/2026; cambia un criterio de verificación, no una cifra minera): la comprobación del desfase exigía a cada punto estar a la distancia de cada arista también por el lado interior de esa arista, y un anillo con dos distancias (la roseta) y un cuello más estrecho que la mayor salía «no verificado» sin que le faltase nada. Ahora cuenta solo el lado hacia el que se desplaza la polilínea; una arista que queda más cerca de lo debido por ese lado se sigue rechazando con el banco, el lugar y el defecto. 120 de 120 anillos de prueba con las distancias 5,77 y 10 m (antes, 100 de 120) y 80 de 80 con distancias de 5 a 10 m salen verificados. Queda un límite conocido: con distancias de 0,5 a 12 m en el mismo anillo y un cuello, 8 de 80 se rechazan (con aviso, nunca en silencio). El tiempo no cambia (la corta de 40 bancos, 6,3 s antes y después).
+
 - **Los detalles bajos del H3 de la corta por bancos** (spec 018, T40e; hallazgos H3-5 a H3-8 y una observación; no cambian ninguna cifra minera ni ningún requisito): «Expandir banco…» ya no enseña
   en rojo «Inclinación de la cara 60,00° (perfil: 60,00°)» cuando no hay desviación que se vea (el desfase la deja a una millonésima de grado; lo mismo con la berma); «Línea de cielo…» y «Superficie y
   sólido…» piden la corta en una **lista** de las cortas calculadas de la versión (con la del objeto seleccionado ya elegida) y no en un campo de texto vacío; el objeto del TIN y el del sólido se

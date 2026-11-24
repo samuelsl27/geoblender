@@ -31,8 +31,10 @@ origen: restar un origen cercano es exacto (lema de Sterbenz) y el float64 solo 
   insertados con ``splice``), cada trozo se clasifica por su punto medio (dentro de otra losa o
   de ``P`` o no) y los que quedan se encadenan (``chain``) en anillos; los de menos de 1 mm² se
   descartan y uno de área negativa es un hueco. Se **verifica** (:func:`check_offset`): simple y
-  cada vértice a ``≥ d_j − tol − simplify`` de **cada** arista ``j`` de la fuente; si no,
-  ``verified = False`` con el lugar y el defecto: nunca un resultado dudoso en silencio.
+  cada vértice a ``≥ d_j − tol − simplify`` de **cada** arista ``j`` de la fuente **por el lado del
+  desfase** de esa arista (T09d, DIFF-018k: el lado interior de una arista no exige nada, y las
+  losas solo existen del lado del desfase); si no, ``verified = False`` con el lugar y el defecto:
+  nunca un resultado dudoso en silencio.
 """
 
 from __future__ import annotations
@@ -94,6 +96,9 @@ PROBE_M = 1e-6
 
 _VERIFY_SLACK_M = 1e-9
 """Holgura numérica (m) de la verificación de distancias."""
+
+_SIDE_SLACK_M = 1e-9
+"""Holgura (m) con que un vértice sobre la recta de una arista cuenta por su lado del desfase."""
 
 MIN_DISTANCE_M = 1e-6
 """Distancia mínima (m) de una losa: una arista con distancia 0 se trata como esta (si todas son 0, el
@@ -735,7 +740,7 @@ def _offset_work(points: np.ndarray, dist: np.ndarray, side: int, tol: float, co
             hole_sources.append(sources)
     loops, sources_all = rings + holes, ring_sources + hole_sources
     ok, defect_at, defect, worst = yield from check_offset_steps(
-        points, dist, loops, sources_all, tol=tol, simplify_m=simplify_m, block=block)
+        points, dist, loops, sources_all, tol=tol, simplify_m=simplify_m, block=block, side=side)
     return OffsetResult(tuple(rings), tuple(holes), tuple(sources_all), ok, worst, defect_at,
                         defect)
 
@@ -781,23 +786,27 @@ def _straight(loop: np.ndarray) -> np.ndarray:
 
 
 def check_offset(source: object, distance: object, loops: Sequence[np.ndarray],
-                 sources: Sequence[np.ndarray], *, tol: float, simplify_m: float = 0.0
-                 ) -> tuple[bool, tuple[float, float] | None, str, float]:
+                 sources: Sequence[np.ndarray], *, tol: float, simplify_m: float = 0.0,
+                 side: int = 0) -> tuple[bool, tuple[float, float] | None, str, float]:
     """:func:`check_offset_steps` de una vez."""
     return drain(check_offset_steps(source, distance, loops, sources, tol=tol,
-                                    simplify_m=simplify_m))
+                                    simplify_m=simplify_m, side=side))
 
 
 def check_offset_steps(source: object, distance: object, loops: Sequence[np.ndarray],
                        sources: Sequence[np.ndarray], *, tol: float, simplify_m: float = 0.0,
-                       block: int = EDGES_PER_STEP
+                       block: int = EDGES_PER_STEP, side: int = 0
                        ) -> Generator[int, None, tuple[bool, tuple[float, float] | None, str,
                                                        float]]:
     """Comprueba un desfase (plan §5.4 A4): que ``loops`` (anillos y huecos) son **simples** (ningún
     par de aristas se cruza, dentro de un anillo ni entre ellos) y que cada vértice está a ``≥ d_j −
     tol − simplify_m`` de **cada** arista ``j`` de ``source`` (``d_j`` la distancia de esa arista:
     el desfase es el borde de la unión de las cápsulas de las aristas, y la tapa de la de mayor
-    distancia pasa más cerca de una vecina de menor distancia; T09b). ``sources`` (la arista de
+    distancia pasa más cerca de una vecina de menor distancia; T09b) **por el lado del desfase**
+    de esa arista (T09d, DIFF-018k): con ``side`` ``+1`` o ``-1`` (el del desfase, como en
+    :func:`offset_ring`), un vértice solo cuenta para la arista ``j`` si está de su lado del
+    desfase (la normal ``side·(ty, −tx)``, con una holgura de 1 nm); con ``side = 0``, por los
+    dos lados (el criterio de la T09b). ``sources`` (la arista de
     origen de cada vértice) ya no interviene: se conserva por compatibilidad. Da ``(verificado,
     lugar, defecto, falta)``; ``falta`` es la mayor distancia (m) que le falta a un vértice. Cede
     el número de bloques tratados."""
@@ -832,8 +841,10 @@ def check_offset_steps(source: object, distance: object, loops: Sequence[np.ndar
             if v.size:
                 e = wide[e]
                 gap = limit[e] - _point_edge_distance(part[v], edge_a[e], edge_b[e])
+                if side:
+                    gap = np.where(_on_side(part[v], edge_a[e], edge_b[e], side), gap, -np.inf)
                 top = int(np.argmax(gap))
-                if gap[top] > worst:
+                if gap[top] > worst and np.isfinite(gap[top]):
                     worst = float(gap[top])
                     at = part[v[top]]
                     worst_at = (float(at[0]), float(at[1]))
@@ -841,6 +852,14 @@ def check_offset_steps(source: object, distance: object, loops: Sequence[np.ndar
     if worst_at is not None:
         return False, worst_at, "distance", worst
     return True, None, "", 0.0
+
+
+def _on_side(p: np.ndarray, a: np.ndarray, b: np.ndarray, side: int) -> np.ndarray:
+    """Si cada punto ``p`` está del lado del desfase de su arista ``a–b`` (la normal ``side·(ty, −tx)``,
+    con una holgura de ``_SIDE_SLACK_M``)."""
+    d, w = b - a, p - a
+    along = np.hypot(d[:, 0], d[:, 1])
+    return side * (d[:, 1] * w[:, 0] - d[:, 0] * w[:, 1]) >= -_SIDE_SLACK_M * along
 
 
 def _point_edge_distance(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:

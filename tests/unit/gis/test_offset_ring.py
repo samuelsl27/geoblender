@@ -191,8 +191,9 @@ class OffsetRingTest(unittest.TestCase):
 
 
 def _capsule_area(source: np.ndarray, dist: np.ndarray, side: int, cell: float = 0.5) -> float:
-    """El área de ``P ∪ {a ≤ d_j de la arista j}`` (fuera) o de ``P ∖ {a < d_j de la arista j}`` (dentro) por una rejilla: la
-    definición del desfase con distancia por arista (T09b), independiente del motor."""
+    """El área de ``P ∪ {a ≤ d_j de la arista j}`` (fuera) o de ``P ∖ {a < d_j de la arista j}`` (dentro) por una rejilla, contando de
+    cada arista **solo el lado del desfase** (DIFF-018k: la semicápsula hacia la que se desplaza): la definición del desfase con
+    distancia por arista (T09b), independiente del motor."""
     a, b = source, np.roll(source, -1, axis=0)
     along = b - a
     length2 = np.einsum("ej,ej->e", along, along)
@@ -205,14 +206,16 @@ def _capsule_area(source: np.ndarray, dist: np.ndarray, side: int, cell: float =
         w = pts[:, None, :] - a[None, :, :]
         t = np.clip(np.einsum("pej,ej->pe", w, along) / length2, 0.0, 1.0)
         rest = w - t[:, :, None] * along[None, :, :]
-        near = (np.hypot(rest[..., 0], rest[..., 1]) <= dist[None, :]).any(axis=1)
+        on_side = side * (along[None, :, 1] * w[..., 0] - along[None, :, 0] * w[..., 1]) >= -1e-9 * np.sqrt(length2)[None, :]
+        near = ((np.hypot(rest[..., 0], rest[..., 1]) <= dist[None, :]) & on_side).any(axis=1)
         inside = _inside(pts, source)
         total += int(np.sum(inside | near)) if side > 0 else int(np.sum(inside & ~near))
     return total * cell * cell
 
 
-def _shortfall(loops: list[np.ndarray], source: np.ndarray, dist: np.ndarray) -> float:
-    """Lo que más le falta a un vértice del resultado para estar a ``d_j`` de cada arista ``j`` de la fuente."""
+def _shortfall(loops: list[np.ndarray], source: np.ndarray, dist: np.ndarray, side: int = 0) -> float:
+    """Lo que más le falta a un vértice del resultado para estar a ``d_j`` de cada arista ``j`` de la fuente; con ``side`` ``±1``
+    (DIFF-018k), solo cuenta el lado del desfase de cada arista (con 0, los dos lados)."""
     a, b = source, np.roll(source, -1, axis=0)
     along = b - a
     length2 = np.einsum("ej,ej->e", along, along)
@@ -221,7 +224,11 @@ def _shortfall(loops: list[np.ndarray], source: np.ndarray, dist: np.ndarray) ->
         w = loop[:, None, :] - a[None, :, :]
         t = np.clip(np.einsum("pej,ej->pe", w, along) / length2, 0.0, 1.0)
         rest = w - t[:, :, None] * along[None, :, :]
-        worst = max(worst, float((dist[None, :] - np.hypot(rest[..., 0], rest[..., 1])).max()))
+        gap = dist[None, :] - np.hypot(rest[..., 0], rest[..., 1])
+        if side:
+            on_side = side * (along[None, :, 1] * w[..., 0] - along[None, :, 0] * w[..., 1]) >= -1e-9 * np.sqrt(length2)[None, :]
+            gap = np.where(on_side, gap, -math.inf)
+        worst = max(worst, float(gap.max()))
     return worst
 
 
@@ -248,7 +255,7 @@ class SteppedDistanceTest(unittest.TestCase):
             exact = _capsule_area(ring, dist * scale, side)
             self.assertLess(abs(area - exact), 0.012 * exact, (side, area, exact))
             self.assertTrue(_simple(result.rings[0]))
-            self.assertLessEqual(_shortfall(list(result.rings), ring, dist * scale), TOL + 1e-9)
+            self.assertLessEqual(_shortfall(list(result.rings), ring, dist * scale, side), TOL + 1e-9)
 
     def test_rough_line_with_a_step_larger_than_the_edges_is_accepted(self) -> None:
         for seed in range(3):
@@ -261,7 +268,7 @@ class SteppedDistanceTest(unittest.TestCase):
                 self.assertTrue(loops)
                 for loop in loops:
                     self.assertTrue(_simple(loop), (seed, side))
-                self.assertLessEqual(_shortfall(loops, ring, dist), TOL + 1e-9, (seed, side))
+                self.assertLessEqual(_shortfall(loops, ring, dist, side), TOL + 1e-9, (seed, side))
 
     def test_the_cap_of_the_far_edge_may_pass_closer_to_a_neighbour_of_smaller_distance(self) -> None:
         """El defecto se mide con la distancia de cada arista: el vértice de la tapa de la arista de 10 m, a menos de 10 m de la de 5,77 m, es válido."""
@@ -301,7 +308,7 @@ class AlignedVerticesTest(unittest.TestCase):
         for loop in loops:
             self.assertTrue(_simple(loop), (label, side))
         dist = np.broadcast_to(np.asarray(d, dtype=np.float64), (len(ring),))
-        self.assertLessEqual(_shortfall(loops, ring, dist), TOL + 1e-9, (label, side))
+        self.assertLessEqual(_shortfall(loops, ring, dist, side), TOL + 1e-9, (label, side))
         area = sum(_area(loop) for loop in loops)
         exact = _capsule_area(ring, dist, side, cell=cell)
         self.assertLess(abs(area - exact), (0.01 if cell < 0.5 else 0.03) * exact + 4.0 * cell, (label, side, area, exact))
@@ -471,6 +478,76 @@ class CheckOffsetTest(unittest.TestCase):
         ok, at, kind, defect = offset.check_offset(
             L_SHAPE, 3.0, list(result.rings), list(result.source_edge_of_vertex), tol=TOL)
         self.assertEqual((ok, at, kind, defect), (True, None, "", 0.0))
+
+
+class OffsetSideCriterionTest(unittest.TestCase):
+    """T09d, DIFF-018k (RF-018-10): la verificación cuenta de cada arista **solo el lado del desfase** (hacia el que se desplaza la
+    polilínea); el lado interior de una arista no exige nada, y un defecto real por el lado del desfase se sigue rechazando."""
+
+    SQUARE = _poly((0, 0), (40, 0), (40, 40), (0, 40))
+
+    def test_a_vertex_on_the_inner_side_of_an_edge_does_not_count(self) -> None:
+        """(1, 20) está a 1 m de la arista oeste, pero por su lado interior: hacia fuera no es defecto; hacia dentro, sí."""
+        inner = _poly((1, 19), (1, 21), (10, 20))
+        ok, at, kind, defect = offset.check_offset(self.SQUARE, 3.0, [inner], [np.arange(3)], tol=TOL, side=1)
+        self.assertEqual((ok, at, kind, defect), (True, None, "", 0.0))
+        ok, at, kind, defect = offset.check_offset(self.SQUARE, 3.0, [inner], [np.arange(3)], tol=TOL, side=-1)
+        self.assertFalse(ok)
+        self.assertEqual(kind, "distance")
+        self.assertAlmostEqual(defect, 2.0 - TOL, delta=1e-6)
+
+    def test_an_edge_that_stays_too_close_on_the_offset_side_is_rejected(self) -> None:
+        """Una arista que queda a menos de ``d_j − tol`` por el lado del desfase se rechaza con su lugar y su falta, hacia fuera y dentro."""
+        outer = _poly((-1, 10), (-1, 30), (-10, 20))
+        ok, at, kind, defect = offset.check_offset(self.SQUARE, 3.0, [outer], [np.arange(3)], tol=TOL, side=1)
+        self.assertFalse(ok)
+        self.assertEqual(kind, "distance")
+        self.assertAlmostEqual(defect, 2.0 - TOL, delta=1e-6)
+        self.assertIsNotNone(at)
+        self.assertAlmostEqual(at[0], -1.0, places=6)
+        inner = _poly((1, 19), (1, 21), (10, 20))
+        ok, *_ = offset.check_offset(self.SQUARE, 3.0, [inner], [np.arange(3)], tol=TOL, side=-1)
+        self.assertFalse(ok)
+
+    def test_a_vertex_on_the_edge_itself_is_a_defect(self) -> None:
+        bad = self.SQUARE.copy()
+        ok, _, kind, defect = offset.check_offset(self.SQUARE, 3.0, [bad], [np.arange(4)], tol=TOL, side=1)
+        self.assertFalse(ok)
+        self.assertEqual(kind, "distance")
+        self.assertAlmostEqual(defect, 3.0 - TOL, delta=1e-6)
+
+    def test_stepped_distances_with_a_narrow_neck_are_verified(self) -> None:
+        """Lo que la T09c dejaba rechazado con aviso: anillos muestreados con dos distancias (5,77 y 10 m) y un cuello más estrecho que
+        la mayor (L, C y mancuerna, giradas, a 0,5, 1, 1,7 y 3 m, hacia fuera y hacia dentro): ninguno se rechaza, todos son simples y
+        están a la distancia de cada arista por su lado del desfase y su área es la de la definición."""
+        rejected, done = [], 0
+        for name, shape in (("L", L_SHAPE), ("dumbbell", DUMBBELL), ("C", C_SHAPE)):
+            for degrees in (0.0, 7.0, 30.0, 45.0, 70.0):
+                for step in (0.5, 1.0, 1.7, 3.0):
+                    ring = _sampled(_rotated(shape, math.radians(degrees)), step)
+                    dist = np.where(np.arange(len(ring)) < len(ring) // 2, 5.77, 10.0)
+                    for side in (1, -1):
+                        result = offset.offset_ring(ring, dist, side, tol=TOL)
+                        done += 1
+                        if not result.verified:
+                            rejected.append((name, degrees, step, side, result.defect, result.max_defect_m))
+                            continue
+                        loops = list(result.rings) + list(result.holes)
+                        for loop in loops:
+                            self.assertTrue(_simple(loop), (name, degrees, step, side))
+                        self.assertLessEqual(_shortfall(loops, ring, dist, side), TOL + 1e-9, (name, degrees, step, side))
+        self.assertEqual(rejected, [], f"{len(rejected)} de {done} rechazados")
+
+    def test_the_slab_geometry_is_the_one_sided_definition(self) -> None:
+        """El anillo con cuello estrecho y dos distancias: el área del resultado es la de ``P ∪ semicápsulas del lado del desfase``."""
+        ring = _sampled(C_SHAPE, 1.0)
+        dist = np.where(np.arange(len(ring)) < len(ring) // 2, 5.77, 10.0)
+        for side in (1, -1):
+            result = offset.offset_ring(ring, dist, side, tol=TOL)
+            self.assertTrue(result.verified, (side, result.defect, result.defect_at, result.max_defect_m))
+            area = sum(_area(loop) for loop in result.rings) + sum(_area(loop) for loop in result.holes)
+            exact = _capsule_area(ring, dist, side, cell=0.25)
+            self.assertLess(abs(area - exact), 0.01 * exact + 1.0, (side, area, exact))
 
 
 class ClosingWithFullOffsetTest(unittest.TestCase):
