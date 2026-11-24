@@ -50,6 +50,9 @@ SKY_BUDGET_S = 5.0  # RNF-018-04
 REPORT_BUDGET_S = 10.0  # RNF-018-05
 CALL_BUDGET_S = 0.2  # RNF-018-06: cada llamada del hilo de Blender, en CPU
 CALL_MARGIN = 1.25  # el margen del 25 % por la carga ajena (Samuel, 23/11/2026)
+LIMIT_BENCHES = 40  # DIFF-018i: el límite medido de RNF-018-06 (≈ 115.000 puntos)
+LIMIT_VERTICES = 115_000
+KNOWN_LIMIT_CALL_S = 0.6  # lo aceptado a 160.000 vértices fue ≈ 0,33 s; el doble casi es una regresión
 MEMORY_BUDGET_BYTES = int(1.5 * 1024**3)  # RNF-018-07
 MIB = 1024**2
 RUNS = 5
@@ -164,12 +167,22 @@ class SurfaceTest(CallCase):
         self.assertLessEqual(statistics.median(times), RASTER_BUDGET_S)
 
     def test_a2_rasterize_calls(self) -> None:
-        """RNF-018-06 **no se cumple todavía** con 160.000 vértices de 60 bancos sobre 2,81 M celdas: la llamada más larga de la superficie mide ≈ 0,31-0,34 s de CPU (0,2 s con el margen del 25 % de
-        0,25 s) por cuatro fases de numpy que no ceden el hilo (la comprobación del casco de ``gis.cdt``, ≈ 0,31 s; las bandas de ``_row_costs`` del rasterizado, ≈ 0,27 s; el volumen por banco, ≈ 0,20 s;
-        el orden de Hilbert, ≈ 0,19 s). Con la corta de 40 bancos de ≈ 115.000 puntos que calcula «Calcular» (:class:`ComputeTest`) la llamada más larga sí cabe (≈ 0,16 s). Es un fallo real
-        hasta que Samuel decida (T36, informe): **esta prueba falla a propósito** (no se relaja el techo ni se esconde con una marca de fallo esperado, TST-07); pasa cuando se parta esa fase."""
+        """RNF-018-06 dentro de su límite medido (DIFF-018i, spec 0.11): la superficie de una corta de 40 bancos con ≈ 115.000 puntos sobre 2,81 M celdas cede el hilo en llamadas de ≤ 0,2 s de CPU
+        (con el margen del 25 %)."""
+        job, polylines = pp.scale_job(LIMIT_BENCHES), pp.scale_polylines(LIMIT_BENCHES, LIMIT_VERTICES)
+        found = pp.drive(pit_surface.rasterize_steps(job, polylines, crs=pd.CRS, vertical=pd.VERTICAL, budget_s=pp.STEP_BUDGET_S))
+        gis_perf.report(f"RNF-018-06: la superficie de {LIMIT_BENCHES} bancos con {count(sum(len(item.vertices) for item in polylines))} puntos, dentro del límite medido ({MACHINE}): la llamada más larga "
+                        f"{ms(found.longest_cpu_s)} ms de CPU (presupuesto {ms(CALL_BUDGET_S)} ms)")
+        self.check_call(found.longest_cpu_s, f"la superficie de {LIMIT_BENCHES} bancos y ≈ 115.000 puntos")
+
+    def test_a3_rasterize_calls_beyond_limit(self) -> None:
+        """RNF-018-06, **límite conocido** (DIFF-018i, spec 0.11): con 160.000 vértices de 60 bancos la llamada más larga de la superficie mide ≈ 0,33 s de CPU (por fases de numpy que no ceden el hilo: la
+        comprobación del casco de ``gis.cdt``, el costo por filas del rasterizado, el volumen por banco y el orden de Hilbert). Samuel lo aceptó el 24/11/2026: no se aprieta la cifra de 0,2 s ni el margen. Esta
+        prueba **documenta** la medida (imprime una línea ``RNF-018-06: LÍMITE CONOCIDO``) y falla solo si la llamada pasa de 0,6 s (una regresión grave respecto a lo aceptado)."""
         found = self.surface()
-        self.check_call(found.longest_cpu_s, "la superficie de 160.000 vértices")
+        gis_perf.report(f"RNF-018-06: LÍMITE CONOCIDO (aceptado, spec 0.11), la superficie de 60 bancos con {count(self.vertices)} vértices ({MACHINE}): la llamada más larga {ms(found.longest_cpu_s)} ms de CPU "
+                        f"(≈ 330 ms medidos al aceptarlo; el presupuesto de {ms(CALL_BUDGET_S)} ms rige hasta ≈ 115.000 puntos)")
+        self.assertLessEqual(found.longest_cpu_s, KNOWN_LIMIT_CALL_S, "la superficie de 160.000 vértices empeoró respecto al límite aceptado")
 
     def test_b_skyline(self) -> None:
         """RNF-018-04: la línea de cielo sobre 2,81 M celdas, ≤ 5 s (mediana de 5), con cada llamada ≤ 0,2 s de CPU."""
