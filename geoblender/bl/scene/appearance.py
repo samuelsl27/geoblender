@@ -314,7 +314,7 @@ def reapply(objects: Iterable[Any]) -> int:
 
 # Escritura diferida (spec 019, T08; plan 019 A2) -----------------------------------------------------------------
 
-_pending: dict[str, set[str]] = {}  # nombre del objeto → propiedades cambiadas y aún sin escribir
+_pending: dict[str, set[str]] = {}  # uid del dato (estable; el nombre del objeto cambia con el rótulo) → propiedades sin escribir
 _due: float | None = None
 _clock: Any = time.monotonic
 _warned: set[str] = set()
@@ -346,7 +346,7 @@ def mark(obj: Any, prop: str) -> None:
     global _due
     if project_session.current() is None or not obj.geoblender.dataset_uid:
         return
-    _pending.setdefault(obj.name, set()).add(prop)
+    _pending.setdefault(obj.geoblender.dataset_uid, set()).add(prop)
     _due = _clock() + DELAY_S
     if not bpy.app.timers.is_registered(_tick):
         bpy.app.timers.register(_tick, first_interval=DELAY_S, persistent=True)
@@ -404,9 +404,14 @@ def flush(project: Any = None) -> int:
         _warn_once(reason)
         return 0
     batch: list[tuple[str, str, dict[str, Any], list[str]]] = []  # (uid, tipo, valores, rótulos a borrar)
-    for name, props in items.items():
-        obj = bpy.data.objects.get(name)
-        if obj is None or obj.geoblender.kind == "NONE" or obj.geoblender.project_uid != project.uid:
+    found: dict[str, Any] = {}  # el objeto se resuelve ahora, por el uid del dato: su nombre pudo cambiar (F-1)
+    for candidate in bpy.data.objects:
+        uid = candidate.geoblender.dataset_uid
+        if uid in items and uid not in found and candidate.geoblender.kind != "NONE"                 and candidate.geoblender.project_uid == project.uid:
+            found[uid] = candidate
+    for uid, props in items.items():
+        obj = found.get(uid)
+        if obj is None:
             continue
         values = read(obj).as_dict()
         wanted = {prop: values[prop] for prop in props if prop in values}
@@ -575,11 +580,11 @@ def reset(objects: Iterable[Any], props: Iterable[str] | None = None) -> list[An
         if kind == "NONE":
             continue
         chosen = [prop for prop in (offered(kind) if props is None else props) if prop in offered(kind)]
-        pending = _pending.get(obj.name)
+        pending = _pending.get(obj.geoblender.dataset_uid)
         if pending is not None:
             pending.difference_update(chosen)
             if not pending:
-                del _pending[obj.name]
+                del _pending[obj.geoblender.dataset_uid]
         if project is not None and obj.geoblender.dataset_uid and obj.geoblender.project_uid == project.uid:
             rows.append((obj.geoblender.dataset_uid, chosen))
         _reset_mirror(obj, chosen)

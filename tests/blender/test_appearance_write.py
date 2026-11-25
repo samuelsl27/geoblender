@@ -130,6 +130,28 @@ class AppearanceWriteTest(unittest.TestCase):
         scene.close()
         self.assertEqual(self._rows(obj), {"transparency": "40"})
 
+    def test_a_label_change_does_not_lose_what_was_noted_before_it(self) -> None:
+        """F-1, RF-019-08: cambiar el rótulo renombra el objeto; color y transparencia anotados antes se escriben igual."""
+        obj = self.objs[0]
+        uid = obj.geoblender.dataset_uid
+        obj.geoblender.look.color = (0.0, 1.0, 0.0)
+        obj.geoblender.look.transparency = 40
+        obj.geoblender.look.label = "Rótulo de prueba"  # renombra el objeto
+        renamed = bpy.data.objects.get(obj.name)
+        self.assertIsNotNone(renamed)
+        self.assertIn("Rótulo de prueba", obj.name)
+        self.assertEqual(_appearance().flush(), 3)
+        rows = self._rows(next(o for o in bpy.data.objects if o.geoblender.dataset_uid == uid))
+        self.assertEqual(rows, {"color": "#00FF00", "label": "Rótulo de prueba", "transparency": "40"})
+
+    def test_a_rename_between_the_change_and_the_write_loses_nothing(self) -> None:
+        """F-1: un renombrado cualquiera (marca de obsoleto, otra vista) entre el cambio y la escritura no pierde el cambio."""
+        obj = self.objs[0]
+        obj.geoblender.look.transparency = 55
+        obj.name = obj.name + " [obsoleto]"
+        self.assertEqual(_appearance().flush(), 1)
+        self.assertEqual(self._rows(obj), {"transparency": "55"})
+
     def test_objects_without_data_write_nothing(self) -> None:
         """Un objeto sin dato del proyecto (el ancla de prueba) solo cambia su espejo: nada pendiente."""
         mesh = bpy.data.meshes.new("sin dato")
