@@ -201,11 +201,11 @@ class PitGuideDocTest(unittest.TestCase):
         que el contraste con el proyecto de referencia **no concluyó**, que lo que no se vio en pantalla sigue abierto y que la guía está **pendiente de la revisión de Samuel**; y
         lleva su fecha y su spec."""
         head = one_line(re.sub(r"(?m)^> ?", "", self.guide[:self.guide.index("## 1. Las palabras")]))
-        for fact in ("**Fecha:** 24/11/2026", "**Spec:** 018", "**cerrada** (Samuel, 25/11/2026; spec 0.14)", "en `main`", "**sin pantalla**", "**Queda abierto:**",
+        for fact in ("**Fecha:** 24/11/2026", "**Spec:** 018", "**cerrada** (Samuel, 25/11/2026; spec 0.14)", "en `main`", "**publicada** el 25/11/2026 (código `167fbd8`)", "**sin pantalla**", "**Queda abierto:**",
                      "**no concluyó**", "lo que no se vio en pantalla", "**pendiente de la revisión de Samuel**"):
             with self.subTest(head=fact):
                 self.assertIn(fact, head)
-        for stale in ("cerrada y publicada", "sin cerrar", "Aún no se ha visto en pantalla", "verificación única", "Silvestre"):
+        for stale in ("cerrada y publicada", "a falta de publicar", "sin cerrar", "Aún no se ha visto en pantalla", "verificación única", "Silvestre"):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, head)
         self.assertIsNone(JARGON.search(head))
@@ -433,8 +433,11 @@ class PitCardDocTest(unittest.TestCase):
                 for fact in ("de la T01 a la T37", "`docs/usuario/corta-por-bancos.md`"):
                     self.assertIn(fact, text)
         self.assertIn("**cerrada** por Samuel el 25/11/2026 (0.14", head)  # la cabecera no puede decir «a falta de publicar»: la prueba de la 017 lo prohíbe en ella
+        self.assertIn("**publicada** ese día (código `167fbd8`)", head)  # publicada el 25/11/2026 con `tools/publish.py` (T43)
         self.assertIn("`verificacion.md` §7", head)
         self.assertIn("**cerrada** el 25/11/2026", row.group(0))
+        self.assertIn("**publicada** ese día (código `167fbd8`)", row.group(0))
+        self.assertNotIn("a falta de publicar", self.text)
         for stale in ("aún no publicada ni cerrada", "sin publicar y sin cerrar"):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, head + row.group(0))
@@ -466,7 +469,7 @@ class PitStateDocTest(unittest.TestCase):
     def test_the_index_says_the_018_state(self) -> None:
         """Definición de hecho §3.7 (T37): la fila 018 del índice dice que está **cerrada** (25/11/2026, por Samuel; spec 0.14), en `main`, con la T01 a la T37 hechas, su guía y lo abierto al cierre (T42)."""
         row = one_line(next(line for line in self.index.splitlines() if line.startswith("| 018 |")))
-        for fact in ("de la T01 a la T37", "`docs/usuario/corta-por-bancos.md`", "**Cerrada** (25/11/2026, por Samuel: «Sí»; spec 0.14)", "`verificacion.md` §7",
+        for fact in ("de la T01 a la T37", "`docs/usuario/corta-por-bancos.md`", "**Cerrada** (25/11/2026, por Samuel: «Sí»; spec 0.14)", "**publicada** el 25/11/2026 (código `167fbd8`)", "`verificacion.md` §7",
                      "no concluyente", "-69,6 %", "CE-018-13", "DIFF-018k", "DIFF-001a"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, row)
@@ -477,7 +480,7 @@ class PitStateDocTest(unittest.TestCase):
         `verificacion.md` §7), con su registro del 24/11/2026 y el del cierre."""
         row = next(line for line in self.roadmap.splitlines() if line.startswith("| R-35 |"))
         self.assertNotIn("| pendiente |", row)
-        for fact in ("018-des-corta-por-bancos", "R-36", "R-40", "**hecha**", "**cerrada** por Samuel el 25/11/2026 (spec 0.14)", "`verificacion.md` §7", "no concluyente",
+        for fact in ("018-des-corta-por-bancos", "R-36", "R-40", "**hecha**", "**cerrada** por Samuel el 25/11/2026 (spec 0.14)", "**publicada** el 25/11/2026 (código `167fbd8`)", "`verificacion.md` §7", "no concluyente",
                      "CE-018-13"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, row)
@@ -493,6 +496,7 @@ class PitStateDocTest(unittest.TestCase):
         """Definición de hecho §3.7 (T37): el README de la carpeta enlaza la guía y la lista de guías la describe; el CHANGELOG del código tiene la entrada «Corta por bancos» en
         «Añadido», escrita para el ingeniero de minas: lo nuevo, las cifras HIPÓTESIS y lo que no hace todavía."""
         self.assertIn("(docs/usuario/corta-por-bancos.md)", self.readme)
+        self.assertRegex(self.readme[self.readme.index("(docs/usuario/corta-por-bancos.md)"):][:300], r"cerrada y publicada el 25/11/2026\)")
         self.assertIn("(`corta-por-bancos.md`)", self.readme)
         entry = self.changelog[self.changelog.index("- **Corta por bancos**"):]
         entry = entry[:entry.index("- **Pistas y rampas**")]
