@@ -207,5 +207,131 @@ class ElementPanelTest(unittest.TestCase):
         self.assertLessEqual({i.icon for i in self.drawn().items}, set(icons.keys()))
 
 
+LOOK = "GEOBLENDER_PT_ui_element_look"
+LOOK_MORE = "GEOBLENDER_PT_ui_element_look_more"
+RESET = "geoblender.ui_appearance_reset"
+
+
+class ElementLookPanelTest(ElementPanelTest):
+    """Spec 019, T10 (HU-019-1; RF-019-07, RF-019-08, RF-019-09; plan 019 §5.5, P-2, P-4): el aspecto en el panel."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.appearance = vf.extension("bl.scene.appearance")
+        self.addCleanup(self.appearance.discard)
+
+    def surface(self) -> bpy.types.Object:
+        """El objeto del MDT importado, activo, con su tipo de superficie (``DTM``)."""
+        _grid, mdt, _derived = self.three()
+        obj = self.activate(mdt.uid)
+        obj.geoblender.kind = "DTM"
+        return obj
+
+    def props(self, panel: str) -> list[str]:
+        return [item.target for item in self.drawn(panel).of_kind("prop")]
+
+    # Heredadas de la T09: no se repiten
+    test_card_of_each_element_has_its_fields_in_two_boxes = None  # type: ignore[assignment]
+    test_new_element_says_no_provenance_yet = None  # type: ignore[assignment]
+    test_coordinates_are_text_and_absolute = None  # type: ignore[assignment]
+    test_lines_of_the_module_enter_the_card = None  # type: ignore[assignment]
+    test_sidebar_no_longer_repeats_the_card = None  # type: ignore[assignment]
+    test_panel_is_in_properties_object_tab_only_for_elements = None  # type: ignore[assignment]
+    test_drawing_does_not_read_the_project_and_fits = None  # type: ignore[assignment]
+
+    def test_frequent_up_front_and_the_rest_folded(self) -> None:
+        """UI-02, UI-13: rótulo, color, transparencia y visibilidad arriba; el resto, en «Más aspecto», plegado y solo
+        con lo que el tipo ofrece (una superficie: malla visible; unas curvas: grosor)."""
+        obj = self.surface()
+        self.assertEqual(self.props(LOOK), ["label", "color", "transparency", "visible"])
+        self.assertEqual(self.props(LOOK_MORE), ["wire"])
+        more = getattr(bpy.types, LOOK_MORE)
+        self.assertEqual(more.bl_parent_id, LOOK)
+        self.assertIn("DEFAULT_CLOSED", more.bl_options)
+        obj.geoblender.kind = "CONTOURS"
+        self.assertEqual(self.props(LOOK), ["label", "color", "visible"])
+        self.assertEqual(self.props(LOOK_MORE), ["line_width"])
+        obj.geoblender.kind = "POINTS"
+        self.assertEqual(self.props(LOOK_MORE), ["point_size", "labels"])
+        obj.geoblender.kind = "PROJECT_ANCHOR"
+        self.assertEqual(self.props(LOOK), ["label", "visible"])
+        self.assertFalse(getattr(bpy.types, LOOK_MORE).poll(bpy.context))
+
+    def test_default_is_shown_as_such_and_reset_button_goes_back(self) -> None:
+        """UI-03, UI-27, UI-30/31: «predefinido» junto al valor sin cambiar; con un cambio, ese texto no está y el botón
+        vuelve a él (``ui_appearance_reset`` de esa propiedad), en texto y no solo en color."""
+        obj = self.surface()
+        drawn = self.drawn(LOOK)
+        self.assertEqual(drawn.texts().count("predefinido"), 4)
+        self.assertEqual([i for i in drawn.of_kind("operator") if i.target == RESET], [])
+        obj.geoblender.look.transparency = 40
+        drawn = self.drawn(LOOK)
+        self.assertEqual(drawn.texts().count("predefinido"), 3)
+        buttons = [i for i in drawn.of_kind("operator") if i.target == RESET]
+        self.assertEqual([(b.properties.scope, getattr(b.properties, "prop", "")) for b in buttons],
+                         [("PROPERTY", "transparency"), ("ELEMENT", "")])  # y, al final, el de todo el aspecto
+        self.assertEqual(self.appearance.reset([obj], ["transparency"])[0], obj)
+        self.assertEqual(self.drawn(LOOK).texts().count("predefinido"), 4)
+        self.assertAlmostEqual(obj.color[3], 1.0, places=5)
+
+    def test_color_and_transparency_are_seen_in_the_object(self) -> None:
+        """RF-019-07, UI-10: color y transparencia de una superficie y de una corta cambian el objeto en el acto."""
+        obj = self.surface()
+        for kind in ("DTM", "DESIGN_ENTITY"):
+            with self.subTest(kind=kind):
+                obj.geoblender.kind = kind
+                obj.geoblender.look.color = (1.0, 0.0, 0.0)
+                obj.geoblender.look.transparency = 25
+                self.assertEqual(tuple(round(c, 3) for c in obj.color), (1.0, 0.0, 0.0, 0.75))
+
+    def test_label_changes_the_outliner_not_the_stable_name(self) -> None:
+        """RF-019-07, P-2: el rótulo cambia el nombre del objeto (lo que ve el Outliner) por ``view_name`` y **no**
+        ``gb_dataset.name``; vaciarlo vuelve al nombre generado."""
+        obj = self.surface()
+        uid, before = obj.geoblender.dataset_uid, obj.name
+        with self.data.project.read() as conn:
+            (stable,) = conn.execute("SELECT name FROM gb_dataset WHERE uid = ?", (uid,)).fetchone()
+        obj.geoblender.look.label = "Fondo de la corta"
+        self.assertIn("Fondo de la corta", obj.name)
+        self.assertNotEqual(obj.name, before)
+        with self.data.project.read() as conn:
+            (name,) = conn.execute("SELECT name FROM gb_dataset WHERE uid = ?", (uid,)).fetchone()
+        self.assertEqual(name, stable)
+        self.assertEqual(obj.geoblender.dataset_uid, uid)
+        self.appearance.reset([obj], ["label"])
+        self.assertNotIn("Fondo de la corta", obj.name)
+        self.assertEqual(obj.geoblender.look.label, "")
+
+    def test_out_of_range_is_rejected_with_object_field_and_value(self) -> None:
+        """RF-019-07, UI-09: un valor fuera de rango se rechaza diciendo objeto, campo y valor."""
+        obj = self.surface()
+        errors = vf.extension("core.errors")
+        with self.assertRaises(errors.GeoblenderError) as caught:
+            self.appearance.apply(obj, {"transparency": "150"})
+        text = str(caught.exception)
+        self.assertIn(obj.name, text)
+        self.assertIn("150", text)
+
+    def test_reset_says_what_it_restored(self) -> None:
+        """RF-019-09: «Restablecer» dice qué ha restablecido y de qué elemento."""
+        obj = self.surface()
+        obj.geoblender.look.transparency = 40
+        done = self.appearance.reset([obj], ["transparency"])
+        self.assertEqual(self.appearance.reset_message(["transparency"], done),
+                         f"Restablecido: Transparencia de «{obj.name}»")
+
+    def test_look_panel_is_where_the_card_is(self) -> None:
+        """P-1: el panel del aspecto va en Propiedades ▸ Objeto, con el mismo filtro que la ficha."""
+        obj = self.surface()
+        panel = getattr(bpy.types, LOOK)
+        self.assertEqual((panel.bl_space_type, panel.bl_region_type, panel.bl_context),
+                         ("PROPERTIES", "WINDOW", "object"))
+        self.assertEqual(panel.bl_label, "Aspecto")
+        self.assertTrue(panel.poll(bpy.context))
+        self.ps.close()
+        self.assertFalse(panel.poll(bpy.context))
+        self.assertIsNotNone(obj)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -400,6 +400,24 @@ def view_name(loader: Loader, record: DatasetRecord, *, stale: bool, outdated: b
     return " ".join(part for part in (_text(loader.label), short, f"[{state}]") if part)
 
 
+def relabel(project: Any, obj: bpy.types.Object, label: str) -> bool:
+    """Pone a ``obj`` el nombre que ve el Outliner con el rótulo ``label`` en lugar del título (spec 019, T10; P-2): el
+    mismo :func:`view_name` de siempre, con ``title=label``; vacío, vuelve al título que tenía el dato. **Solo** cambia
+    el nombre del objeto: ni ``gb_dataset.name`` ni la identidad del dato. Devuelve si lo cambió; ``False`` si el dato ya
+    no está o ningún módulo lo carga. No escribe en el proyecto."""
+    from ...core.provenance.view import dataset_view  # al usarlo: no al habilitar
+
+    uid = getattr(obj, OBJECT_PROPERTY).dataset_uid
+    shown = dataset_view(project, uid) if uid else None
+    loader = None if shown is None else loader_for(shown.record.name)
+    if shown is None or loader is None:
+        return False
+    _owner, code, title = _dataset_label(project, uid)
+    name = view_name(loader, shown.record, stale=shown.stale, title=label.strip() or title or None,
+                     version=code or None)
+    return named(obj, name)
+
+
 def child_collection(parent: bpy.types.Collection, key: str, name: str) -> bpy.types.Collection:
     """La colección ``key`` dentro de ``parent``: la que ya está, la que existe en otro sitio
     (enlazada aquí) o una nueva con ``name``."""

@@ -87,11 +87,13 @@ def _relabel_core_panel() -> None:
     res_panels.localize()
     constraint_panels.localize()
     des_panels.localize()
-    for cls in panels:
-        if (getattr(cls, "bl_category", ""), cls.bl_label) == before[cls] or not getattr(
-                cls, "is_registered", False):
-            continue
+    changed = [cls for cls in panels
+               if (getattr(cls, "bl_category", ""), cls.bl_label) != before[cls] and getattr(cls, "is_registered", False)]
+    changed += [cls for cls in panels if cls not in changed and getattr(cls, "is_registered", False)
+                and getattr(cls, "bl_parent_id", "") in {c.bl_idname for c in changed}]
+    for cls in reversed(changed):  # los subpaneles antes que sus padres (y vuelven después de ellos)
         bpy.utils.unregister_class(cls)
+    for cls in changed:
         bpy.utils.register_class(cls)
 
 

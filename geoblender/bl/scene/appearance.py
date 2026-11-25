@@ -130,11 +130,21 @@ def _redraw_views(_obj: Any, _value: str) -> None:
                 area.tag_redraw()
 
 
-def _label_is_mirror_only(_obj: Any, _value: str) -> None:
-    """El rótulo no cambia nada del objeto aquí: lo que ve el Outliner lo pone ``scene.views.view_name`` (T10; P-2)."""
+def _set_label(obj: Any, value: str) -> None:
+    """El rótulo es lo que ve el Outliner: el nombre del objeto lo genera ``scene.views.view_name`` con él (T10; P-2). No
+    cambia el nombre estable del dato ni su identidad."""
+    from . import views
+
+    project = project_session.current()
+    if project is None or project.closed or not obj.geoblender.dataset_uid or obj.geoblender.project_uid != project.uid:
+        return
+    try:
+        views.relabel(project, obj, value)
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.warning("No se pudo poner el rótulo a «%s»", obj.name, exc_info=True)
 
 
-_COMMON: dict[str, _Applier] = {"label": _label_is_mirror_only, "visible": _set_visible}
+_COMMON: dict[str, _Applier] = {"label": _set_label, "visible": _set_visible}
 _SURFACE: dict[str, _Applier] = {**_COMMON, "color": _set_color, "transparency": _set_transparency, "wire": _set_wire}
 _LINES: dict[str, _Applier] = {**_COMMON, "color": _set_color}
 _STROKED: dict[str, _Applier] = {**_LINES, "line_width": _redraw_views}
@@ -391,6 +401,7 @@ def _reset_mirror(obj: Any, props: Iterable[str]) -> None:
                 look.property_unset(prop)
             elif prop == "label":
                 look.label = ""
+                _set_label(obj, "")
             elif prop in defaults.props:
                 mirror(obj, _domain().model.Appearance(kind, ((prop, defaults.get(prop) or ""),)))
     finally:

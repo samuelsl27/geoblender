@@ -12838,3 +12838,17 @@ es = "Mostrar la ficha del elemento"
 
 ["There is no Properties editor in this window"]
 es = "No hay ningún editor de Propiedades en esta ventana"
+
+# El aspecto en el panel (spec 019, T10) -------------------------------------------------
+
+["More appearance"]
+es = "Más aspecto"
+
+["default"]
+es = "predefinido"
+
+["How the element looks in the views: label, color, transparency and visibility. Only the appearance of the project is written; the data, its versions and its provenance do not change"]
+es = "Cómo se ve el elemento en las vistas: rótulo, color, transparencia y visibilidad. Solo se escribe el aspecto del proyecto; el dato, sus versiones y su procedencia no cambian"
+
+["Line width, point size, labels and wireframe of the element, only the ones its type has"]
+es = "Grosor de línea, tamaño de punto, etiquetas y malla visible del elemento, solo los que tiene su tipo"
