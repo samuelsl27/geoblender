@@ -129,6 +129,7 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
 
+- **El aspecto de los elementos se guarda en el proyecto** (spec 019, en curso, tarea T03). El proyecto pasa al esquema 4: una tabla nueva, `gb_appearance`, guarda lo que alguien cambie del aspecto de un elemento (color, transparencia, visibilidad, rótulo…); el predefinido no se guarda y «restablecer» borra la fila. No es una operación ni una cifra: no crea versión ni marca nada como obsoleto. Un proyecto del esquema 3 se migra al abrirlo, con copia previa completa (`…respaldo-esquema-3`) y sin tocar ningún dato; un Geoblender anterior lo abre en solo lectura con el aviso de versión más moderna. Todavía no hay panel para cambiarlo (siguientes tareas).
 - **Corta por bancos** (spec 018, R-35; cerrada por Samuel el 25/11/2026, con la spec en su 0.14 y lo abierto anotado en «Abierto al cierre», abajo; vista en pantalla con eventos simulados y un ensayo
   de un agente, sin la cifra de una persona de IMGA). Hasta ahora Geoblender diseñaba en la rejilla: daba la envolvente y el escalonado, pero no las líneas de cada banco. Lo que se hace con un programa minero es otra cosa: se parte de
   una línea de fondo, o de la cresta de un límite legal, se da una altura de banco, un ángulo de cara y una berma, y salen los bancos uno a uno, como polilíneas con su cota, con las rampas que los comunican

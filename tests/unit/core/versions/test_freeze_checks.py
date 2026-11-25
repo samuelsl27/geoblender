@@ -273,7 +273,7 @@ class FreezeTest(FindingsCase):
         rows = self.query("SELECT state FROM gb_revision_item WHERE revision_uid = ?",
                           (outcome.frozen.uid,))
         self.assertTrue({row[0] for row in rows} <= {str(state) for state in ItemState})
-        self.assertEqual(project_schema.SCHEMA_VERSION, 3)
+        self.assertEqual(project_schema.SCHEMA_VERSION, 4)
         (ddl,) = self.query("SELECT sql FROM sqlite_master WHERE name = 'gb_revision_item'")
         (listed,) = re.findall(r"CHECK \(state IN \(([^)]*)\)\)", ddl[0])
         self.assertEqual(listed.replace("'", "").split(","), [str(s) for s in ItemState])

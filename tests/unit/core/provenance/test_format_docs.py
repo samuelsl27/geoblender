@@ -298,7 +298,7 @@ class CoreModuleDocTest(unittest.TestCase):
         «Datos que posee» nombra cada tabla interna del esquema de esta versión (desde la
         spec 009, las cinco de las versiones)."""
         owned = set(backticked(section(self.text, "## Datos que posee")))
-        self.assertEqual(len(project_schema.INTERNAL_TABLES), 20)
+        self.assertEqual(len(project_schema.INTERNAL_TABLES), 21)  # + gb_appearance (spec 019)
         self.assertEqual(sorted(set(project_schema.INTERNAL_TABLES) - owned), [])
 
 

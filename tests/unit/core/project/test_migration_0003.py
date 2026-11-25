@@ -124,7 +124,7 @@ def _states(database: Path) -> dict[str, Any]:
 def _internal_structure(database: Path) -> tuple[list[tuple], list[tuple]]:
     """Lo de Geoblender en ``sqlite_master`` (todo lo de sus tablas internas, sin las páginas
     raíz) y sus filas de ``gpkg_extensions``, en orden."""
-    internal = schema.INTERNAL_TABLES
+    internal = tuple(t for t in schema.INTERNAL_TABLES if t != schema.APPEARANCE_TABLE)  # lo del 3
     marks = ", ".join("?" for _ in internal)
     with gpkg.GpkgConnection.open_read(database) as db:
         conn = db.connection
@@ -133,8 +133,9 @@ def _internal_structure(database: Path) -> tuple[list[tuple], list[tuple]]:
             "ORDER BY type, name", internal).fetchall()
         extensions = conn.execute(
             "SELECT table_name, column_name, extension_name, definition, scope "
-            "FROM gpkg_extensions WHERE extension_name = ? "
-            "ORDER BY table_name, column_name", (gpkg_base.EXTENSION_NAME,)).fetchall()
+            "FROM gpkg_extensions WHERE extension_name = ? AND table_name != ? "
+            "ORDER BY table_name, column_name",
+            (gpkg_base.EXTENSION_NAME, schema.APPEARANCE_TABLE)).fetchall()
     return master, extensions
 
 
@@ -167,7 +168,8 @@ def setUpModule() -> None:
         files=_files(work), tables=_tables(database), master=_master(database),
         states=_states(database), prints=copytree.fingerprint(root, exclude=fixture.EXCLUDED),
     )
-    steps = list(migrations.migrate_steps(root, SESSION, userdata, clock=clock, pid_alive=pids))
+    steps = list(migrations.migrate_steps(root, SESSION, userdata, clock=clock, pid_alive=pids,
+                                          target=3))
     _STATE.update(
         steps=steps, after_files=_files(work, skip=_STATE["backup"]),
         after_tables=_tables(database), after_master=_master(database),
@@ -183,7 +185,7 @@ class RegistryTest(unittest.TestCase):
         versión, D-24) y aplica ``apply_schema_3``; la cadena desde el 1 es ``m0002`` y
         ``m0003``; las tablas internas son las del 1, las de la procedencia y las cinco
         nuevas."""
-        self.assertEqual((schema.SCHEMA_VERSION, schema.MIN_READER_SCHEMA), (3, 1))
+        self.assertEqual((schema.SCHEMA_VERSION, schema.MIN_READER_SCHEMA), (4, 1))
         migration = m0003.MIGRATION
         self.assertIn(migration, migrations.REGISTRY)
         self.assertEqual(
@@ -192,13 +194,13 @@ class RegistryTest(unittest.TestCase):
         )
         self.assertIsNone(migration.min_reader_schema)
         self.assertIs(migration.apply, m0003.apply)
-        self.assertEqual(migrations.plan_migrations(2, schema.SCHEMA_VERSION), (migration,))
-        self.assertEqual(migrations.plan_migrations(1, schema.SCHEMA_VERSION),
-                         (m0002.MIGRATION, migration))
+        self.assertEqual(migrations.plan_migrations(2, 3), (migration,))
+        self.assertEqual(migrations.plan_migrations(1, 3), (m0002.MIGRATION, migration))
         self.assertEqual(versions_schema.INTERNAL_TABLES, VERSION_TABLES)
         self.assertEqual(
             schema.INTERNAL_TABLES,
-            schema.SCHEMA_1_TABLES + provenance_schema.INTERNAL_TABLES + VERSION_TABLES,
+            schema.SCHEMA_1_TABLES + provenance_schema.INTERNAL_TABLES + VERSION_TABLES
+            + (schema.APPEARANCE_TABLE,),  # el 4 (spec 019): su prueba, en test_migration_0004
         )
 
 
@@ -373,9 +375,10 @@ class MigrateSchema2Test(unittest.TestCase):
                 missing = schema.missing_objects(db.connection, 3)
         self.assertEqual(migrated_master, fresh_master)
         self.assertEqual(migrated_extensions, fresh_extensions)
-        self.assertEqual((tuple(versions), missing), ((3, 1), []))
+        self.assertEqual((tuple(versions), missing), ((4, 1), []))  # el 4: spec 019
         declared = {row[0]: row[3:] for row in migrated_extensions}
-        self.assertEqual(sorted(declared), sorted(schema.INTERNAL_TABLES))
+        self.assertEqual(sorted(declared), sorted(t for t in schema.INTERNAL_TABLES
+                                                  if t != schema.APPEARANCE_TABLE))
         for table in VERSION_TABLES:
             self.assertEqual(declared[table], (gpkg_base.EXTENSION_DEFINITION, "write-only"))
         self.assertGreater(len(migrated_master), 150)
@@ -388,7 +391,8 @@ class MigrateSchema2Test(unittest.TestCase):
         work, root = _STATE["work"], _STATE["root"]
         before = _files(work)
         steps = list(migrations.migrate_steps(
-            root, SESSION, _STATE["userdata"], clock=_STATE["clock"], pid_alive=_STATE["pids"]))
+            root, SESSION, _STATE["userdata"], clock=_STATE["clock"], pid_alive=_STATE["pids"],
+            target=3))
         result = steps[-1].result
         self.assertEqual((result.applied, result.backup), ((), None))
         self.assertEqual((result.from_version, result.to_version), (3, 3))

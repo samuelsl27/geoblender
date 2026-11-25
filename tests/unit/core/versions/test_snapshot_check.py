@@ -640,12 +640,12 @@ class KeptTest(SnapshotCheckCase):
                          [name, previous.name])
         self.assertEqual((_prints(self.root), _prints(previous)), (before, before))
 
-        def m3_4(conn: sqlite3.Connection) -> None:
+        def m4_5(conn: sqlite3.Connection) -> None:
             conn.execute("CREATE TABLE IF NOT EXISTS gb_test_m4 (fid INTEGER PRIMARY KEY)")
 
-        chain = (*migrations.REGISTRY, migrations.Migration(3, 4, "tabla de prueba", m3_4))
+        chain = (*migrations.REGISTRY, migrations.Migration(4, 5, "tabla de prueba", m4_5))
         steps = migrations.migrate_steps(self.root, fixtures.SESSION, self.userdata, chain,
-                                         target=4, **options)
+                                         target=5, **options)
         for step in steps:
             if step.phase == migrations.PHASES[3]:
                 break
@@ -653,8 +653,8 @@ class KeptTest(SnapshotCheckCase):
         self.assertEqual(sorted(path.name for path in parent.iterdir()),
                          [name, previous.name])
         migrated = _last(migrations.migrate_steps(self.root, fixtures.SESSION, self.userdata,
-                                                  chain, target=4, **options))
-        self.assertEqual(migrated.to_version, 4)
+                                                  chain, target=5, **options))
+        self.assertEqual(migrated.to_version, 5)
         self.assertEqual((_prints(self.root), _prints(migrated.backup)), (before, before))
         copytree.remove_tree(migrated.backup)
         self.assertFalse(migrated.backup.exists())

@@ -2071,9 +2071,10 @@ class ProjectSchemaTest(unittest.TestCase):
         en su cabecera; sus tablas internas son las tres de la 002, las doce de la procedencia
         y las cinco de las versiones, vacías y declaradas en ``gpkg_extensions`` con una
         definición sin número de esquema, y ``missing_objects`` no echa nada en falta."""
-        self.assertEqual((project_schema.SCHEMA_VERSION, project_schema.MIN_READER_SCHEMA), (3, 1))
+        self.assertEqual((project_schema.SCHEMA_VERSION, project_schema.MIN_READER_SCHEMA), (4, 1))
         self.assertEqual(project_schema.INTERNAL_TABLES,
-                         SCHEMA_1_TABLES + TABLES + versions_schema.INTERNAL_TABLES)
+                         SCHEMA_1_TABLES + TABLES + versions_schema.INTERNAL_TABLES
+                         + (project_schema.APPEARANCE_TABLE,))
         self.assertNotIn("esquema", base.EXTENSION_DEFINITION)
         with project_tmp("gb-t08-") as tmp:
             created = self._create(tmp)
@@ -2092,9 +2093,9 @@ class ProjectSchemaTest(unittest.TestCase):
                     "SELECT table_name, definition, scope FROM gpkg_extensions "
                     "WHERE extension_name = 'imga_geoblender' ORDER BY table_name"
                 ).fetchall()
-        self.assertEqual(tuple(versions), (3, 1))
-        self.assertEqual((created.record.schema_version, created.record.min_reader_schema), (3, 1))
-        self.assertEqual((header.schema_version, header.min_reader_schema), (3, 1))
+        self.assertEqual(tuple(versions), (4, 1))
+        self.assertEqual((created.record.schema_version, created.record.min_reader_schema), (4, 1))
+        self.assertEqual((header.schema_version, header.min_reader_schema), (4, 1))
         self.assertEqual(missing, [])
         self.assertEqual(counts, dict.fromkeys(TABLES + versions_schema.INTERNAL_TABLES, 0))
         self.assertEqual(

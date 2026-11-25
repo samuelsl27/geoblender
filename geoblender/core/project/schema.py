@@ -13,9 +13,15 @@ RF-002-05, RF-002-14, RF-002-15, RF-002-20, RF-002-22; ADR-0006; formato-proyect
   decisiones de la propiedad (``core.versions.schema``), con la versión de cada dato, su título
   y la revisión de cada operación en las tablas de la 008. ``min_reader_schema`` sigue en 1 al
   migrar: un proyecto sin versiones no tiene nada que un Geoblender del 2 lea mal; lo sube a 3
-  crear la primera versión (plan 009, D-24). Un proyecto nuevo se crea directamente en el 3 (el
-  2 y después ``apply_schema_3``, lo mismo que hace migrar); uno anterior se migra
+  crear la primera versión (plan 009, D-24). Un proyecto nuevo se crea directamente en el 4 (el
+  2, ``apply_schema_3`` y ``apply_schema_4``, lo mismo que hace migrar); uno anterior se migra
   (``core.project.migrations``).
+- **Esquema 4** (spec 019, ADR-0033): el 3 más ``gb_appearance``, el aspecto de los elementos
+  (color, transparencia, visibilidad, rótulo…; clave ``(item_name, prop)``). Es mutable y sin
+  historial, solo la escribe Geoblender (``gb_writer()``) y **no es una operación ni una
+  cifra**: no entra en ``gb_dataset.tracked_*``, ni en ninguna huella, ni en los obsoletos.
+  ``min_reader_schema`` sigue en 1 al migrar (como la m0003): un Geoblender del 3 abre el
+  proyecto entero en solo lectura con el aviso de «versión más moderna» (RF-002-22).
 
 :func:`missing_objects` echa en falta lo de un esquema concreto: al abrir, lo del 1 para leer
 ``gb_project`` y después lo del esquema del proyecto (de uno posterior, lo que conoce esta
@@ -54,19 +60,23 @@ from __future__ import annotations
 import functools
 import sqlite3
 
-from ..gpkg.base import create_structure, register_internal_table
+from ..gpkg.base import EXTENSION_NAME, create_structure, register_internal_table
 from ..provenance import schema as provenance_schema
 from ..versions import schema as versions_schema
 from .model import ProjectRecord
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MIN_READER_SCHEMA = 1
 SCHEMA_1_TABLES: tuple[str, ...] = ("gb_project", "gb_event", "gb_schema_migration")
+APPEARANCE_TABLE = "gb_appearance"
 INTERNAL_TABLES: tuple[str, ...] = (
-    SCHEMA_1_TABLES + provenance_schema.INTERNAL_TABLES + versions_schema.INTERNAL_TABLES
+    SCHEMA_1_TABLES
+    + provenance_schema.INTERNAL_TABLES
+    + versions_schema.INTERNAL_TABLES
+    + (APPEARANCE_TABLE,)
 )
-"""Las tablas internas del esquema de esta versión: las del 1, las de la procedencia (2) y las
-de las versiones (3)."""
+"""Las tablas internas del esquema de esta versión: las del 1, las de la procedencia (2), las
+de las versiones (3) y el aspecto (4)."""
 
 _TABLES: dict[str, str] = {
     "gb_project": """CREATE TABLE gb_project (
@@ -178,12 +188,56 @@ def _triggers() -> dict[str, str]:
 
 TRIGGERS: dict[str, str] = _triggers()
 
+APPEARANCE_DDL = """CREATE TABLE IF NOT EXISTS gb_appearance (
+  item_name   TEXT     NOT NULL,   -- el nombre estable del dato (gb_dataset.name), el mismo en todas sus versiones
+  item_kind   TEXT     NOT NULL,   -- el tipo de elemento (OBJECT_KINDS)
+  prop        TEXT     NOT NULL,   -- color, transparency, visible, label…
+  value       TEXT     NOT NULL,   -- valor canónico (core.appearance.model.validate)
+  modified_at DATETIME NOT NULL,
+  modified_by TEXT     NOT NULL,   -- usuario@equipo
+  PRIMARY KEY (item_name, prop)
+)"""
+APPEARANCE_TRIGGERS: dict[str, str] = {
+    f"gb_appearance_w_{kind.lower()[:3]}": _trigger(
+        f"gb_appearance_w_{kind.lower()[:3]}",
+        f"BEFORE {kind}",
+        "gb_appearance",
+        "gb_writer() IS NOT 1",
+        _WRITER_ONLY,
+    )
+    for kind in ("INSERT", "UPDATE", "DELETE")
+}
+"""Las reglas del esquema 4: solo escribe una conexión de Geoblender. La tabla es mutable
+(``UPDATE`` y ``DELETE``: «Restablecer» borra la fila) y sin historial (spec 019, ADR-0033)."""
+
+
+def apply_schema_4(conn: sqlite3.Connection) -> None:
+    """Lleva la base del esquema 3 al 4 en la transacción de ``conn`` (sin confirmar ni deshacer):
+    crea ``gb_appearance`` y sus disparadores si faltan y la declara en ``gpkg_extensions``. No
+    escribe ninguna fila de datos, no toca ninguna otra tabla y volver a llamarla no cambia nada
+    (idempotente). Crear un proyecto nuevo y migrar dan el mismo ``sqlite_master``."""
+    conn.execute(APPEARANCE_DDL)
+    declared = conn.execute(
+        "SELECT 1 FROM gpkg_extensions WHERE table_name = ? AND extension_name = ?",
+        (APPEARANCE_TABLE, EXTENSION_NAME),
+    ).fetchone()
+    if declared is None:
+        register_internal_table(conn, APPEARANCE_TABLE)
+    present = {
+        str(name)
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+    }
+    for name, ddl in APPEARANCE_TRIGGERS.items():
+        if name not in present:
+            conn.execute(ddl)
+
 
 def create_schema(conn: sqlite3.Connection) -> None:
-    """Crea el esquema de esta versión (:data:`SCHEMA_VERSION`, el 3): las tablas internas
+    """Crea el esquema de esta versión (:data:`SCHEMA_VERSION`, el 4): las tablas internas
     del 1, sus disparadores y su declaración en ``gpkg_extensions``, las de la procedencia
     (``core.provenance.schema.create_tables``: el esquema 2) y después lo del 3
-    (``core.versions.schema.apply_schema_3``, lo mismo que hace la migración 2 → 3), en la
+    (``core.versions.schema.apply_schema_3``, lo mismo que hace la migración 2 → 3) y lo del 4
+    (:func:`apply_schema_4`, lo mismo que hace la migración 3 → 4), en la
     transacción de ``conn`` (tras ``core.gpkg.base.create_base``).
 
     Las tablas y las columnas del 3 se crean antes que los índices y los disparadores: cada
@@ -199,6 +253,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
         conn.execute(ddl)
     provenance_schema.create_tables(conn)
     versions_schema.apply_schema_3(conn)
+    apply_schema_4(conn)
 
 
 @functools.cache
@@ -228,8 +283,9 @@ def base_image() -> bytes:
 def missing_objects(conn: sqlite3.Connection, version: int) -> list[str]:
     """Lo que le falta a la base para tener el esquema ``version`` (``"table gb_event"``,
     ``"trigger gb_event_no_upd"``, ``"index gb_figure_key"``…), en orden: lo del 1;
-    desde el 2, lo de la procedencia, y desde el 3, lo de las versiones
-    (``core.versions.schema.missing_objects``); lista vacía si está completo. De un esquema
+    desde el 2, lo de la procedencia; desde el 3, lo de las versiones
+    (``core.versions.schema.missing_objects``), y desde el 4, ``gb_appearance`` y sus
+    disparadores; lista vacía si está completo. De un esquema
     posterior al de esta versión se echa en falta lo que esta conoce (:data:`SCHEMA_VERSION`):
     uno posterior que se pueda leer (``min_reader_schema``) lo conserva.
 
@@ -249,6 +305,15 @@ def missing_objects(conn: sqlite3.Connection, version: int) -> list[str]:
         missing += provenance_schema.missing_objects(conn)
     if min(version, SCHEMA_VERSION) >= 3:
         missing += versions_schema.missing_objects(conn)
+    if min(version, SCHEMA_VERSION) >= 4:
+        missing += [
+            item
+            for item in (
+                f"table {APPEARANCE_TABLE}",
+                *(f"trigger {name}" for name in APPEARANCE_TRIGGERS),
+            )
+            if (item,) not in present
+        ]
     return missing
 
 

@@ -463,7 +463,7 @@ class CreateTest(StoreCase):
                          [(3, self.now())])
         self.assertTrue(self.project.refresh_header())
         header = manifest_mod.read_manifest(self.root)
-        self.assertEqual((header.schema_version, header.min_reader_schema), (3, 3))
+        self.assertEqual((header.schema_version, header.min_reader_schema), (4, 3))
         project_row = self.query("SELECT * FROM gb_project")
         self.create()
         self.assertEqual(self.query("SELECT * FROM gb_project"), project_row)
