@@ -128,6 +128,9 @@ HEAVY: frozenset[str] = frozenset({
     "design.pit_check013",
     # Lo que la barra N lee de una corta (spec 018, T34): la barra N lo importa al usarla, no habilitar.
     "design.pit_card",
+    # El aspecto de los elementos de la 019 (spec 019, T02): el catálogo, los predefinidos y la validación; los pide el panel
+    # del elemento al usarlo, no habilitar (RNF-001-03, RNF-019-04).
+    "core.appearance.catalog", "core.appearance.model",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 

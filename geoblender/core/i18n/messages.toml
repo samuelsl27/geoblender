@@ -12677,3 +12677,47 @@ es = "Detalles"
 
 ["To close this window press Esc or click outside it"]
 es = "Para cerrar esta ventana pulse Esc o haga clic fuera de ella"
+
+# Aspecto de los elementos (spec 019, T02) ------------------------------------------
+
+["Appearance of {kind}"]
+es = "Aspecto de {kind}"
+
+["Label"]
+es = "Rótulo"
+
+["Transparency"]
+es = "Transparencia"
+
+["Visible"]
+es = "Visible"
+
+["Line width"]
+es = "Grosor de línea"
+
+["Point size"]
+es = "Tamaño de punto"
+
+["Wireframe"]
+es = "Malla visible"
+
+["it is not a type of element of the project"]
+es = "no es un tipo de elemento del proyecto"
+
+["this type of element does not have that property; it has: {props}"]
+es = "este tipo de elemento no tiene esa propiedad; tiene: {props}"
+
+["a color is written as #RRGGBB (for example #56B4E9)"]
+es = "un color se escribe #RRGGBB (por ejemplo #56B4E9)"
+
+["transparency is a whole number between 0 and 100"]
+es = "la transparencia es un número entero entre 0 y 100"
+
+["it must be yes or no (1 or 0)"]
+es = "debe ser sí o no (1 o 0)"
+
+["it must be a number between {low} and {high}"]
+es = "debe ser un número entre {low} y {high}"
+
+["the label must have between 1 and {maximum} characters, on a single line"]
+es = "el rótulo debe tener entre 1 y {maximum} caracteres, en una sola línea"
