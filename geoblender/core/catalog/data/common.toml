@@ -766,3 +766,14 @@ description.es = "Escribe ahora los cambios de aspecto que esperan (se escriben 
 entry = "003"
 action = "A"
 frequency = 3
+
+[[command]]
+key = "geoblender.ui_show_element"
+kind = "internal"
+label.en = "Show the element sheet"
+label.es = "Mostrar la ficha del elemento"
+description.en = "Show the sheet of the active element in the Properties editor (Object tab). Nothing is written"
+description.es = "Muestra la ficha del elemento activo en el editor de Propiedades (pestaña Objeto). No se escribe nada"
+entry = "003"
+action = "A"
+frequency = 3

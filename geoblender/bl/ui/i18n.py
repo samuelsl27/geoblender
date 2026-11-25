@@ -40,6 +40,7 @@ from . import (
     constraint_panels,
     core_panel,
     des_panels,
+    element_panel,
     registry,
     res_panels,
     view_panels,
@@ -75,18 +76,20 @@ def _relabel_core_panel() -> None:
     010: Elemento activo e Inventario; spec 011: Cubicaciones; spec 012: Restricción; spec 013:
     Diseño; las listas y las ventanas sin pestaña, no), registrados otra vez si cambian (si no, tras cambiar el idioma
     quedarían en otra pestaña)."""
-    panels = [cls for cls in (*core_panel.classes, *view_panels.classes, *res_panels.classes,
-                              *constraint_panels.classes, *des_panels.classes)
-              if issubclass(cls, bpy.types.Panel) and hasattr(cls, "bl_category")]
-    before = {cls: (cls.bl_category, cls.bl_label) for cls in panels}
+    panels = [cls for cls in (*core_panel.classes, *view_panels.classes, *element_panel.classes,
+                              *res_panels.classes, *constraint_panels.classes, *des_panels.classes)
+              if issubclass(cls, bpy.types.Panel) and (hasattr(cls, "bl_category")
+                                                       or cls in element_panel.classes)]
+    before = {cls: (getattr(cls, "bl_category", ""), cls.bl_label) for cls in panels}
     core_panel.localize()
     view_panels.localize()
+    element_panel.localize()
     res_panels.localize()
     constraint_panels.localize()
     des_panels.localize()
     for cls in panels:
-        if (cls.bl_category, cls.bl_label) == before[cls] or not getattr(cls, "is_registered",
-                                                                         False):
+        if (getattr(cls, "bl_category", ""), cls.bl_label) == before[cls] or not getattr(
+                cls, "is_registered", False):
             continue
         bpy.utils.unregister_class(cls)
         bpy.utils.register_class(cls)

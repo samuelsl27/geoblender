@@ -100,7 +100,8 @@ NOT_EDITABLE = "V01 está en estado SUPERADO: cree una versión nueva a partir d
 MAX_TICKS = 400
 # Inventario y Elemento activo (T25).
 INVENTORY_PANEL = "GEOBLENDER_PT_core_project_inventory"
-ACTIVE_ITEM_PANEL = "GEOBLENDER_PT_core_active_item"
+ACTIVE_ITEM_PANEL = "GEOBLENDER_PT_ui_element"  # la ficha, hoy en Propiedades ▸ Objeto (spec 019, T09)
+CARD_NOISE = ("Ficha", "Procedencia", "Card", "Provenance")  # títulos de sus cajas
 LOAD = "geoblender.core_load_into_view"
 UNLOAD = "geoblender.core_unload_from_view"
 SHOW_LINEAGE = "geoblender.core_show_lineage"
@@ -451,7 +452,8 @@ class VersionsViewTest(unittest.TestCase):
         leída y dibujada, una línea por etiqueta."""
         bpy.context.view_layer.objects.active = obj
         ext("bl.ui.view_panels").on_active_changed()
-        return self.texts(self.drawn(ACTIVE_ITEM_PANEL))
+        return [text for text in self.texts(self.drawn(ACTIVE_ITEM_PANEL))
+                if text not in CARD_NOISE and not text.startswith(("Posición: ", "Position: "))]
 
     def figure_line(self, figure: Any, language: str = "es") -> str:
         """Una cifra como la da la ficha: su insignia de tipo, su nombre y su valor."""

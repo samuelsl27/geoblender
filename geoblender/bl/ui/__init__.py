@@ -48,6 +48,7 @@ from . import (
     core_panel,
     des_panels,
     dh_panels,
+    element_panel,
     headers,
     i18n,
     icons,
@@ -81,6 +82,7 @@ classes: tuple[type, ...] = (
     *core_menus.classes,
     *core_panel.classes,
     *view_panels.classes,
+    *element_panel.classes,
     *quick_access.classes,
     *context.classes,
     *layouts.classes,
@@ -100,6 +102,7 @@ _UNDO: list[Callable[[], None]] = []
 def _register_classes() -> None:
     core_panel.localize()
     view_panels.localize()
+    element_panel.localize()
     dh_panels.localize()
     res_panels.localize()
     constraint_panels.localize()

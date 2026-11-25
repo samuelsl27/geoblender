@@ -78,7 +78,8 @@ from tests.support.provenance_demo import PRODUCTION, YEARS_TABLE, Demo
 from tests.support.repo import ROOT
 from tests.support.trees import temp_folder
 
-PANEL = "GEOBLENDER_PT_core_active_item"
+PANEL = "GEOBLENDER_PT_core_active_item"  # la barra N: una línea y el botón (spec 019, T09)
+ELEMENT_PANEL = "GEOBLENDER_PT_ui_element"  # la ficha, en Propiedades ▸ Objeto (spec 019, T09)
 PROJECT_PANEL = "GEOBLENDER_PT_core_project"
 INVENTORY_PANEL = "GEOBLENDER_PT_core_project_inventory"
 INVENTORY_LIST = "GEOBLENDER_UL_core_project_inventory"
@@ -158,13 +159,16 @@ class ActiveItemTest(unittest.TestCase):
 
     def drawn(self, *, width_px: float = WIDE_PX) -> FakeLayout:
         """El panel dibujado (con ``width_px`` de barra lateral para sus etiquetas)."""
-        panel = getattr(bpy.types, PANEL)
+        panel = getattr(bpy.types, ELEMENT_PANEL)
         with mock.patch.object(self.labels, "sidebar_width", return_value=width_px):
             return draw(panel, bpy.context)
 
     def lines(self) -> list[str]:
-        """Las etiquetas del panel, una por línea (en una barra en la que nada se parte)."""
-        return [item.text for item in self.drawn().of_kind("label")]
+        """Las etiquetas de la ficha, una por línea (en un área en la que nada se parte), sin los títulos de sus cajas
+        ni la posición (T09: lo prueba ``test_ui_element_panel``)."""
+        return [item.text for item in self.drawn().of_kind("label")
+                if item.text not in ("Ficha", "Procedencia", "Sin procedencia aún")
+                and not item.text.startswith("Posición: ")]
 
     def line(self, start: str) -> Any:
         """La etiqueta del panel que empieza por ``start``."""

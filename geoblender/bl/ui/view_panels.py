@@ -2,7 +2,10 @@
 """Los paneles de la vista regenerable en N ▸ Proyecto (spec 010; HU-010-3; plan 010 §5.3.3,
 §5.5).
 
-**Elemento activo** (:class:`GEOBLENDER_PT_core_active_item`; T14, RF-010-06; plan A6, D-16):
+**Elemento activo** (:class:`GEOBLENDER_PT_core_active_item`; T14, RF-010-06; plan A6, D-16). **Desde la spec 019
+(T09, UI-29)** la barra N dibuja solo una línea con el nombre del dato y el botón ``geoblender.ui_show_element``; la ficha
+que sigue se dibuja en Propiedades ▸ Objeto (``bl.ui.card``, ``bl.ui.element_panel``) con las filas que lee este módulo
+(más la posición absoluta como texto, :func:`position_line`):
 mientras el objeto activo es la vista de un dato del proyecto abierto, su ficha leída del
 proyecto (``core.views.card.item_card``, en una instantánea y sin escribir nada): el nombre del
 dato, su tipo, su estado (con «obsoleto»), si el objeto está al día en la vista (de
@@ -118,12 +121,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import bpy
+import numpy as np
 from bpy.app.handlers import persistent
 
 from ...core.datasets.model import DatasetStatus
 from ...core.errors import GeoblenderError
+from ...core.georef.transform import local_to_world
 from ...core.gpkg.header import read_header
-from ...core.i18n import format_number, language, tr, translate
+from ...core.i18n import format_number, format_xyz, language, tr, translate
 from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
@@ -156,6 +161,7 @@ ACTIVE_ITEM_LABEL = "Active item"  # msgid del título
 ACTIVE_ITEM_ORDER = 1
 """El orden del panel en la pestaña: tras el panel Proyecto (el de por defecto, 0)."""
 SHOW_LINEAGE = "geoblender.core_show_lineage"
+SHOW_ELEMENT = "geoblender.ui_show_element"
 HASH_CHARS = provenance.HASH_CHARS
 NO_VALUE = "—"
 DATE_PATTERN = "%d/%m/%Y %H:%M"
@@ -429,9 +435,9 @@ def frozen_figure_lines(mark: RevisionMark, figures: Sequence[FigureRecord],
     return lines
 
 
-def card_lines(found: ItemCard) -> list[CardLine]:
+def card_lines(found: ItemCard, position: CardLine | None = None) -> list[CardLine]:
     """Las líneas de la ficha de ``found`` (``core.views.card.ItemCard``), en el idioma de
-    Geoblender (véase el módulo)."""
+    Geoblender (véase el módulo); ``position`` (:func:`position_line`), tras la operación."""
     from ...core.views import card  # al usarlo: registrar no lo carga
 
     record = found.record
@@ -456,8 +462,10 @@ def card_lines(found: ItemCard) -> list[CardLine]:
         CardLine(ROW_FIELD, tr("Version: {version}", version=version),
                  alert=mark is not None and mark.current_altered),
         CardLine(ROW_FIELD, tr("Operation: {operation}", operation=operation_text(found))),
-        CardLine(ROW_HEADING, tr("↑ Inputs")),
     ]
+    if position is not None:
+        lines.append(position)
+    lines.append(CardLine(ROW_HEADING, tr("↑ Inputs")))
     lines += [CardLine(ROW_ITEM, link_text(link, with_hash=True),
                        INPUT_ICON if link.kind == card.INPUT else DATASET_ICON,
                        alert=link.stale, uid=link.uid) for link in found.upstream] or [
@@ -581,14 +589,33 @@ def _object_lines(project: Project, obj: Any) -> list[CardLine]:
         return []
 
 
+def position_line(project: Project, obj: Any) -> CardLine | None:
+    """Las coordenadas ABSOLUTAS del centro de la extensión de ``obj``, **como texto** (RF-019-14,
+    principio 6: nunca una propiedad de 32 bits): la extensión local (``bound_box`` por la matriz
+    del objeto) en float64 más el GeoOrigin del proyecto, con ``core.i18n.format_xyz``. Sin
+    geometría o sin origen, ``None``."""
+    try:
+        origin = project.origin
+        corners = np.array([tuple(corner) for corner in obj.bound_box], dtype=np.float64)
+        matrix = np.array([tuple(row) for row in obj.matrix_world], dtype=np.float64)
+        centre = (corners.min(axis=0) + corners.max(axis=0)) / 2.0
+        local = matrix[:3, :3] @ centre + matrix[:3, 3]
+        x, y, z = (float(value) for value in local_to_world(local.reshape(1, 3), origin)[0])
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return None
+    if not all(np.isfinite((x, y, z))):
+        return None
+    return CardLine(ROW_FIELD, tr("Position: {xyz}", xyz=format_xyz(x, y, z)))
+
+
 def _fill(view: Any, project_uid: str, uid: str, found: ItemCard | None,
-          extra: Sequence[CardLine] = ()) -> None:
+          extra: Sequence[CardLine] = (), position: CardLine | None = None) -> None:
     """Pone la ficha leída del dato ``uid`` (``None``: el proyecto ya no lo tiene), con las líneas
-    más del objeto (``extra``)."""
+    más del objeto (``extra``) y su posición."""
     view.card_uid = uid
     view.card_project = project_uid
     view.card_found = found is not None
-    _put_lines(view.card, [*card_lines(found), *extra] if found is not None else ())
+    _put_lines(view.card, [*card_lines(found, position), *extra] if found is not None else ())
 
 
 def read_card(context: Any = None) -> bool:
@@ -618,7 +645,9 @@ def read_card(context: Any = None) -> bool:
                         exc_info=True)
             changed = _clear(view)
         else:
-            _fill(view, project.uid, uid, found, _object_lines(project, _active_object(context)))
+            active = _active_object(context)
+            _fill(view, project.uid, uid, found, _object_lines(project, active),
+                  position_line(project, active))
             changed = True
     if changed:
         _redraw()
@@ -717,56 +746,26 @@ def _draw_lines(layout: Any, text: str, width: float, *, icon: str = "NONE",
         column.label(text=line, icon=shown, translate=False)
 
 
-def view_text(obj: Any) -> tuple[str, bool]:
-    """Si ``obj`` está al día en la vista (``Object.geoblender.view_state``): el texto y si va
-    en alerta."""
-    state = str(getattr(getattr(obj, OBJECT_PROPERTY, None), "view_state", "CURRENT"))
-    if state == views.VIEW_OUTDATED:
-        return tr("In the view: not up to date: Refresh (F5)"), True
-    if state == views.VIEW_UNBACKED:
-        return tr("In the view: unbacked in the project"), True
-    return tr("In the view: up to date"), False
-
-
-def draw_card(layout: Any, context: Any) -> None:
-    """El contenido de :class:`GEOBLENDER_PT_core_active_item`: la ficha ya leída del objeto
-    activo, o por qué no hay. No lee el proyecto."""
+def draw_active_item(layout: Any, context: Any) -> None:
+    """El contenido de :class:`GEOBLENDER_PT_core_active_item` (spec 019, T09; UI-29: cada dato se
+    edita y se lee en un sitio): una línea con el nombre del dato del objeto activo y el botón
+    que lleva a su ficha, en Propiedades ▸ Objeto (``bl.ui.card``, ``bl.ui.element_panel``). No
+    lee el proyecto."""
     width = labels.sidebar_width(context)
-    view = _view(context)
     project = project_session.current()
     obj = _active_object(context)
     uid, owner = shown_by(obj)
-    if view is None or project is None or not uid or owner != project.uid:
+    if project is None or not uid or owner != project.uid:
         _draw_lines(layout, tr("The active object does not show data of this project"), width,
                     icon="INFO")
         return
-    if view.card_uid != uid or view.card_project != owner:
-        _draw_lines(layout, tr("Reading the project data of the active object…"), width,
-                    icon="TIME")
-        return
-    if not view.card_found:
-        _draw_lines(layout, tr("The project no longer has the data of this object"), width,
-                    icon="ERROR", alert=True)
-        return
-    for row in view.card:
-        if row.kind == ROW_VIEW:
-            text, alert = view_text(obj)
-            _draw_lines(layout, text, width, alert=alert)
-            continue
-        if row.kind == ROW_HEADING:
-            layout.separator()
-        sub = layout.column(align=True)
-        sub.active = row.kind != ROW_NONE
-        _draw_lines(sub, row.text, width, icon=row.icon or "NONE", alert=row.alert)
-    layout.separator()
-    button = layout.operator(SHOW_LINEAGE, text=tr("Provenance"), icon="NODETREE",
-                             translate=False)
-    button.item_uid = uid
+    _draw_lines(layout, getattr(obj, "name", ""), width, icon="OBJECT_DATA")
+    layout.operator(SHOW_ELEMENT, text=tr("Show the element sheet"), icon="PROPERTIES",
+                    translate=False)
 
 
 class GEOBLENDER_PT_core_active_item(bpy.types.Panel):
-    """The project data shown by the active object: what it is, where it comes from and what
-    depends on it"""
+    """The project data shown by the active object, in one line, and the button that leads to its sheet in the Properties editor"""
 
     bl_idname = ACTIVE_ITEM_PANEL
     bl_label = ACTIVE_ITEM_LABEL
@@ -781,7 +780,7 @@ class GEOBLENDER_PT_core_active_item(bpy.types.Panel):
         return project_session.current() is not None
 
     def draw(self, context: Any) -> None:
-        draw_card(self.layout, context)
+        draw_active_item(self.layout, context)
 
 
 # El inventario (T15) --------------------------------------------------------------------------

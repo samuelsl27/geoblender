@@ -12818,3 +12818,23 @@ es = "Nada que restablecer"
 
 ["Property"]
 es = "Propiedad"
+
+# La ficha y el panel «Elemento de Geoblender» (spec 019, T09) -----------------------------
+
+["Geoblender element"]
+es = "Elemento de Geoblender"
+
+["Element card"]
+es = "Ficha"
+
+["No provenance yet"]
+es = "Sin procedencia aún"
+
+["Position: {xyz}"]
+es = "Posición: {xyz}"
+
+["Show the element sheet"]
+es = "Mostrar la ficha del elemento"
+
+["There is no Properties editor in this window"]
+es = "No hay ningún editor de Propiedades en esta ventana"
