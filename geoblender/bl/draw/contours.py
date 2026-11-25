@@ -48,6 +48,7 @@ from mathutils import Matrix
 from ..props.core import OBJECT_PROPERTY
 from ..scene.gis_views import CONTOURS_KIND, INDEX_ATTRIBUTE
 from ..scene.mesh import edge_flags, mesh_edges, mesh_vertices_local
+from . import style
 
 __all__ = ["DEPTH_PULL", "INDEX_LINE_WIDTH", "draw_index_lines", "drawing", "index_segments",
            "register", "unregister"]
@@ -127,7 +128,8 @@ def draw_index_lines(
     pixel_size: float,
 ) -> int:
     """Dibuja en el *framebuffer* activo las aristas maestras de cada objeto de ``entries``
-    (objeto y color RGBA) con un trazo de :data:`INDEX_LINE_WIDTH` × ``pixel_size`` px, con la
+    (objeto y color RGBA) con un trazo de :data:`INDEX_LINE_WIDTH` × ``pixel_size`` px (× el ``line_width`` guardado en el
+    aspecto del objeto, si lo tiene: ``style.index_factor``), con la
     matriz de vista ``view_matrix`` (acercada a la cámara, :func:`_pulled`), la de proyección
     ``projection_matrix`` y la prueba de profundidad ``LESS_EQUAL`` sin escribir profundidad;
     deja el estado de ``gpu`` como estaba. Devuelve cuántos objetos dibujó."""
@@ -147,7 +149,7 @@ def draw_index_lines(
                     continue
                 gpu.matrix.load_matrix(view @ obj.matrix_world)
                 shader.uniform_float("viewportSize", tuple(viewport_size))
-                shader.uniform_float("lineWidth", INDEX_LINE_WIDTH * float(pixel_size))
+                shader.uniform_float("lineWidth", INDEX_LINE_WIDTH * style.index_factor(obj) * float(pixel_size))
                 shader.uniform_float("color", tuple(color))
                 batch.draw(shader)
                 drawn += 1

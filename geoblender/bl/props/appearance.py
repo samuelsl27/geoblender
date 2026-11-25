@@ -29,8 +29,11 @@ _STATIC: set[str] = set()
 def _changed(self: bpy.types.PropertyGroup, _context: bpy.types.Context) -> None:
     """``update`` de cada propiedad: aplica el aspecto al objeto en el acto (el módulo de la escena se
     importa aquí, al usarlo)."""
+    from ..draw import style
     from ..scene import appearance
 
+    if isinstance(self.id_data, bpy.types.Object):
+        style.note(self.id_data)  # lo que dibuja ``bl.draw.look`` mira solo los objetos con algo guardado
     appearance.on_changed(self)
 
 

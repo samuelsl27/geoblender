@@ -4,6 +4,9 @@
 - ``contours``: las curvas maestras con trazo grueso sobre el alambre de Blender (spec 006,
   T55), con su manejador de dibujo y el de actualización, que :func:`register` pone y
   :func:`unregister` quita.
+- ``look``: el grosor de línea y el tamaño de punto guardados en el aspecto de un objeto (spec 019, T07b): solo
+  dibuja los objetos que los tienen guardados (``style`` decide qué; sin valor guardado, nada), con su manejador de
+  dibujo y el de actualización.
 - ``dh_overlay``: las etiquetas, las leyendas y las marcas de las bocas de los sondeos (spec
   005, T30), con su manejador de dibujo.
 - ``constraints``: «Ver restricciones y límites» (spec 012, T26): la superposición del control 30,
@@ -22,12 +25,12 @@ from __future__ import annotations
 import sys
 
 from ..registry import register_classes, unregister_classes
-from . import contours, dh_overlay
+from . import contours, dh_overlay, look
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2); vacía hasta que una spec añada la primera.
 classes: tuple[type, ...] = ()
-_OVERLAYS = (contours, dh_overlay)
+_OVERLAYS = (contours, dh_overlay, look)
 CONSTRAINTS_MODULE = f"{__name__}.constraints"
 """El módulo de la superposición de las restricciones (se importa al activarla)."""
 DESIGN_MODULE = f"{__name__}.design"

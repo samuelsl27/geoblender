@@ -11,9 +11,9 @@
 - :func:`read` lee el espejo ``Object.geoblender.look``; :func:`mirror` lo escribe sin disparar el aplicador;
   :func:`reapply` aplica a varios objetos (sin cablear aún: T08 lo llama tras cargar y refrescar).
 
-No hay aplicador de grosor de línea ni de tamaño de punto: lo que dibuja ``bl/draw`` no toma el estilo de cada
-objeto (son superposiciones de toda la región), así que esas dos propiedades no se ofrecen todavía
-(:func:`offered`); cuando una superposición las lea, se añade aquí su aplicador y el panel las ofrece solo.
+El grosor de línea y el tamaño de punto los dibuja ``bl.draw.look`` (y, en las curvas, ``bl.draw.contours``) leyendo
+el espejo del objeto **solo si hay un valor guardado** (T07b); su aplicador pide redibujar. Se ofrecen en los tipos
+que ese dibujo cubre (``bl.draw.style.LINE_KINDS`` y ``POINT_KINDS``); ``DRILLHOLES`` no dibuja puntos: no lo ofrece.
 """
 
 from __future__ import annotations
@@ -92,6 +92,16 @@ def _set_wire(obj: Any, value: str) -> None:
     obj.show_wire = value == "1"
 
 
+def _redraw_views(_obj: Any, _value: str) -> None:
+    """El grosor de línea y el tamaño de punto los lee ``bl.draw.look`` en cada dibujo del espejo
+    ``Object.geoblender.look``: aquí solo se pide redibujar las Vistas 3D (T07b)."""
+    manager = getattr(bpy.context, "window_manager", None)
+    for window in getattr(manager, "windows", ()):
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+
 def _label_is_mirror_only(_obj: Any, _value: str) -> None:
     """El rótulo no cambia nada del objeto aquí: lo que ve el Outliner lo pone ``scene.views.view_name`` (T10; P-2)."""
 
@@ -99,15 +109,16 @@ def _label_is_mirror_only(_obj: Any, _value: str) -> None:
 _COMMON: dict[str, _Applier] = {"label": _label_is_mirror_only, "visible": _set_visible}
 _SURFACE: dict[str, _Applier] = {**_COMMON, "color": _set_color, "transparency": _set_transparency, "wire": _set_wire}
 _LINES: dict[str, _Applier] = {**_COMMON, "color": _set_color}
+_STROKED: dict[str, _Applier] = {**_LINES, "line_width": _redraw_views}
 APPLIERS: dict[str, dict[str, _Applier]] = {
     "PROJECT_ANCHOR": dict(_COMMON),
     "DTM": dict(_SURFACE), "TIN": dict(_SURFACE), "DESIGN": dict(_SURFACE), "DESIGN_ENTITY": dict(_SURFACE),
     "DRILLHOLES": {**_COMMON, "color": _set_color, "transparency": _set_transparency, "labels": _set_labels},
     "VOLUME_DIFFERENCE": {**_COMMON, "transparency": _set_transparency, "wire": _set_wire},
     "COMPLIANCE_GRID": {**_COMMON, "transparency": _set_transparency, "wire": _set_wire},
-    "POINTS": {**_LINES, "labels": _set_labels},
-    "BREAKLINES": dict(_LINES), "CONTOURS": dict(_LINES), "BOUNDARY": dict(_LINES),
-    "CLIENT_INTENTION": dict(_LINES), "CONSTRAINT": dict(_LINES),
+    "POINTS": {**_LINES, "labels": _set_labels, "point_size": _redraw_views},
+    "BREAKLINES": dict(_STROKED), "CONTOURS": dict(_STROKED), "BOUNDARY": dict(_STROKED),
+    "CLIENT_INTENTION": dict(_STROKED), "CONSTRAINT": dict(_STROKED),
 }
 """Por tipo (``Object.geoblender.kind``), lo que se sabe aplicar de cada propiedad."""
 
