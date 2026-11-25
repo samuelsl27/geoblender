@@ -4,6 +4,8 @@
 El ``.blend`` se lee con ``bpy.data.libraries.load`` (``open_mainfile`` carga los espacios de
 fábrica: ``docs/trampas.md``). Comprueba lo que genera ``tools/inblender/make_ui_blend.py``:
 
+- RF-019-01: cada área y región tiene su decisión (lista de áreas decididas, T17) y el
+  documento ``areas-decididas.md`` coincide con los datos.
 - RF-019-02: ninguna disposición de Geoblender lleva la hoja de claves en modo línea de
   tiempo (la barra inferior); «Fases» sí lleva su hoja de claves (con los marcadores).
 - RF-019-03: en los espacios de Geoblender, las pestañas de Propiedades salvo «Objeto» están
@@ -26,9 +28,10 @@ from types import ModuleType
 
 import bpy
 
-from tests.support import blender_ext
+from tests.support import blender_ext, docs
 from tests.support.blender_ext import module_name
 
+DOC_RELPATH = "docs/arquitectura/interfaz/areas-decididas.md"
 ROOT = Path(__file__).resolve().parents[2]
 BLEND_NAME = "geoblender_ui.blend"
 GENERATOR = ROOT / "tools" / "inblender" / "make_ui_blend.py"
@@ -145,6 +148,56 @@ class UiAreasTest(unittest.TestCase):
         for name in self.names:
             self.assertEqual(self.loaded[name].get(REV_KEY), self.areas.LAYOUT_REV, name)
         self.assertNotIn(REV_KEY, self.loaded[FALLBACK].keys())
+
+    def test_every_area_and_region_has_a_decision(self) -> None:
+        """RF-019-01: cada área y región del ``.blend`` generado, y las de la Vista 3D
+        (cabecera, fila 2, barra T, barra N, vista), la barra superior, la de estado y los
+        gizmos, tienen decisión; ninguna sin ella."""
+        keys = {item.key for item in self.areas.AREAS}
+        found: set[str] = set()
+        for name in [*self.names, FALLBACK]:
+            for area in self.loaded[name].screens[0].areas:
+                for region in area.regions:
+                    found.add(f"{area.type}/{region.type}")
+        self.assertTrue({"VIEW_3D/HEADER", "VIEW_3D/TOOL_HEADER", "VIEW_3D/TOOLS",
+                         "VIEW_3D/UI", "VIEW_3D/WINDOW", "OUTLINER/WINDOW",
+                         "PROPERTIES/WINDOW", "PROPERTIES/NAVIGATION_BAR"} <= found)
+        self.assertEqual(sorted(found - keys), [], "áreas o regiones sin decisión")
+        for pseudo in ("TOPBAR/HEADER_LEFT", "TOPBAR/HEADER_RIGHT", "STATUSBAR/MINING",
+                       "STATUSBAR/REPORT", "VIEW_3D/GIZMO_NAVIGATE", "VIEW_3D/GIZMO_TOOL"):
+            self.assertIn(pseudo, keys)
+
+    def test_decisions_are_well_formed(self) -> None:
+        """RF-019-01: la decisión es una de las cuatro y todo «de Blender» lleva su motivo."""
+        keys = [item.key for item in self.areas.AREAS]
+        self.assertEqual(len(keys), len(set(keys)), "claves repetidas")
+        self.assertEqual(set(self.areas.DECISIONS),
+                         {"GEOBLENDER", "REPLACED", "HIDDEN", "BLENDER"})
+        for item in self.areas.AREAS:
+            self.assertIn(item.decision, self.areas.DECISIONS, item.key)
+            self.assertEqual(item.key, f"{item.area}/{item.region}")
+            self.assertTrue(item.label.strip() and item.what.strip(), item.key)
+            if item.decision == "BLENDER":
+                self.assertGreaterEqual(len(item.reason.strip()), 20, item.key)
+        self.assertEqual(self.areas.decision_for(next(iter(keys))),
+                         self.areas.AREAS[0])
+        with self.assertRaises(KeyError):
+            self.areas.decision_for("NOPE/NOPE")
+
+    @docs.requires_docs
+    def test_document_matches_data(self) -> None:
+        """RF-019-01: ``areas-decididas.md`` y los datos coinciden fila por fila (clave,
+        decisión y motivo)."""
+        rows: dict[str, tuple[str, str]] = {}
+        for line in docs.read(DOC_RELPATH).splitlines():
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if line.startswith("| `") and len(cells) == 5:
+                rows[cells[0].strip("`")] = (cells[2], cells[4])
+        self.assertEqual(set(rows), {item.key for item in self.areas.AREAS})
+        for item in self.areas.AREAS:
+            label, reason = rows[item.key]
+            self.assertEqual(label, self.areas.DECISIONS[item.decision], item.key)
+            self.assertEqual(reason, item.reason or "—", item.key)
 
     def test_generator_is_reproducible(self) -> None:
         """El generador da el mismo fichero dos veces, y el del repositorio es su salida."""
