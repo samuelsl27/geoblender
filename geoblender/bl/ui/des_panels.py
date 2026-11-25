@@ -362,6 +362,11 @@ def design_error_text(exc: design_messages.DesignError) -> str:
     return exc.text_in(language(), field=readable_field(exc.values.get("field"), language()))
 
 
+READABLE_FIELD_KINDS = frozenset({"pit"})
+"""Los tipos de entidad cuyos errores enseñan el nombre del valor y no su clave (T40i: la corta). Los demás (plataforma, acopio, pista…) siguen con la clave: pasarlos exige ajustar las pruebas de
+sus órdenes que citan la clave."""
+
+
 def readable_field(key: object, shown_language: str) -> str | None:
     """El nombre visible, en ``shown_language``, del valor de una entidad que nombra la clave ``key`` (``des.pit.pit_003.arc_tol_m`` → «Tolerancia de los arcos del desfase»); ``None`` si no es
     la clave de un valor de una entidad o su definición no tiene etiqueta."""
@@ -369,6 +374,8 @@ def readable_field(key: object, shown_language: str) -> str | None:
     if parsed is None:
         return None
     _code, kind, name = parsed
+    if kind not in READABLE_FIELD_KINDS:
+        return None
     label = design_params.entity_params(kind).template(name).label_msgid
     return translate(shown_language, label) if label else None
 

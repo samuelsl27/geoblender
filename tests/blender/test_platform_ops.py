@@ -635,7 +635,7 @@ class CreatePlatformTest(unittest.TestCase):
                 ({"feature": " "}, "Escriba el nombre o el número de la plataforma en su capa"),
                 ({"feature": "No existe"}, "No existe"),
                 ({"feature": NO_WIDTH}, "ancho"),
-                ({"feature": WORKSHOP, "edge_angle": ""}, "«Ángulo de borde de la plataforma»"),
+                ({"feature": WORKSHOP, "edge_angle": ""}, "edge_angle_deg"),
                 ({"feature": WORKSHOP, "edge_angle": "abc"}, "«abc» no es un número")):
             with self.subTest(cambios=changes):
                 with self.assertRaises(RuntimeError) as caught:
