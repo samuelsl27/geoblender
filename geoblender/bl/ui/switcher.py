@@ -74,28 +74,31 @@ def choose_target(
     previous_blender: str | None = None,
     main: str,
     fallback: str = FALLBACK,
+    occupied: Collection[str] = (),
 ) -> Choice:
     """El destino de conmutar la ventana desde ``current`` (CW §3.1–§3.3); ``names``,
     los espacios del fichero en orden; ``marked``, los de Geoblender; ``mode``,
     ``TOGGLE``, ``GEOBLENDER`` o ``BLENDER``; ``main``, el espacio principal de
-    Geoblender."""
+    Geoblender; ``occupied``, los espacios que ya usa **otra** ventana (Blender no admite el mismo
+    espacio en dos ventanas y movería la otra: spec 019, T40): nunca se elige uno; si no queda
+    ninguno libre, se anexa una copia."""
     if mode not in TARGETS:
         raise ValueError(f"modo «{mode}»: se espera {', '.join(TARGETS)}")
     in_geoblender = current in marked
     to_geoblender = (not in_geoblender) if mode == "TOGGLE" else mode == "GEOBLENDER"
     if to_geoblender == in_geoblender:
         return Choice(to_geoblender=to_geoblender, noop=True)
-    present = set(names)
+    present = set(names) - set(occupied)
     if to_geoblender:
         for name in (last_geoblender, main):
             if name and name in present and name in marked:
                 return Choice(True, target=name)
-        others = [name for name in names if name in marked]
+        others = [name for name in names if name in present and name in marked]
         return Choice(True, target=others[0]) if others else Choice(True, append=main)
     for name in (previous_blender, fallback):
         if name and name in present and name not in marked:
             return Choice(False, target=name)
-    others = [name for name in names if name not in marked]
+    others = [name for name in names if name in present and name not in marked]
     return Choice(False, target=others[0]) if others else Choice(False, append=fallback)
 
 
@@ -196,6 +199,24 @@ def _marked() -> set[str]:
     return {ws.name for ws in bpy.data.workspaces if gate.is_geoblender_workspace(ws)}
 
 
+def _occupied(window: Any, windows: Any = None) -> set[str]:
+    """Los espacios que usan las **otras** ventanas (el activo y el pendiente de aplicar); ``windows``,
+    solo para probar."""
+    if windows is None:
+        windows = bpy.context.window_manager.windows
+    me = window.as_pointer()
+    names: set[str] = set()
+    for other in windows:
+        if other.as_pointer() == me:
+            continue
+        if other.workspace is not None:
+            names.add(other.workspace.name)
+        state = _SESSION.windows.get(other.as_pointer())
+        if state is not None and state.pending:
+            names.add(state.pending)
+    return names
+
+
 def append_workspace(window: Any, name: str) -> Any:
     """Anexa el espacio ``name`` de ``resources/geoblender_ui.blend`` y lo devuelve
     (``workspace.append_activate``, con el contexto de la ventana)."""
@@ -277,16 +298,17 @@ def update_layouts(window: Any) -> list[str]:
     return created
 
 
-def toggle(window: Any, mode: str = "TOGGLE") -> Result:
+def toggle(window: Any, mode: str = "TOGGLE", windows: Any = None) -> Result:
     """Conmuta ``window`` al modo pedido (CW §3): guarda el anterior en el estado de
-    sesión, anexa el destino si hace falta y lo asigna (diferido)."""
+    sesión, anexa el destino si hace falta y lo asigna (diferido). Solo cambia esa ventana: nunca
+    elige un espacio que use otra (T40); ``windows``, solo para probar."""
     state = window_state(window)
     current = window.workspace.name if window.workspace else ""
     names = [ws.name for ws in bpy.data.workspaces]
     choice = choose_target(
         current=current, names=names, marked=_marked(), mode=mode,
         last_geoblender=state.last_geoblender, previous_blender=state.previous_blender,
-        main=main_workspace(),
+        main=main_workspace(), occupied=_occupied(window, windows),
     )
     if choice.noop:
         return Result(None)
@@ -359,7 +381,7 @@ def settings_workspace(window: Any) -> Any | None:
     choice = choose_target(
         current=window.workspace.name if window.workspace else "", names=[ws.name for ws in bpy.data.workspaces],
         marked=_marked(), mode="BLENDER", previous_blender=window_state(window).previous_blender,
-        main=main_workspace(),
+        main=main_workspace(), occupied=_occupied(window),
     )
     if choice.noop:  # la ventana ya está en un espacio de Blender: el mismo vale
         return window.workspace
@@ -462,7 +484,7 @@ def unregister() -> None:
         choice = choose_target(
             current=window.workspace.name, names=[ws.name for ws in bpy.data.workspaces],
             marked=_marked(), mode="BLENDER", previous_blender=state.previous_blender,
-            main=main_workspace(),
+            main=main_workspace(), occupied=_occupied(window),
         )
         if choice.target is not None:
             window.workspace = bpy.data.workspaces[choice.target]

@@ -150,12 +150,16 @@ class SwitchRoundTripTest(unittest.TestCase):
 
         self.switcher.window_state(win_a).previous_blender = self.bl.name
         started = time.perf_counter()
-        self.assertEqual(self.switcher.toggle(win_a, "BLENDER").workspace, "Modeling")
+        # «Modeling» lo usa B: A va a otro espacio libre de Blender (T40)
+        target = self.switcher.toggle(win_a, "BLENDER", windows).workspace
+        self.assertNotIn(target, ("Modeling", self.gb.name))
+        self.assertIs(win_b.workspace, self.bl)
+        win_a.workspace = bpy.data.workspaces[target]
         self.assertFalse(self.nf.sync(windows))  # ninguna ventana en Geoblender: se retira
         self.assertFalse(self.nf.installed())
         self.assertFalse(self.nf.menu_installed())
         self.assertNotIn("draw_collapsible", self.cls.__dict__)
-        self.assertEqual(self.switcher.toggle(win_a, "GEOBLENDER").workspace, self.gb.name)
+        self.assertEqual(self.switcher.toggle(win_a, "GEOBLENDER", windows).workspace, self.gb.name)
         self.assertTrue(self.nf.sync(windows))
         elapsed = time.perf_counter() - started
 
@@ -176,7 +180,7 @@ class SwitchRoundTripTest(unittest.TestCase):
         win_a, win_b = FakeWindow(self.gb), FakeWindow(self.gb)
         windows = [win_a, win_b]
         self.assertTrue(self.nf.sync(windows))
-        self.switcher.toggle(win_a, "BLENDER")
+        self.switcher.toggle(win_a, "BLENDER", windows)
         self.assertTrue(self.nf.sync(windows))
         self.assertTrue(self.nf.installed())
         self.assertTrue(self.nf.menu_installed())
@@ -188,14 +192,69 @@ class SwitchRoundTripTest(unittest.TestCase):
         self.assertEqual(self.switcher.window_state(win_b).last_geoblender, None)
         self.assertEqual(self.switcher.window_state(win_a).last_geoblender, self.gb.name)
 
+    def _free_only(self, free: list[str]) -> list[FakeWindow]:
+        """Ventanas falsas que ocupan todos los espacios sin marcar salvo ``free``."""
+        return [FakeWindow(ws) for ws in bpy.data.workspaces
+                if not ws.geoblender_mode and ws.name not in free]
+
+    def test_switching_one_window_never_moves_the_other(self) -> None:
+        """RF-019-04, RNF-019-04, M11 (spec 019, T40): A en Geoblender y B en el espacio de Blender que
+        A recuerda como anterior; la ida y vuelta de A deja a B donde estaba y A usa otro espacio libre
+        (la secuencia del H3: [Geoblender, Layout] no pasa a [Layout, Layout] ni a [Geoblender, Geoblender])."""
+        win_a, win_b = FakeWindow(self.gb), FakeWindow(self.bl)
+        windows = [win_a, win_b]
+        self.switcher.window_state(win_a).previous_blender = self.bl.name  # el que ya usa B
+        result = self.switcher.toggle(win_a, "BLENDER", windows)
+        self.assertNotEqual(result.workspace, self.bl.name)
+        self.assertFalse(result.appended)
+        self.assertFalse(bpy.data.workspaces[result.workspace].geoblender_mode)
+        self.assertIs(win_b.workspace, self.bl)
+        win_a.workspace = bpy.data.workspaces[result.workspace]  # lo que aplicaría Blender
+        self.assertEqual(self.switcher.toggle(win_a, "GEOBLENDER", windows).workspace, self.gb.name)
+        self.assertIs(win_b.workspace, self.bl)
+        self.assertEqual(self.names, [ws.name for ws in bpy.data.workspaces])  # sin rastro
+
+    def test_a_single_free_blender_workspace_is_taken(self) -> None:
+        """T40: con un único espacio de Blender libre, A lo usa."""
+        free = next(ws.name for ws in bpy.data.workspaces if not ws.geoblender_mode and ws.name != "Layout")
+        win_a = FakeWindow(self.gb)
+        windows = [win_a, *self._free_only([free])]
+        self.switcher.window_state(win_a).previous_blender = "Layout"
+        self.assertEqual(self.switcher.toggle(win_a, "BLENDER", windows).workspace, free)
+
+    def test_no_free_blender_workspace_appends_a_copy_and_moves_nobody(self) -> None:
+        """T40: sin ningún espacio de Blender libre se anexa una copia («Layout.001») y ninguna otra
+        ventana cambia."""
+        from unittest import mock
+
+        win_a = FakeWindow(self.gb)
+        others = self._free_only([])
+        copy = SimpleNamespace(name="Layout.001")
+        with mock.patch.object(self.switcher, "append_workspace", return_value=copy) as append:
+            result = self.switcher.toggle(win_a, "BLENDER", [win_a, *others])
+        append.assert_called_once()
+        self.assertEqual((result.workspace, result.appended), ("Layout.001", True))
+        self.assertTrue(all(w.workspace.name != "Layout.001" for w in others))
+
+    def test_choose_target_skips_what_another_window_uses(self) -> None:
+        """T40: la función pura no elige un espacio ocupado, ni a Blender ni a Geoblender."""
+        choose = self.switcher.choose_target
+        names, marked = ["Principal", "Layout"], {"Principal"}
+        choice = choose(current="Principal", names=names, marked=marked, mode="BLENDER",
+                        previous_blender="Layout", main="Principal", occupied={"Layout"})
+        self.assertEqual((choice.target, choice.append), (None, "Layout"))
+        choice = choose(current="Layout", names=names, marked=marked, mode="GEOBLENDER",
+                        main="Principal", occupied={"Principal"})
+        self.assertEqual((choice.target, choice.append), (None, "Principal"))
+
     def test_the_switch_clears_nothing_of_the_user_and_leaves_no_timer_behind(self) -> None:
         """RNF-019-04, UI-11: tras la ida y vuelta no queda ningún temporizador propio vivo
         (el que comprueba lo pendiente se retira solo al cumplirse) y no cambian los espacios
         de trabajo del fichero."""
         win = FakeWindow(self.gb)
         workspaces = [ws.name for ws in bpy.data.workspaces]
-        self.switcher.toggle(win, "BLENDER")
-        self.switcher.toggle(win, "GEOBLENDER")
+        self.switcher.toggle(win, "BLENDER", [win])
+        self.switcher.toggle(win, "GEOBLENDER", [win])
         win.workspace = self.gb  # lo que dejaría Blender al aplicarla
         self.switcher.window_state(win).pending = None
         self.assertEqual([ws.name for ws in bpy.data.workspaces], workspaces)
