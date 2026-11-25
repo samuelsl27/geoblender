@@ -12798,6 +12798,9 @@ es = "Mostrar las aristas del elemento sobre sus caras"
 
 # Escritura diferida, restablecer y deshacer el aspecto (spec 019, T08) -------------------
 
+["The appearance is already saved in the project: Ctrl+Z does not undo it. Change it again or use «Reset» to go back to the default"]
+es = "El aspecto ya está guardado en el proyecto: Ctrl+Z no lo deshace. Cámbielo de nuevo o use «Restablecer» para volver al predefinido"
+
 ["Reset: {what} of «{name}»"]
 es = "Restablecido: {what} de «{name}»"
 

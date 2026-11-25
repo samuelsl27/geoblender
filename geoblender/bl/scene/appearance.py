@@ -484,10 +484,11 @@ def _reset_mirror(obj: Any, props: Iterable[str]) -> None:
     apply(obj, {prop: defaults.get(prop) for prop in chosen if prop in defaults.props})
 
 
-def restore(objects: Iterable[Any], project: Any = None) -> int:
+def restore(objects: Iterable[Any], project: Any = None, reverted: set[str] | None = None) -> int:
     """Pone el espejo y la vista de ``objects`` como dice la tabla ``gb_appearance`` (la verdad tras un deshacer, R-5, y al
     cargar): lo guardado se pone y se aplica; una propiedad con valor en el espejo y sin fila vuelve al predefinido. Lo que
-    nadie guardó no se toca. Devuelve cuántos objetos de Geoblender del proyecto miró."""
+    nadie guardó no se toca. Devuelve cuántos objetos de Geoblender del proyecto miró. Si se pasa ``reverted``, se le añaden
+    los nombres de los objetos cuyo espejo traía (por un deshacer de Blender) un valor distinto del guardado."""
     from ..draw import style
 
     project = project if project is not None else project_session.current()
@@ -511,6 +512,8 @@ def restore(objects: Iterable[Any], project: Any = None) -> int:
         look = obj.geoblender.look
         values = {prop: value for prop, value in rows.items() if prop in offer}
         if values:
+            if reverted is not None and _differs(obj, values):
+                reverted.add(obj.name)
             mirror(obj, _domain().model.Appearance(kind, tuple(values.items())))
             apply(obj, values)
             if "line_width" in values or "point_size" in values:
@@ -522,13 +525,32 @@ def restore(objects: Iterable[Any], project: Any = None) -> int:
     return len(mine)
 
 
+def _differs(obj: Any, stored: Mapping[str, str]) -> bool:
+    """Si el espejo de ``obj`` trae algún valor distinto de los guardados ``stored`` (lo que dejó un deshacer de Blender)."""
+    try:
+        mirrored = read(obj).as_dict()
+    except GeoblenderError:
+        return False  # un espejo ilegible no es un cambio deshecho: manda la tabla como siempre
+    return any(mirrored.get(prop, value) != value for prop, value in stored.items())
+
+
 def reconcile() -> int:
-    """Tras deshacer o rehacer: lo pendiente se olvida (lo que Blender restauró ya es lo anterior) y manda la tabla."""
+    """Tras deshacer o rehacer: lo pendiente se olvida (lo que Blender restauró ya es lo anterior) y manda la tabla. Si por
+    mandar la tabla un Ctrl+Z no cambia lo que ya estaba guardado (pasados :data:`DELAY_S` s), lo dice **una** vez en la
+    barra de estado (T14c, D-Z1: no escribe nada en el proyecto)."""
     global _due
     _pending.clear()
     _due = None
     _stop_timer()
-    return restore(bpy.data.objects)
+    reverted: set[str] = set()
+    found = restore(bpy.data.objects, reverted=reverted)
+    if reverted:
+        from ..ui import provenance as ui  # al usarlo: bl/scene se registra antes que bl/ui
+
+        ui.show_undo_notice(tr(
+            "The appearance is already saved in the project: Ctrl+Z does not undo it. Change it again or use «Reset» to go "
+            "back to the default"))
+    return found
 
 
 def reset_message(props: Iterable[str] | None, objects: list[Any]) -> str:
