@@ -174,6 +174,8 @@ def draw_look(layout: Any, obj: Any, props: tuple[str, ...], group: list[Any] | 
     mixed = _mixed(group) if group else None
     is_mixed = hasattr(mixed, "is_various")  # una selección que no es toda igual
     rule = _color_rule(obj, group, context if context is not None else bpy.context)
+    width = labels.sidebar_width(bpy.context) - card.BOX_MARGIN_PX
+    scale = labels.compat.ui_scale()
     for prop in _offered(obj, props):
         if is_mixed and prop not in mixed.props:  # con tipos distintos, solo lo común (P-10)
             continue
@@ -181,15 +183,44 @@ def draw_look(layout: Any, obj: Any, props: tuple[str, ...], group: list[Any] | 
             card.draw_lines(layout, rule.text, labels.sidebar_width(bpy.context) - card.BOX_MARGIN_PX, icon="COLOR")
             continue
         various = is_mixed and mixed.is_various(prop)
-        row = layout.row(align=True)
-        row.prop(look, prop, text=_name(prop), slider=prop in _SLIDERS, translate=False)
-        if various:
-            row.label(text=tr("various values"), translate=False)
-        elif prop in changed_props:
+        _draw_prop(layout, look, prop, width, scale, various=various, changed=prop in changed_props and not various, group=bool(group))
+
+
+RESET_BUTTON_PX = 30.0
+"""Lo que ocupa en una fila el botón de solo un icono que vuelve al predefinido, a escala 1,0."""
+
+
+def _draw_prop(layout: Any, look: Any, prop: str, width: float, scale: float, *, various: bool, changed: bool,
+               group: bool) -> None:
+    """Una propiedad del aspecto con su estado (T39, F-9 del H3: Propiedades es estrecho y a 1,25 y 1,5556 una fila
+    con la propiedad y un texto «predefinido» o «varios valores» cortaba los dos con «…»). Lo que necesitan se mide con
+    ``labels.label_px`` (el valor de un deslizador, el más ancho, «100 %»): si caben en una fila, la propiedad y su
+    estado la comparten en proporción a lo que necesitan (``split``) o, cambiada, la propiedad y el botón solo con icono;
+    si no caben, el estado va en una línea propia debajo de la propiedad, y el botón de volver al predefinido lleva texto."""
+    name = _name(prop)
+    slider = prop in _SLIDERS
+    need = labels.label_px(f"{name}: 100 %" if slider else name, icon=True, scale=scale)
+    status = tr("various values") if various else tr("default")
+    extra = RESET_BUTTON_PX if changed else labels.label_px(status, scale=scale)
+    scope = "SELECTION" if group else "PROPERTY"
+    if need + extra <= width:
+        if changed:
+            row = layout.row(align=True)
+            row.prop(look, prop, text=name, slider=slider, translate=False)
             button = row.operator(RESET_OPERATOR, text="", icon="LOOP_BACK")
-            button.scope, button.prop = ("SELECTION" if group else "PROPERTY"), prop
         else:
-            row.label(text=tr("default"), translate=False)
+            row = layout.split(factor=need / (need + extra), align=True)
+            row.prop(look, prop, text=name, slider=slider, translate=False)
+            row.label(text=status, translate=False)
+            return
+    else:
+        column = layout.column(align=True)
+        column.prop(look, prop, text=name, slider=slider, translate=False)
+        if not changed:
+            column.label(text=status, translate=False)
+            return
+        button = column.operator(RESET_OPERATOR, text=tr("Back to default"), icon="LOOP_BACK")
+    button.scope, button.prop = scope, prop
 
 
 class GEOBLENDER_PT_ui_element_look(bpy.types.Panel):

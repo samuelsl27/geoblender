@@ -81,6 +81,8 @@ class FakeLayout:
         self.ui_units_y = 0.0
         self.alignment = "EXPAND"
         self.emboss = "NORMAL"
+        self.kind = "root"  # «row», «column», «split»…: cómo reparte su ancho entre sus elementos (spec 019, T39)
+        self.factor = 0.0  # el ``factor`` de un ``split`` (0: a partes iguales)
 
     @property
     def operator_context(self) -> str:
@@ -139,7 +141,23 @@ class FakeLayout:
         child.use_property_decorate = self.use_property_decorate
         return child
 
-    column = row = box = split = grid_flow = column_flow = menu_pie = _child
+    def _kind(kind: str) -> Callable[..., FakeLayout]:  # type: ignore[misc]
+        def make(self: FakeLayout, **options: Any) -> FakeLayout:
+            child = self._child(**options)
+            child.kind = kind
+            child.factor = float(options.get("factor", 0.0) or 0.0)
+            return child
+
+        return make
+
+    column = _kind("column")
+    row = _kind("row")
+    box = _kind("box")
+    split = _kind("split")
+    grid_flow = _kind("grid_flow")
+    column_flow = _kind("column_flow")
+    menu_pie = _kind("menu_pie")
+    del _kind
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
         """Cualquier otro método público de ``UILayout`` (``popover``, ``menu_contents``,

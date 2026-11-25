@@ -12922,6 +12922,9 @@ es = "Más aspecto"
 ["default"]
 es = "predefinido"
 
+["Back to default"]
+es = "Volver al predefinido"
+
 ["How the element looks in the views: label, color, transparency and visibility. Only the appearance of the project is written; the data, its versions and its provenance do not change"]
 es = "Cómo se ve el elemento en las vistas: rótulo, color, transparencia y visibilidad. Solo se escribe el aspecto del proyecto; el dato, sus versiones y su procedencia no cambian"
 

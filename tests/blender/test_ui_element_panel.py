@@ -457,6 +457,103 @@ class ElementMultiPanelTest(ElementLookPanelTest):
             assert_fits(self, self.drawn(ELEMENT, width_px=width), width, scale=scale)
             assert_fits(self, self.drawn(LOOK, width_px=width), width, scale=scale)
 
+    # --- T39 (H3, F-9): las etiquetas del aspecto no se cortan con «…» a 1,25 y 1,5556 ---
+
+    PROPERTIES_PX = 339.0  # el ancho (físico) de Propiedades medido en el H3; no crece con la escala
+    PANEL_MARGIN_PX = 60.0
+    """Lo que el panel no deja al texto (pestañas, márgenes, barra de desplazamiento), a escala 1,0. Calibrado con el H3: el
+    reparto antiguo de «Transparencia» + «predefinido» (217 px) cabe a 1,0 (339 - 60 = 279) y se corta a 1,25 (271 - 60 =
+    211); vale cualquier margen entre 53 y 121 px, y se toma el menor, el más permisivo con el código nuevo."""
+    ICON_BUTTON_PX = 30.0  # un botón solo con icono tiene ancho fijo en una fila
+    H3_SCALES = (1.0, 1.25, 1.5556)
+
+    def needed_px(self, item: Any, scale: float) -> float:
+        """Lo que necesita ``item`` para leerse entero a ``scale``: una casilla o un campo con su texto (un deslizador, con
+        su valor, el más ancho: «100 %»), una etiqueta con su icono; un botón solo con icono, su ancho fijo."""
+        if item.kind == "operator":
+            return self.labels.label_px(item.text, icon=item.icon != "NONE", scale=scale) if item.text else self.ICON_BUTTON_PX
+        if item.kind == "prop" and item.text:
+            shown = f"{item.text}: 100 %" if item.options.get("slider") else item.text
+            return self.labels.label_px(shown, icon=True, scale=scale)
+        if item.kind == "label" and item.text:
+            return self.labels.label_px(item.text, icon=item.icon != "NONE", scale=scale)
+        return 0.0
+
+    def cuts(self, layout: FakeLayout, width: float, scale: float) -> list[str]:
+        """Lo que no cabe en ``width`` px: en una fila (como mide el H3 que hace Blender), si la suma de lo que necesitan sus
+        elementos pasa de su ancho, se cortan todos; en un ``split``, cada uno con su parte; lo demás, cada uno entero."""
+        cut = []
+        for item in layout.items:
+            need = self.needed_px(item, scale)
+            if not need:
+                continue
+            siblings = [o for o in layout.items if o.layout is item.layout and self.needed_px(o, scale)]
+            kind = item.layout.kind
+            if kind == "row":
+                room = width - sum(self.needed_px(o, scale) for o in siblings)
+                ok = room >= 0
+            elif kind == "split":
+                factor = item.layout.factor or 1 / len(siblings)
+                share = width * factor if siblings.index(item) == 0 else width * (1 - factor) / (len(siblings) - 1)
+                ok = need <= share
+            else:
+                ok = need <= width
+            if not ok:
+                cut.append(f"{item.text} ({scale}) [{kind}]: {need:.0f} px en {width:.0f}")
+        return cut
+
+    def look_cuts(self, scale: float) -> list[str]:
+        """Los textos del panel de aspecto que no caben, a ``scale``, con Propiedades a 339 px."""
+        width = self.PROPERTIES_PX / scale - self.PANEL_MARGIN_PX
+        with mock.patch.object(self.labels.compat, "ui_scale", return_value=scale):
+            layout = self.drawn(LOOK, width_px=width)
+        return self.cuts(layout, width, scale)
+
+    def test_look_labels_are_not_cut_at_three_scales(self) -> None:
+        """UI-28, RF-019-21 (F-9 del H3): con un elemento (sin cambios y con uno cambiado) y con varios («varios
+        valores»), en español y en inglés, a 1,0, 1,25 y 1,5556, ninguna etiqueta ni texto de propiedad del aspecto
+        («Transparencia», «varios valores») se corta con «…»."""
+        i18n = vf.extension("core.i18n")
+        objs = self.multi()
+        objs[1].geoblender.look.color = (1.0, 0.0, 0.0)  # «varios valores» en el color
+        for language in ("es", "en"):
+            i18n.set_language(language)
+            for scale in self.H3_SCALES:
+                with self.subTest(selection="varios", language=language, scale=scale):
+                    self.assertEqual(self.look_cuts(scale), [])
+        for obj in objs[1:]:
+            obj.select_set(False)
+        for language in ("es", "en"):
+            i18n.set_language(language)
+            for scale in self.H3_SCALES:
+                with self.subTest(selection="uno", language=language, scale=scale):
+                    self.assertEqual(self.look_cuts(scale), [])
+        objs[0].geoblender.look.transparency = 40  # una fila con su botón de volver al predefinido
+        for language in ("es", "en"):
+            i18n.set_language(language)
+            for scale in self.H3_SCALES:
+                with self.subTest(selection="uno cambiado", language=language, scale=scale):
+                    self.assertEqual(self.look_cuts(scale), [])
+
+    def test_look_model_reproduces_the_h3_cuts_of_the_old_layout(self) -> None:
+        """El control positivo del modelo: el reparto antiguo (la propiedad y su texto de estado, en una fila) deja
+        cortadas «Transparencia» (con «predefinido») y «varios valores» a 1,25 y 1,5556 y cabe a 1,0, como midió el H3."""
+        i18n = vf.extension("core.i18n")
+        i18n.set_language("es")
+        for status in ("predefinido", "varios valores"):
+            found = {}
+            for scale in self.H3_SCALES:
+                width = self.PROPERTIES_PX / scale - self.PANEL_MARGIN_PX
+                layout = FakeLayout()
+                row = layout.row(align=True)
+                row.prop(None, "transparency", text="Transparencia", slider=True)
+                row.label(text=status)
+                found[scale] = self.cuts(layout, width, scale)
+            with self.subTest(status=status):
+                self.assertEqual(found[1.0], [])
+                self.assertTrue(found[1.25])
+                self.assertTrue(found[1.5556])
+
 
 for _name in [n for n in dir(ElementLookPanelTest) if n.startswith("test_") and n not in vars(ElementMultiPanelTest)]:
     setattr(ElementMultiPanelTest, _name, None)  # las de T09 y T10 no se repiten
