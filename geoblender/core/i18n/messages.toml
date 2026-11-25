@@ -12751,3 +12751,12 @@ es = "el plazo debe ser mayor que cero"
 
 ["the reason must be one of: {reasons}"]
 es = "el motivo debe ser uno de: {reasons}"
+
+["the magnitude must be one of: {names}"]
+es = "la magnitud debe ser una de: {names}"
+
+["it is not a number (for example 1 234,5 or 1234.5)"]
+es = "no es un número (por ejemplo 1 234,5 o 1234.5)"
+
+["Magnitude"]
+es = "Magnitud"

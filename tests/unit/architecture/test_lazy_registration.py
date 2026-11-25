@@ -133,6 +133,7 @@ HEAVY: frozenset[str] = frozenset({
     "core.appearance.catalog", "core.appearance.merge", "core.appearance.model",
     # La cola de avisos con caducidad (spec 019, T05): la usa la barra de estado al avisar, no habilitar.
     "core.notices",
+    "core.magnitudes",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 
