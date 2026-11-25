@@ -12721,3 +12721,15 @@ es = "debe ser un número entre {low} y {high}"
 
 ["the label must have between 1 and {maximum} characters, on a single line"]
 es = "el rótulo debe tener entre 1 y {maximum} caracteres, en una sola línea"
+
+["there is no element selected"]
+es = "no hay ningún elemento seleccionado"
+
+["Selection"]
+es = "Selección"
+
+["Elements"]
+es = "Elementos"
+
+["Colored by {legend}"]
+es = "Coloreado por {legend}"
