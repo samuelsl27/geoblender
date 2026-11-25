@@ -547,7 +547,9 @@ class ConstraintsOverlayTest(unittest.TestCase):
         self.assertFalse(ov.enabled() or ov.drawing() or ov.building())
         self.assertIsNone(ov.built())
         self.assertFalse(getattr(bpy.context.window_manager, WM_PROPERTY))
-        self.assertEqual(switcher.blender_hooks(), ())
+        # Lo que queda apuntado es lo de la cola de avisos (spec 019, T22), que no se quita al conmutar.
+        self.assertEqual([hook for hook in switcher.blender_hooks()
+                          if not hook.__module__.endswith("bl.ui.notices")], [])
         # Y se vuelve a Geoblender (a otro espacio marcado): no la pone sola.
         other = next(space.name for space in bpy.data.workspaces
                      if space.name != window.workspace.name)

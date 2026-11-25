@@ -69,8 +69,7 @@ REDRAW_BUDGET_S = 0.005  # RNF-008-13: cada redibujado
 DRAWS = 1000  # dibujos para medir lo que cuesta cada uno
 MAX_TICKS = 20_000  # la comprobación de D-13 acaba en unos cientos de tics
 
-FIELD_KEYS = ("provenance_inputs", "provenance_stale", "provenance_checking",
-              "provenance_undo")
+FIELD_KEYS = ("provenance_inputs", "provenance_stale", "provenance_checking", "notice")
 UNDO_TEXT = "Ctrl+Z no deshace la operación «res.t00»: sigue en el proyecto"
 CHANGED_SOURCE = 0  # la fuente de D-13 que cambia en IndicatorsTest
 
@@ -208,7 +207,8 @@ class D13Case(unittest.TestCase):
     def shown(self) -> list[str]:
         """Los textos de los campos de la procedencia que se ven ahora."""
         return [text for text in (self.ui.inputs_text(), self.ui.stale_text(),
-                                  self.ui.checking_text(), self.ui.undo_notice()) if text]
+                                  self.ui.checking_text(),
+                                  _module("bl.ui.notices").latest_text()) if text]
 
     def drive(self) -> dict[str, list[float]]:
         """Hace de temporizador hasta que la sesión no tiene nada que comprobar: cada

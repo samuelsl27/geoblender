@@ -539,6 +539,7 @@ class VersionsSessionTest(unittest.TestCase):
             for scale in (1.0, 1.25):
                 with self.subTest(scale=scale), \
                         mock.patch.object(compat, "ui_scale", return_value=scale):
+                    ext("bl.ui.notices").clear("cancel")  # el aviso de la orden de arriba no es de esta medida
                     layout = self.statusbar()
                     self.assertIn(STATUS["V03"], layout.texts())
                     self.assertLessEqual(drawn_px(layout.items),
@@ -629,7 +630,9 @@ class VersionsSessionTest(unittest.TestCase):
         self.assertIn(self.panels.on_project_read, provenance.change_listeners())
         quick = ext("bl.ui.quick_access")
         self.assertIs(quick.label_provider(PANEL), self.panels.control_label)
-        self.assertEqual(self.sv.listeners(), ())  # el redibujo lo pide request_redraw (T35)
+        # El redibujo lo pide request_redraw (T35); queda la escucha de la cola de avisos (spec 019, T22).
+        self.assertEqual([listener for listener in self.sv.listeners()
+                          if not listener.__module__.endswith("bl.ui.notices")], [])
 
         blender_ext.disable()
         self.assertNotIn(self.sv.on_load_post, bpy.app.handlers.load_post)

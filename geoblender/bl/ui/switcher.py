@@ -255,9 +255,10 @@ def notify_outdated_layout() -> bool:
     if _SESSION.layout_notified or not outdated_layouts():
         return False
     _SESSION.layout_notified = True
-    from . import provenance  # diferido: provenance importa media interfaz
+    from . import notices  # diferido: notices importa este módulo
 
-    provenance.show_undo_notice(tr("The layout of this file is older: Layouts ▾ ▸ Update the layout"))
+    notices.post("info", tr("The layout of this file is older: Layouts ▾ ▸ Update the layout"),
+                 ttl=notices.UNDO_TTL)  # 10 s (spec 019, T18; la cola de T22)
     return True
 
 

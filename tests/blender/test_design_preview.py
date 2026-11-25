@@ -758,7 +758,9 @@ class DesignPreviewTest(unittest.TestCase):
         self.assertFalse(design.enabled() or design.drawing() or design.building())
         self.assertIsNone(design.built())
         self.assertIs(getattr(bpy.context.window_manager, WM_PROPERTY), False)
-        self.assertEqual(switcher.blender_hooks(), ())
+        # Lo que queda apuntado es lo de la cola de avisos (spec 019, T22), que no se quita al conmutar.
+        self.assertEqual([hook for hook in switcher.blender_hooks()
+                          if not hook.__module__.endswith("bl.ui.notices")], [])
         other_space = next(space.name for space in bpy.data.workspaces
                            if space.name != window.workspace.name)
         with mock.patch.object(switcher, "_marked", return_value={other_space}):

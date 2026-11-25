@@ -59,6 +59,7 @@ from . import (
     layouts,
     menus,
     native_filter,
+    notices,
     pit_panels,
     provenance,
     quick_access,
@@ -138,6 +139,7 @@ def register() -> None:
         (statusbar.install, statusbar.uninstall),
         (jobs.install, jobs.uninstall),
         (provenance.install, provenance.uninstall),
+        (notices.install, notices.uninstall),
         (version_panels.install, version_panels.uninstall),
         (res_panels.install, res_panels.uninstall),
         (views.register, views.unregister),
@@ -180,6 +182,7 @@ def repair() -> str:
     statusbar.install()
     jobs.install()
     provenance.install()
+    notices.install()
     version_panels.install()
     native_filter.rescan()
     keymap.unregister()

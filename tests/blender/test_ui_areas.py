@@ -282,7 +282,7 @@ class LayoutUpdateTest(unittest.TestCase):
         return {ws.name: ws.get(REV_KEY) for ws in bpy.data.workspaces}
 
     def notice(self) -> object:
-        return mock.patch(f"{module_name()}.bl.ui.provenance.show_undo_notice")
+        return mock.patch(f"{module_name()}.bl.ui.notices.post")
 
     def test_warns_once_and_changes_nothing(self) -> None:
         """P-9, UI-09: al conmutar con una disposición anterior, un aviso, una vez; el
@@ -295,7 +295,7 @@ class LayoutUpdateTest(unittest.TestCase):
             self.switcher.toggle(self.window, "BLENDER")
             self.switcher.toggle(self.window, "GEOBLENDER")
         self.assertEqual(show.call_count, 1)
-        self.assertIn("anterior", show.call_args.args[0])
+        self.assertIn("anterior", show.call_args.args[1])
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(sorted(obj.name for obj in bpy.data.objects), self.objects)
 

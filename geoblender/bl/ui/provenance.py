@@ -12,13 +12,12 @@ en los dos modos, Geoblender y Blender; spec §11), cada uno solo si tiene algo 
 - «Comprobando el proyecto… 42 %» (RF-008-58), el progreso de la comprobación de apertura de
   la sesión de la procedencia (``bl.ops.core_provenance.SESSION``), con su botón de cancelar
   (``geoblender.core_cancel_checks``);
-- el aviso de Ctrl+Z (RF-008-32; plan §5.4.11): :func:`show_undo_notice` lo deja
-  :data:`UNDO_NOTICE_S` s.
+- el aviso de Ctrl+Z (RF-008-32; plan §5.4.11): :func:`show_undo_notice` lo deja en la cola de avisos
+  (``bl.ui.notices``, spec 019, T22) :data:`UNDO_NOTICE_S` s; el campo que lo dibuja es el de esa cola.
 
 Si no caben (spec 008, T69; M6: a 1920 px con escala efectiva 1,5), la barra de estado los
 **pliega** de derecha a izquierda (``bl.ui.statusbar.fold``), con los mismos botones: «⚠ n»,
-«! n», solo «42 %» con su botón de cancelar y el aviso de Ctrl+Z cortado a
-:data:`UNDO_FOLDED_UNITS` unidades. Lo que ocupa cada campo, plegado o no, se calcula como lo
+«! n» y solo «42 %» con su botón de cancelar. Lo que ocupa cada campo, plegado o no, se calcula como lo
 dibuja Blender (``statusbar.button_px``, ``popover_px``, ``label_px``).
 
 Los iconos ``gb_state_input_changed`` y ``gb_state_stale`` dibujan los mismos signos ⚠ y ! con
@@ -149,7 +148,6 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import time
 from collections.abc import Callable, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -188,7 +186,7 @@ from ..props.provenance import FILTER_ALL, WINDOW_MANAGER_PROPERTY
 from ..scene import live, project_session
 from ..scene import versions as scene_versions
 from .. import compat
-from . import bars, icons, labels, quick_access, statusbar
+from . import bars, icons, labels, notices, quick_access, statusbar
 from .commands import (
     CommandState,
     catalog,
@@ -214,7 +212,6 @@ LOGGER = logging.getLogger("geoblender.bl.ui")
 FIELD_INPUTS = "provenance_inputs"
 FIELD_STALE = "provenance_stale"
 FIELD_CHECKING = "provenance_checking"
-FIELD_UNDO = "provenance_undo"
 FIELD_PRIORITY = 1
 FIELD_MODES = frozenset({statusbar.GEOBLENDER, statusbar.BLENDER})
 """Los campos se ven en los dos modos (plan §5.5; spec §11)."""
@@ -224,9 +221,6 @@ INDICATOR_TICK_S = 0.5
 
 UNDO_NOTICE_S = 10.0
 """Lo que se ve el aviso de Ctrl+Z en la barra de estado (plan §5.5)."""
-
-UNDO_FOLDED_UNITS = 6
-"""El ancho del aviso de Ctrl+Z plegado, en unidades: Blender corta el texto con «…» (T69)."""
 
 FOLDED_INPUTS = "provenance_inputs_folded"  # los textos plegados, en la caché de textos (T69)
 FOLDED_STALE = "provenance_stale_folded"
@@ -245,7 +239,6 @@ RESOLVE_UNREGISTERED = "geoblender.core_resolve_unregistered"
 STALE_ICON = "gb_state_stale"
 STALE_FALLBACK = "COLLECTION_COLOR_01"
 CANCEL_ICON = "X"
-UNDO_ICON = "LOOP_BACK"
 STALE_PANEL_UNITS = 20
 MAX_TEXTS = 256  # textos con número guardados (después, se empieza de nuevo)
 
@@ -290,8 +283,6 @@ LINEAGE_INDENT = 1.5  # sangría de cada nivel (factor de ``separator``)
 MAX_LINEAGE_ROWS = 1000
 """Las filas de la procedencia que se guardan en la vista (las demás, «… y n más»)."""
 
-_clock: Callable[[], float] = time.monotonic
-
 
 class _State:
     """Lo de la sesión (no se guarda en el ``.blend``)."""
@@ -301,8 +292,6 @@ class _State:
         self.counts: Counts | None = None
         self.signature: tuple[int, str] | None = None  # contador de cambios e idioma leídos
         self.texts: dict[tuple[str, int, str], str] = {}
-        self.undo_text = ""
-        self.undo_until = 0.0
         self.properties: dict[type, frozenset[str]] = {}  # propiedades de cada operador
         self.filling = False  # se están regenerando las filas de los parámetros
         self.searching = False  # se está poniendo la búsqueda de la procedencia
@@ -659,33 +648,11 @@ def stale_count(_context: Any = None) -> int | None:
 
 
 def show_undo_notice(message: str) -> None:
-    """Deja ``message`` en la barra de estado durante :data:`UNDO_NOTICE_S` s (RF-008-32: «Ctrl+Z
-    no deshace la operación «gis.resample»: sigue en el proyecto»); uno nuevo sustituye al
-    anterior."""
-    _STATE.undo_text = message
-    _STATE.undo_until = _clock() + UNDO_NOTICE_S
-    _retire(expire_undo_notice)
-    bpy.app.timers.register(expire_undo_notice, first_interval=UNDO_NOTICE_S, persistent=True)
-    statusbar.redraw()
-
-
-def undo_notice() -> str:
-    """El aviso de Ctrl+Z que se ve ahora, o ""."""
-    if _STATE.undo_text and _clock() < _STATE.undo_until:
-        return _STATE.undo_text
-    return ""
-
-
-def expire_undo_notice() -> float | None:
-    """La función del temporizador del aviso: al pasar su tiempo, lo quita, redibuja la barra
-    de estado y se retira."""
-    left = _STATE.undo_until - _clock()
-    if _STATE.undo_text and left > 0:
-        return left
-    _STATE.undo_text = ""
-    _retire(expire_undo_notice)
-    statusbar.redraw()
-    return None
+    """Deja ``message`` en la cola de avisos de la barra de estado durante :data:`UNDO_NOTICE_S` s (RF-008-32:
+    «Ctrl+Z no deshace la operación «gis.resample»: sigue en el proyecto»; spec 019, T22: ``bl.ui.notices``
+    lo muestra, lo retira al cumplirse el plazo, al cambiar la selección o al cancelar, cambiar de proyecto o
+    de versión y conmutar); uno nuevo pasa a ser el último."""
+    notices.post("info", message, ttl=UNDO_NOTICE_S)
 
 
 # Campos de la barra de estado -----------------------------------------------------------------
@@ -793,15 +760,6 @@ def _draw_checking(layout: Any, _context: Any, *, folded: bool = False) -> None:
         _operator(row, CANCEL_CHECKS, "", icon=CANCEL_ICON, emboss=False)
 
 
-def _draw_undo(layout: Any, _context: Any, *, folded: bool = False) -> None:
-    shown = undo_notice()
-    if shown:
-        row = layout.row(align=True)
-        if folded:
-            row.ui_units_x = UNDO_FOLDED_UNITS  # Blender corta el texto con «…»
-        row.label(text=shown, icon=UNDO_ICON, translate=False)
-
-
 def _inputs_px(_context: Any, *, folded: bool = False) -> float:
     shown = inputs_text(folded=folded)
     return statusbar.button_px(shown) if shown else 0.0
@@ -817,22 +775,12 @@ def _checking_px(_context: Any, *, folded: bool = False) -> float:
     return statusbar.label_px(shown) + statusbar.button_px() if shown else 0.0
 
 
-def _undo_px(_context: Any, *, folded: bool = False) -> float:
-    shown = undo_notice()
-    if not shown:
-        return 0.0
-    if folded:
-        return statusbar.units_px(UNDO_FOLDED_UNITS)
-    return statusbar.label_px(shown, icon=True)
-
-
 _Draw = Callable[..., None]
 _Width = Callable[..., float]
 FIELDS: tuple[tuple[str, float, _Draw, _Width], ...] = (
     (FIELD_INPUTS, 62.0, _draw_inputs, _inputs_px),
     (FIELD_STALE, 63.0, _draw_stale, _stale_px),
     (FIELD_CHECKING, 64.0, _draw_checking, _checking_px),
-    (FIELD_UNDO, 65.0, _draw_undo, _undo_px),
 )
 """Los campos: clave, sitio en la barra (tras los de la 003 y antes de los trabajos de la
 004, como en AR §6), dibujo y ancho a escala 1,0 (0 sin nada que mostrar); los dos admiten
@@ -1961,12 +1909,9 @@ def uninstall() -> None:
     remove_change_listener(live.request)
     project_session.remove_listener(on_project_changed)
     _retire(indicator_tick)
-    _retire(expire_undo_notice)
     _forget()
     _clear_parameters()
     _clear_inputs()
     _forget_lineage()
     _STATE.texts.clear()
     _STATE.properties.clear()
-    _STATE.undo_text = ""
-    _STATE.undo_until = 0.0

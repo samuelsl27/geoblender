@@ -120,6 +120,7 @@ class StatusbarTest(unittest.TestCase):
         cls.prefs = _module("bl.ui.commands").preferences()
         cls.compat = _module("bl.compat")
         cls.provenance = _module("bl.ui.provenance")
+        cls.notices = _module("bl.ui.notices")
         cls.provenance_ops = _module("bl.ops.core_provenance")
         cls.jobs = _module("bl.ui.jobs")
         cls.stale = _module("core.provenance.stale")
@@ -146,8 +147,8 @@ class StatusbarTest(unittest.TestCase):
         """T69: la barra de M6: el proyecto de la demostración («M2_limite», GeoOrigin
         700 000, 4 400 000, 0, con el cursor 3D en el origen), 1 entrada cambiada sin decidir,
         3 obsoletos, la comprobación de apertura al 40 % y dos trabajos activos, el más antiguo
-        al 40 % con su último mensaje; con ``undo``, el aviso de Ctrl+Z, y con ``notice``, el
-        de un trabajo terminado."""
+        al 40 % con su último mensaje; con ``undo``, un aviso de la cola de avisos (el de Ctrl+Z), y
+        con ``notice``, el de un trabajo terminado."""
         fake = self.georef.SceneGeoref("uid", "M2_limite", 25830, 0, (700000, 4400000, 0))
         counts = self.stale.Counts(stale=3, figures=0, review=0, inputs_changed=1)
         session = SimpleNamespace(percent=40, status_text=lambda: FULL_008[2])
@@ -160,10 +161,14 @@ class StatusbarTest(unittest.TestCase):
         with mock.patch.object(self.georef, "project_georeference", return_value=fake), \
                 mock.patch.object(self.provenance._STATE, "counts", counts), \
                 mock.patch.object(self.provenance_ops, "SESSION", session), \
-                mock.patch.object(self.provenance, "undo_notice",
-                                  return_value=UNDO_TEXT if undo else ""), \
+                mock.patch.object(self.notices, "current",
+                                  return_value=self.queued(UNDO_TEXT) if undo else None), \
                 mock.patch.object(self.jobs, "current_view", return_value=view):
             yield
+
+    def queued(self, text: str) -> object:
+        """Un aviso vivo de la cola de avisos (spec 019, T22) con ``text``."""
+        return _module("core.notices").Notice("info", self.notices.MSGID, (("text", text),), 0.0, 1e9)
 
     def draw(self, ctx: SimpleNamespace) -> FakeLayout:
         layout = FakeLayout()
@@ -291,6 +296,7 @@ class StatusbarTest(unittest.TestCase):
             self.statusbar.install()
             self.jobs.install()  # los campos de la 004 y de la 008, como «Reparar la interfaz»
             self.provenance.install()
+            self.notices.install()
         self.statusbar.on_cursor_moved()  # sin ventanas con interfaz, no hace nada
 
     def test_crowded_bar_fits_folding_by_priority(self) -> None:
@@ -341,7 +347,7 @@ class StatusbarTest(unittest.TestCase):
         con sus botones y sus iconos, plegado o no; los de la 008 y el del trabajo se pueden
         plegar."""
         foldable = {"provenance_inputs", "provenance_stale", "provenance_checking",
-                    "provenance_undo", "jobs"}
+                    "notice", "jobs"}
         checked: set[str] = set()
         with self.crowded(undo=True, notice=True):
             ctx = self.ctx(width=REGION_PX)

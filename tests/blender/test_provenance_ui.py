@@ -125,8 +125,7 @@ STALE_PANEL = "GEOBLENDER_PT_core_stale"
 SHOW_INPUTS = "geoblender.core_show_inputs"
 CANCEL_CHECKS = "geoblender.core_cancel_checks"
 RECOMPUTE = "geoblender.core_recompute_stale"
-FIELD_KEYS = ("provenance_inputs", "provenance_stale", "provenance_checking",
-              "provenance_undo")
+FIELD_KEYS = ("provenance_inputs", "provenance_stale", "provenance_checking")
 UNDO_TEXT = "Ctrl+Z no deshace la operación «gis.resample»: sigue en el proyecto"
 DRAWS = 300  # dibujos para medir lo que cuesta uno
 DRAW_BUDGET_S = 0.001  # RNF-008-06
@@ -564,20 +563,22 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertIn(REDRAW_LOG, logged.output)
 
     def test_undo_notice_for_ten_seconds(self) -> None:
-        """RF-008-32 (plan §5.5): el aviso de Ctrl+Z se ve en la barra de estado, en los dos
-        modos, durante 10 s; después, el campo desaparece."""
-        ui = self.ui
+        """RF-008-32 (plan §5.5; spec 019, T22): el aviso de Ctrl+Z va a la cola de avisos y se ve en
+        la barra de estado, en los dos modos, durante 10 s; después, el campo desaparece."""
+        ui, notices = self.ui, _module("bl.ui.notices")
+        self.addCleanup(notices.clear, "cancel")
         now = time.monotonic()
-        with mock.patch.object(ui, "_clock", return_value=now):
+        with mock.patch.object(notices, "_clock", return_value=now):
             ui.show_undo_notice(UNDO_TEXT)
             self.assertEqual(self.both_modes(), [UNDO_TEXT])
-            self.assertTrue(bpy.app.timers.is_registered(ui.expire_undo_notice))
-        with mock.patch.object(ui, "_clock", return_value=now + ui.UNDO_NOTICE_S - 0.1):
+            self.assertTrue(bpy.app.timers.is_registered(notices.tick))
+        with mock.patch.object(notices, "_clock", return_value=now + ui.UNDO_NOTICE_S - 0.1):
             self.assertEqual(self.both_modes(), [UNDO_TEXT])
-        with mock.patch.object(ui, "_clock", return_value=now + ui.UNDO_NOTICE_S):
+        with mock.patch.object(notices, "_clock", return_value=now + ui.UNDO_NOTICE_S):
             self.assertEqual(self.both_modes(), [])
-            self.assertIsNone(ui.expire_undo_notice())
-        self.assertEqual(ui.undo_notice(), "")
+            notices.sweep()
+            self.assertFalse(bpy.app.timers.is_registered(notices.tick) and len(notices.queue()))
+        self.assertEqual(notices.latest_text(), "")
 
     def test_disabling_removes_everything(self) -> None:
         """RF-008-16, RF-008-28, RF-008-61 (principio 8): habilitar registra el panel de lo
@@ -605,8 +606,7 @@ class ProvenanceUiTest(unittest.TestCase):
         self.assertIsNone(commands.state_provider())
         self.assertNotIn(ui.on_project_changed, self.ps.listeners())
         self.assertFalse(bpy.app.timers.is_registered(ui.indicator_tick))
-        self.assertFalse(bpy.app.timers.is_registered(ui.expire_undo_notice))
-        self.assertEqual(ui.undo_notice(), "")
+        self.assertFalse(bpy.app.timers.is_registered(_module("bl.ui.notices").tick))
 
     # Parámetros del proyecto (T50) ------------------------------------------------------------
 

@@ -12782,6 +12782,9 @@ es = "Coloreado por {legend}"
 ["Notice"]
 es = "Aviso"
 
+["{text}"]
+es = "{text}"
+
 ["Time to live"]
 es = "Plazo"
 

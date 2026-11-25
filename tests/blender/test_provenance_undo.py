@@ -121,7 +121,7 @@ class ProvenanceUndoTest(unittest.TestCase):
         """Deshace o rehace un paso de Blender (``undo``/``redo``) y devuelve el aviso de la
         barra de estado."""
         self.assertEqual(getattr(bpy.ops.ed, action)(), {"FINISHED"})
-        return self.ui.undo_notice()
+        return _module("bl.ui.notices").latest_text()
 
     # Pruebas ------------------------------------------------------------------------------
 

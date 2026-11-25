@@ -26,6 +26,7 @@ from typing import Any
 import bpy
 
 from ..core.i18n import language, translate, untranslated
+from . import reporting
 
 TRANSLATION_CONTEXT = "Geoblender"
 _MISSING = object()  # la clase no tenía la anotación: venía de una clase madre
@@ -42,6 +43,7 @@ def register_classes(classes: Sequence[type]) -> None:
         for cls in classes:
             if _is_registered(cls):
                 continue
+            reporting.instrument(cls)  # spec 019, T22: sus informes llegan a la cola de avisos
             bpy.utils.register_class(cls)
             done.append(cls)
     except BaseException:
