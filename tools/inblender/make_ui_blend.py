@@ -17,27 +17,32 @@ reproducible.
 En segundo plano no se pueden unir ni cerrar áreas (``area_join`` divide y ``area_close``
 no termina) ni se recalcula su geometría (``area.x``/``width`` de un área nueva valen 0
 hasta que la interfaz gráfica la carga): por eso todas parten del espacio de fábrica
-«Rendering» (Propiedades a la derecha, a toda altura, 339 px de 1920; un editor de imagen
-de 1574 px encima de una línea de tiempo de 74 px) y solo se **dividen** áreas
-(``area_split``, que en segundo plano sí cambia los vértices de la pantalla) y se cambia
-su tipo:
+«Modeling» (spec 019, T16: el único sin línea de tiempo; Outliner de 339 × 189 px arriba a
+la derecha, Propiedades de 339 × 839 px debajo y la Vista 3D de 1574 px) y solo se
+**dividen** áreas (``area_split``, que en segundo plano sí cambia los vértices de la
+pantalla) y se cambia su tipo:
 
-- **Geoblender** (principal, CW §6.1): el editor de imagen se divide al 18 % (unos 280 px)
-  en el Outliner, a la izquierda, y la Vista 3D (unos 1294 px) con la fila 2 y la barra
-  T, y con la barra N **cerrada** (convergencia, T46; RNF-003-03: abierta, el redibujo de la
-  ventana costaba unos 0,6 ms más que en modo Blender; la pestaña «Proyecto» está a un N
-  y el menú Proyecto y la barra de estado dicen lo mismo; decisión revisable);
-  Propiedades a la derecha; abajo, la línea de tiempo de fábrica (decisión revisable: sin
-  interfaz no se puede quitar). Outliner como PC §5.5: «Capa de vista», sin contenido de
-  objeto ni hijos, columnas «ocultar en la vista» y «seleccionable», orden alfabético.
-- **Sección y planta**: la Vista 3D se divide por la mitad (dos de unos 650 px, cada una
-  con su fila 2 y sin la barra N): planta ortográfica a la izquierda y sección mirando al
-  norte a la derecha.
+- **Geoblender** (principal, CW §6.1): Vista 3D con la fila 2 y la barra T, y con la barra
+  N **cerrada** (convergencia, T46; RNF-003-03: abierta, el redibujo de la ventana costaba
+  unos 0,6 ms más que en modo Blender; la pestaña «Proyecto» está a un N y el menú Proyecto
+  y la barra de estado dicen lo mismo; decisión revisable); a la derecha, el Outliner
+  encima de Propiedades. **Sin barra inferior** (RF-019-02): ninguna disposición lleva la
+  línea de tiempo salvo «Fases», que tiene su hoja de claves. Outliner como PC §5.5: «Capa de
+  vista», sin contenido de objeto ni hijos, columnas «ocultar en la vista» y «seleccionable»,
+  orden alfabético, y sin cámaras ni luces (P-7; filtros por espacio, no se toca lo del
+  usuario).
+- **Sección y planta**: la Vista 3D se divide por la mitad (planta ortográfica a la izquierda
+  y sección mirando al norte a la derecha, cada una con su fila 2 y sin la barra N).
 - **Datos**: la Vista 3D con la barra N y, debajo (35 %), la Hoja de cálculo.
 - **Diseño y perfil**: la Vista 3D con la barra N y, debajo (35 %), una segunda Vista 3D
   ortográfica mirando al norte (el perfil).
 - **Fases**: la Vista 3D con la barra N y, debajo (30 %), la hoja de claves con los
   marcadores.
+
+En los espacios de Geoblender (nunca en otros): las pestañas de Propiedades, ocultas salvo
+«Objeto», que es la actual (RF-019-03); el color de la Vista 3D por objeto, en sólido y en
+malla (RF-019-07); y ``WorkSpace["geoblender_layout_rev"]`` con ``LAYOUT_REV`` de
+``bl/ui/areas.py`` (P-9).
 
 El reparto se comprueba en la interfaz gráfica (verificación de la T14 en ``tasks.md``).
 Un error sale con código 1 (``--python-exit-code 1``).
@@ -51,6 +56,7 @@ if __name__ == "__main__":  # como guion: sin __pycache__ en el repositorio (imp
     sys.dont_write_bytecode = True  # una prueba, manda el lanzador de las pruebas)
 
 import importlib  # noqa: E402
+import re  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import bpy  # noqa: E402
@@ -66,9 +72,10 @@ from gbtools.package import load_geoblender  # noqa: E402
 WORKSPACE_PROPERTY = "geoblender_mode"  # la marca del modo (bl/props/ui.py)
 OUTPUT_NAME = "geoblender_ui.blend"
 FALLBACK = "Layout"  # el espacio de fábrica de respaldo, sin marcar (CW §3.2)
-BASE = "Rendering"  # el espacio de fábrica del que parten todas
+BASE = "Modeling"  # el espacio de fábrica del que parten todas (sin línea de tiempo)
 ENTRY = "003"  # las disposiciones de esta spec; las de otras entradas, con la suya
-LEFT_FACTOR = 0.18  # Outliner: unos 280 de los 1574 px (CW §6.1)
+REV_KEY = "geoblender_layout_rev"  # la revisión de la disposición (P-9)
+AREAS_SOURCE = "bl/ui/areas.py"  # donde está LAYOUT_REV (se lee sin importar: HER-01)
 # Rotaciones de la vista (cuaterniones w, x, y, z): planta (mirando hacia abajo, norte
 # arriba) y mirando al norte (+Y, con +Z arriba) (spec §6.1).
 PLAN = (1.0, 0.0, 0.0, 0.0)
@@ -133,6 +140,8 @@ def configure_view(area: bpy.types.Area, *, sidebar: bool = False,
     space.show_region_tool_header = True
     space.show_region_toolbar = True
     space.show_region_ui = sidebar
+    space.shading.color_type = "OBJECT"  # el color por objeto (RF-019-07), en sólido
+    space.shading.wireframe_color_type = "OBJECT"  # y en malla
     if rotation is not None and space.region_3d is not None:
         space.region_3d.view_perspective = "ORTHO"
         space.region_3d.view_rotation = rotation
@@ -147,17 +156,28 @@ def configure_outliner(area: bpy.types.Area) -> None:
     space.show_restrict_column_hide = True
     space.show_restrict_column_select = True
     space.use_sort_alpha = True
+    space.use_filter_object_camera = False  # P-7: por espacio; no se toca lo del usuario
+    space.use_filter_object_light = False
+
+
+def configure_properties(area: bpy.types.Area) -> None:
+    """Propiedades sin pestañas de Blender salvo «Objeto», que es la actual (RF-019-03)."""
+    space = _space(area, "PROPERTIES")
+    for name in dir(space):
+        if name.startswith("show_properties_") and isinstance(getattr(space, name), bool):
+            setattr(space, name, name == "show_properties_object")
+    space.context = "OBJECT"
 
 
 def columns(name: str, *, sidebar: bool = True) -> tuple[bpy.types.WorkSpace, bpy.types.Area]:
-    """Outliner | Vista 3D (con la barra N si ``sidebar``) | Propiedades, con la línea de
-    tiempo abajo; devuelve el espacio y su Vista 3D."""
+    """Vista 3D (con la barra N si ``sidebar``) con el Outliner y Propiedades a la derecha
+    y **sin** barra inferior; devuelve el espacio y su Vista 3D."""
     workspace = bpy.data.workspaces[BASE].copy()
     workspace.name = name
-    view = _only(workspace, "IMAGE_EDITOR")
-    configure_outliner(split(workspace, view, "VERTICAL", LEFT_FACTOR))
+    view = _only(workspace, "VIEW_3D")
+    configure_outliner(_only(workspace, "OUTLINER"))
+    configure_properties(_only(workspace, "PROPERTIES"))
     configure_view(view, sidebar=sidebar, rotation=PLAN)
-    _only(workspace, "DOPESHEET_EDITOR").ui_type = "TIMELINE"
     return workspace, view
 
 
@@ -201,11 +221,23 @@ BUILDERS = {
 }
 
 
+def layout_rev() -> int:
+    """``LAYOUT_REV`` de ``bl/ui/areas.py``, leída del texto (las herramientas no importan
+    ``bl``)."""
+    text = (ROOT / repo_layout.EXTENSION_DIR / AREAS_SOURCE).read_text(encoding="utf-8")
+    found = re.search(r"^LAYOUT_REV\s*=\s*(\d+)", text, re.MULTILINE)
+    if found is None:
+        raise RuntimeError(f"no se encontró LAYOUT_REV en {AREAS_SOURCE}")
+    return int(found.group(1))
+
+
 def mark(workspace: bpy.types.WorkSpace, value: bool) -> None:
     """La marca del modo, sin escena fijada y en modo Objeto (CW §3.3)."""
     setattr(workspace, WORKSPACE_PROPERTY, value)
     workspace.use_pin_scene = False
     workspace.object_mode = "OBJECT"
+    if value:
+        workspace[REV_KEY] = layout_rev()
 
 
 def main() -> None:
