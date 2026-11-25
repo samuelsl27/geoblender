@@ -324,6 +324,17 @@ class ElementLookPanelTest(ElementPanelTest):
         self.assertNotIn("Fondo de la corta", obj.name)
         self.assertEqual(obj.geoblender.look.label, "")
 
+    def test_panel_keeps_drawing_once_a_label_is_set(self) -> None:
+        """RF-019-07, UI-03 (hallazgo del H3 en pantalla): con un rótulo puesto, el panel de aspecto sigue dibujando todas
+        sus filas (``_changed_props`` no lanza porque el predefinido no lleva rótulo) y el rótulo cuenta como cambiado."""
+        obj = self.surface()
+        obj.geoblender.look.label = "Fondo de la corta"
+        self.assertEqual(self.props(LOOK), ["label", "color", "transparency", "visible"])
+        buttons = [i for i in self.drawn(LOOK).of_kind("operator") if i.target == RESET]
+        self.assertEqual([getattr(b.properties, "prop", "") for b in buttons][:1], ["label"])
+        obj.geoblender.look.label = ""
+        self.assertEqual(self.props(LOOK), ["label", "color", "transparency", "visible"])
+
     def test_out_of_range_is_rejected_with_object_field_and_value(self) -> None:
         """RF-019-07, UI-09: un valor fuera de rango se rechaza diciendo objeto, campo y valor."""
         obj = self.surface()

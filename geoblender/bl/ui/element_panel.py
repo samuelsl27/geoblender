@@ -117,7 +117,7 @@ def _changed_props(obj: Any, props: tuple[str, ...]) -> set[str]:
     look = obj.geoblender.look
     now, default = appearance.read(obj), catalog.defaults_for(str(obj.geoblender.kind))
     return {prop for prop in _offered(obj, props)
-            if look.is_property_set(prop) and (now.get(prop) or "") != (default.get(prop) or "")}
+            if look.is_property_set(prop) and (now.get(prop, "") or "") != (default.get(prop, "") or "")}
 
 
 def _group(context: Any) -> list[Any]:
