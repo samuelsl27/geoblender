@@ -352,6 +352,21 @@ class PitMessagesTest(unittest.TestCase):
                 self.assertNotEqual(found.msgid, found.es)
                 self.assertIsNotNone(messages.render(code, language="en"))
 
+    def test_nothing_to_excavate_names_the_start_surface_and_says_what_to_do(self) -> None:
+        """RF-018-04, RF-018-03, T40h (ensayo de CE-018-13): el rechazo de un fondo que no queda por debajo de la superficie de partida **dice de qué superficie parte** (por su nombre) y qué
+        hacer (elegir otra «Superficie de partida», el terreno), en los dos idiomas: una corta ascendente que parte, por defecto, de la última de la cadena (otra corta) no se rechazaba sin que nada lo
+        avisara."""
+        values = {"name": "Corta 3", "field": "fondo", "value": 125.0, "start": "Corta 2"}
+        es = messages.render("des.pit_nothing_to_excavate", language="es", **values)
+        self.assertIn("«Corta 2»", es)
+        self.assertIn("Superficie de partida", es)
+        self.assertIn("terreno", es)
+        en = messages.render("des.pit_nothing_to_excavate", language="en", **values)
+        self.assertIn("«Corta 2»", en)
+        self.assertIn("Start surface", en)
+        self.assertIn("ground", en)
+        self.assertNotIn("?", es + en, "ningún marcador sin valor")
+
     def test_the_rejections_name_the_field_and_the_value(self) -> None:
         text = messages.render("des.pit_ramp_value_range", profile="Rampa", field="des.pitramp.r1.gradient_pct", value=0, range="(0; 100] %")
         self.assertIn("des.pitramp.r1.gradient_pct", text)

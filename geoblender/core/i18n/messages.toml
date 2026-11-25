@@ -12629,3 +12629,6 @@ es = "Muestra u oculta las opciones que casi nunca se tocan: los valores por sec
 
 ["Read-only: nothing can be saved in the project; the reason is above"]
 es = "Solo lectura: no se puede guardar nada en el proyecto; el motivo está arriba"
+
+["It starts from {surface}, not from the ground: a floor that is not below that surface is rejected; to start from the ground, choose it in «Start surface»"]
+es = "Parte de {surface}, no del terreno: un fondo que no queda por debajo de esa superficie se rechaza; para partir del terreno, elíjalo en «Superficie de partida»"

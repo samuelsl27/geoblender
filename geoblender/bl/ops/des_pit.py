@@ -358,6 +358,15 @@ def _pit_fields() -> tuple[str, ...]:
     return tuple(name for name in GEOBLENDER_OT_des_create_pit.__annotations__ if name not in _PIT_HIDDEN and name != "mean_reason")
 
 
+def _start_notice(start: str) -> str | None:
+    """RF-018-03, T40h: el aviso del diálogo cuando la partida es una entidad (por defecto, la última de la cadena: otra corta) y no el terreno, con su nombre legible (el de la lista) y cómo
+    elegir otra; ``None`` si la partida es una superficie."""
+    if not start.startswith("entity:"):
+        return None
+    label = next((item[1] for item in des_panels.platform_start_items(None, None) if item[0] == start), start)
+    return tr("It starts from {surface}, not from the ground: a floor that is not below that surface is rejected; to start from the ground, choose it in «Start surface»", surface=label)
+
+
 def _layer_changed(self: Any, context: Any) -> None:
     """El ``update`` de la capa de origen: los campos elegidos eran de la capa anterior, vuelven a la propuesta; y la vista previa, como con cualquier campo."""
     for prop in ("name_pick", "level_pick"):
@@ -608,6 +617,9 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
                 tolerances.prop(self, prop, text=label, translate=False)
                 tolerances.label(text=_pit_param_text(param), translate=False)  # el tipo de cada tolerancia (RF-018-10, D-14)
         layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        notice = _start_notice(self.start)
+        if notice is not None:
+            des_panels.draw_wrapped(layout, notice, DIALOG_WIDTH)
         layout.prop(self, "support", text=tr("Support surface"), translate=False)
         _draw_entity_preview_button(layout, self, CREATE_PIT, _pit_fields())  # «Vista previa» (RF-018-32)
 

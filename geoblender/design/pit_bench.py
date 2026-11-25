@@ -338,7 +338,7 @@ def _prepared(job: PitJob, origin: np.ndarray, n: int = 1) -> list[_Source]:
             raise ValueError(f"el fondo «{source.name}» sale de la rejilla o cae sin dato de terreno: la preparación lo rechaza antes (RF-018-04)")
         if gap <= _EXIT_TOL_M:
             raise DesignError(PitCode.NOTHING_TO_EXCAVATE.value, obj=job.request.name, field=source.name, value=source.level_m,
-                              name=job.request.name)
+                              name=job.request.name, start=job.request.start)
         found.append(_Source(index, order, _Ring(ring, "", job.params.simplify_m)))
     return found
 

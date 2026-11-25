@@ -402,7 +402,15 @@ def _check_polygons(sources: Sequence[PitSource], request: PitRequest, code: str
             raise _invalid(request, code, source.name, "no tiene dato en la superficie de partida", (float(x), float(y)))
 
 
-def _check_levels(sources: Sequence[PitSource], request: PitRequest, code: str, grid: Grid, start: np.ndarray, profile: BenchProfile, n_berm: int) -> None:
+def _start_label(registry: Any, start_ref: str, start_name: str) -> str:
+    """Cómo se llama para la persona la superficie de partida (UI-08): de ``entity:<código>``, el nombre de la entidad; de una superficie, el de su dato."""
+    target = entities.ref_code(start_ref)
+    entry = None if target is None else registry.get(target)
+    return start_name if entry is None else entry.record.name
+
+
+def _check_levels(sources: Sequence[PitSource], request: PitRequest, code: str, grid: Grid, start: np.ndarray, profile: BenchProfile, n_berm: int,
+                  start_label: str = "") -> None:
     """RF-018-04 y D-4 (modo ascendente): la cota de cada fondo está en la retícula ``z₀ + j·n·h`` de los bancos (planos continuos) y queda por debajo
     del terreno en algún punto de su contorno (si no, no hay nada que excavar)."""
     step = profile.height_m * n_berm
@@ -415,7 +423,7 @@ def _check_levels(sources: Sequence[PitSource], request: PitRequest, code: str, 
         ground = sample_terrain(start, grid, points[:, 0], points[:, 1])
         if not bool((ground > source.level_m).any()):
             raise DesignError(PitCode.NOTHING_TO_EXCAVATE.value, obj=f"Corta «{request.name}» de la capa «{request.layer}»", field=source.name,
-                              value=source.level_m, name=request.name)
+                              value=source.level_m, name=request.name, start=start_label or request.start)
 
 
 def _noramp(project: StoreProject, request: PitRequest, code: str) -> Parts | None:
@@ -1017,7 +1025,7 @@ def prepare_pit_units(project: StoreProject, request: PitRequest, version: Versi
     ramps, road_profile_list, ramp_starts, point_layers = _ramps(reader, request, chosen, grid)
     sectors = _sectors(reader, request, chosen, by_sector, sector_codes, base, rose_by_sector)
     if request.mode is PitMode.UP:
-        _check_levels(sources, request, chosen, grid, start, profile_list[0], n_berm)
+        _check_levels(sources, request, chosen, grid, start, profile_list[0], n_berm, _start_label(registry, start_ref, start_name))
     params = PitParams.from_values(values)
     box = _box(sources)
     all_roses = [item for ranges in (rose or (), *rose_by_sector.values()) for item in ranges]

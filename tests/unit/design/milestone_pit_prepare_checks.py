@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import types
 import unittest
 from typing import Any
 
@@ -512,7 +513,17 @@ class RejectionsTest(PitPrepareCase):
         self.assertIn("127", error.text)
 
     def test_a_floor_above_the_ground(self) -> None:
-        self.assertEqual(self.refused(request(source="gis_fea_corta_aire"), "des.pit_nothing_to_excavate").values["value"], 205.0)
+        error = self.refused(request(source="gis_fea_corta_aire"), "des.pit_nothing_to_excavate")
+        self.assertEqual(error.values["value"], 205.0)
+        self.assertEqual(error.values["start"], FLAT, "T40h: dice de qué superficie parte")
+        self.assertIn(FLAT, error.text)
+
+    def test_the_start_label_of_a_chain_is_the_name_of_its_entity(self) -> None:
+        """T40h (UI-08): de una partida ``entity:<código>`` el rechazo cita el nombre de la entidad, no el del dato de su superficie (``des_psf_…``); de una superficie, su nombre."""
+        registry = types.SimpleNamespace(get=lambda code: types.SimpleNamespace(record=types.SimpleNamespace(name="Corta 2")) if code == "PIT-002" else None)
+        self.assertEqual(pit_store._start_label(registry, "entity:PIT-002", "des_psf_Corta 2"), "Corta 2")
+        self.assertEqual(pit_store._start_label(registry, "entity:PIT-009", "des_psf_X"), "des_psf_X")
+        self.assertEqual(pit_store._start_label(registry, FLAT, FLAT), FLAT)
 
     def test_a_name_field_the_layer_does_not_have(self) -> None:
         asked = dataclasses.replace(request(), fields=road_model.LayerFields(FLOORS, "no_existe"))

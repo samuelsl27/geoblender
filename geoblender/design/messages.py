@@ -3831,9 +3831,12 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.pit_nothing_to_excavate",
-        "Pit «{name}»: the floor «{field}» = {value} m is not below the ground at any point of its outline; there is nothing to excavate.",
-        "Corta «{name}»: el fondo «{field}» = {value} m no queda por debajo del terreno en ningún punto de su contorno; no hay nada "
-        "que excavar.",
+        "Pit «{name}»: the floor «{field}» = {value} m is not below the start surface «{start}» at any point of its outline; there is nothing to excavate. "
+        "Check the elevation of the floor or choose another «Start surface» (by default the pit starts from the last of the chain, which may be an earlier pit lower than "
+        "this floor: choose the ground).",
+        "Corta «{name}»: el fondo «{field}» = {value} m no queda por debajo de la superficie de partida «{start}» en ningún punto de su contorno; no hay nada "
+        "que excavar. Compruebe la cota del fondo o elija otra «Superficie de partida» (por defecto la corta parte de la última de la cadena, que puede ser una corta "
+        "anterior más baja que este fondo: elija el terreno).",
     ),
     Message(
         "des.pit_too_many_benches",

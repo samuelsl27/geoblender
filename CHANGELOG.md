@@ -159,6 +159,9 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     numéricos), no texto libre; «Más opciones» tiene su explicación en español; la pestaña «Proyecto» de la barra lateral parte en líneas lo que no cabe (el CRS, el modo, la ventana de
     trabajo) y, en solo lectura, dice en rojo qué es. La guía explica cómo abrir un proyecto, los dos campos y las tolerancias del desfase con sus valores de partida (los de las pruebas,
     siguen siendo HIPÓTESIS sin valor por defecto). El botón «Cancelar» del diálogo es el de Blender y sale en el idioma de Blender.
+  - **«Nueva corta…» avisa de la superficie de partida** Si la partida por defecto es una entidad (la última de la cadena: una corta anterior), el diálogo lo dice con su nombre bajo
+    «Superficie de partida» y cómo elegir el terreno en la lista; y el rechazo de un fondo que no queda por debajo de la superficie de partida (antes «no queda por debajo del terreno») dice cuál es esa
+    superficie y qué hacer. Sigue siendo la partida por defecto la última de la cadena; no cambia ninguna cifra minera.
   - **Lo que no hace todavía:** no parte de la concha óptima (R-49) ni diseña la corta de forma automática (R-55); no admite polígonos con huecos; no mezcla bancos por berma distintos entre sectores; la rampa de la
     descendente no se calcula con bancos dobles, con varios límites con rampa ni sobre el primer banco de altura variable; una rampa se ha medido sobre 20 bancos en espiral y 5 en zig-zag. Esta guía
     y lo anterior se han comprobado sin pantalla; falta verlo con el ratón y contrastarlo con el proyecto de referencia. Guía de uso: `docs/usuario/corta-por-bancos.md`.

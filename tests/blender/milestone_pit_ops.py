@@ -239,6 +239,24 @@ class PitOpsTest(unittest.TestCase):
                 held = draw(cls, bpy.context, **{**self.fake().__dict__, "show_more": False, field: value})
                 self.assertIn("Tolerancia del arco (m)", held.texts(), "lo escrito en un campo plegado se enseña")
 
+    def test_a3_the_dialog_says_which_surface_it_starts_from(self) -> None:
+        """RF-018-03, T40h (ensayo de CE-018-13): si la partida es una entidad (por defecto, la última de la cadena: otra corta), el diálogo lo **avisa antes de calcular** con su nombre
+        legible y dice cómo elegir el terreno; con una superficie no hay aviso; y el diálogo sigue cabiendo en 1001 px."""
+        cls = self.pit
+        listed = [("entity:PIT-002", "Corta «Corta 2» (PIT-002)", "x"), (self.terrain["llano"], "llano", "y")]
+        with mock.patch.object(self.panels, "platform_start_items", return_value=listed):
+            self.assertIsNone(self.des_pit._start_notice(self.terrain["llano"]))
+            text = self.des_pit._start_notice("entity:PIT-002")
+            self.assertIn("Corta «Corta 2» (PIT-002)", text)
+            self.assertIn("Superficie de partida", text)
+            self.assertNotIn("entity:", text, "UI-08")
+            for mode in ("UP", "DOWN"):
+                shown = draw(cls, bpy.context, **{**self.fake().__dict__, "mode": mode, "start": "entity:PIT-002"})
+                self.assertTrue([t for t in shown.texts() if "Corta 2" in t], "el aviso se dibuja")
+                self.assertLessEqual(self.height(shown), self.WINDOW_PX, f"{mode}: {self.height(shown)} px")
+            plain = draw(cls, bpy.context, **{**self.fake().__dict__, "start": self.terrain["llano"]})
+            self.assertFalse([t for t in plain.texts() if "Corta 2" in t])
+
     # --- b: la petición -----------------------------------------------------------------------
 
     def test_b_the_request_of_the_dialog(self) -> None:
@@ -467,6 +485,18 @@ class PitOpsTest(unittest.TestCase):
                 bpy.ops.geoblender.des_entity_calculate("EXEC_DEFAULT", entity="PIT-001")
             self.assertIn("ya tiene resultado", str(caught.exception))
             later.assert_not_called()
+
+    def test_k_a_pit_with_a_rose_after_another_pit_calculates_choosing_the_ground(self) -> None:
+        """RF-018-03, RF-018-07, T40h (el ensayo de CE-018-13 no pudo calcular con roseta porque la partida por defecto era la corta anterior): con otra corta ya en la cadena, la corta con roseta
+        se calcula partiendo del terreno elegido en la lista (el rechazo que nombra la superficie de partida está en ``milestone_pit_prepare_checks`` y ``test_pit_params``)."""
+        self.refresh()
+        before = self.state()
+        stale = self.des_ops.calculation()
+        self.assertIsNone(stale)
+        held = self.calculate_pit(self.form(name="Con roseta", rose=self.rose, n_berm="2", start=self.terrain["roseta"]))
+        self.assertEqual(held.name, "Con roseta")
+        self.assertEqual(self.state(), before, "calcular no escribe nada")
+        self.des_ops.discard_calculation()
 
     # --- z: desactivar -----------------------------------------------------------------------------
 
