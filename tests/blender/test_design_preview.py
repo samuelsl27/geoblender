@@ -88,7 +88,7 @@ PERIMETER = (2.0, 2.0, 56.0, 56.0)
 TOWER = (20.0, 20.0, 26.0, 26.0)
 SECTORS = {"Sector 1": (2.0, 2.0, 30.0, 56.0), "Sector 2": (30.0, 2.0, 56.0, 56.0)}
 SEEDS_IN_SECTOR_1 = 14 * 27  # centros de celda (x = 3, 5 … 29; y = 3, 5 … 55) dentro del sector 1
-SIZE = (600, 400)  # la región, en píxeles
+SIZE = (1920, 1001)  # la región, en píxeles (la ventana de la 019: RF-019-19)
 HALF = 60.0  # la vista desde arriba: 120 m de ancho
 MAX_PUMPS = 20_000
 

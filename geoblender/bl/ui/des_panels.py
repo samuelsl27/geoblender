@@ -2628,6 +2628,29 @@ def draw_wrapped(layout: Any, shown_text: str, width_px: int, *, alert: bool = F
     _draw_text(layout, shown_text, labels.dialog_width(width_px), alert=alert)
 
 
+def fold_kinds(texts: Sequence[str]) -> tuple[list[str], str]:
+    """Los textos del tipo de cada campo de un cuadro de un diálogo («HIPÓTESIS: sin valor por defecto, lo elige usted»; UI-09, RF-019-19) sin repetir el que se repite: devuelve el de cada
+    campo, vacío donde lo dice el compartido, y el compartido (el que aparece más de una vez y más que ningún otro; el primero si empatan), que se dice **una vez**, bajo el cuadro. Sin
+    ninguno repetido, cada campo conserva el suyo y no hay compartido (``""``)."""
+    counts: dict[str, int] = {}
+    for text in texts:
+        counts[text] = counts.get(text, 0) + 1
+    shared = ""
+    best = 1
+    for text in texts:
+        if counts[text] > best:
+            shared, best = text, counts[text]
+    return [("" if shared and text == shared else text) for text in texts], shared
+
+
+def draw_shared_kind(box: Any, kinds: Sequence[str], shared: str) -> None:
+    """El tipo compartido de :func:`fold_kinds`, **una vez** bajo el cuadro ``box`` (UI-09): solo el texto si ningún campo conserva el suyo; «Los demás: …» si alguno lo conserva."""
+    if not shared:
+        return
+    text = tr("The others: {kind}", kind=shared) if any(kinds) else shared
+    box.label(text=text, translate=False)
+
+
 def _draw_blocked(layout: Any, blocked: str | None, width: float) -> None:
     """Por qué la ventana se ve y no se cambia (RF-013-33), en alerta y con el candado."""
     if blocked is None:

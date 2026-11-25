@@ -657,11 +657,14 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
         if more:
             tolerances = layout.box()
             tolerances.prop(self, "corner", text=tr("Corner of the offset"), translate=False)
-            for prop, param in _tolerance_rows():
-                label = {"arc_tol": tr("Arc tolerance (m)"), "simplify": tr("Simplification tolerance (m)"), "close_radius": tr("Closing radius (m)"),
-                         "az_window": tr("Azimuth window (m)")}[prop]
-                tolerances.prop(self, prop, text=label, translate=False)
-                tolerances.label(text=_pit_param_text(param), translate=False)  # el tipo de cada tolerancia (RF-018-10, D-14)
+            labels = {"arc_tol": tr("Arc tolerance (m)"), "simplify": tr("Simplification tolerance (m)"), "close_radius": tr("Closing radius (m)"),
+                      "az_window": tr("Azimuth window (m)")}
+            kinds, shared = des_panels.fold_kinds([_pit_param_text(param) for _prop, param in _tolerance_rows()])
+            for (prop, _param), kind in zip(_tolerance_rows(), kinds, strict=True):
+                tolerances.prop(self, prop, text=labels[prop], translate=False)
+                if kind:
+                    tolerances.label(text=kind, translate=False)  # el tipo de la tolerancia que difiere (RF-018-10, D-14)
+            des_panels.draw_shared_kind(tolerances, kinds, shared)  # el tipo, una vez (UI-09)
         layout.prop(self, "start", text=tr("Start surface"), translate=False)
         notice = _start_notice(self.start)
         if notice is not None:
@@ -1679,10 +1682,13 @@ class GEOBLENDER_OT_des_expand_bench(_CreatesInSteps, _CalculateAndCreate, Desig
         sectors.prop(self, "sector_n_berm", text=tr("Benches per berm by sector"), translate=False)
         tolerances = layout.box()
         tolerances.prop(self, "corner", text=tr("Corner of the offset"), translate=False)
-        for prop, param, label in (("arc_tol", "arc_tol_m", tr("Arc tolerance (m)")), ("simplify", "simplify_m", tr("Simplification tolerance (m)")),
-                                   ("az_window", "az_window_m", tr("Azimuth window (m)"))):
+        rows = (("arc_tol", "arc_tol_m", tr("Arc tolerance (m)")), ("simplify", "simplify_m", tr("Simplification tolerance (m)")), ("az_window", "az_window_m", tr("Azimuth window (m)")))
+        kinds, shared = des_panels.fold_kinds([_pit_param_text(param) for _prop, param, _label in rows])
+        for (prop, _param, label), kind in zip(rows, kinds, strict=True):
             tolerances.prop(self, prop, text=label, translate=False)
-            tolerances.label(text=_pit_param_text(param), translate=False)  # el tipo de cada tolerancia (RF-018-10, D-14)
+            if kind:
+                tolerances.label(text=kind, translate=False)  # el tipo de la tolerancia que difiere (RF-018-10, D-14)
+        des_panels.draw_shared_kind(tolerances, kinds, shared)  # el tipo, una vez (UI-09)
 
     # --- Lo pedido ----------------------------------------------------------------------------
 

@@ -11131,6 +11131,12 @@ es = "… y 1 línea más del resumen (el informe de la orden la lleva)"
 ["… and {count} more lines of the summary (the report of the order has them all)"]
 es = "… y {count} líneas más del resumen (el informe de la orden las lleva todas)"
 
+["… and {count} more lines (the report of the order has them)"]
+es = "… y {count} líneas más (el informe de la orden las lleva)"
+
+["The others: {kind}"]
+es = "Los demás: {kind}"
+
 ["{area} m² of the carriageway do not end up on the level profile of the road (see the warnings): the road is not created without your express confirmation; the button that creates it confirms it"]
 es = "{area} m² de la calzada no quedan en su rasante (véanse los avisos): la pista no se crea sin su confirmación expresa; el botón que la crea la confirma"
 

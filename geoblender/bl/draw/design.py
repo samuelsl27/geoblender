@@ -148,8 +148,8 @@ POINT_SHADER = "POINT_FLAT_COLOR"
 """El *shader* de los puntos de semilla: posición y color por vértice, con el tamaño del estado."""
 SUMMARY_TOP_PX = 72.0
 """Lo que queda de espacio por arriba para los textos propios de Blender en la Vista 3D."""
-SUMMARY_WIDTH_FRACTION = 0.6
-"""Lo que ocupa como mucho el resumen del ancho de la región."""
+SUMMARY_WIDTH_FRACTION = 0.4
+"""Lo que ocupa como mucho el resumen del ancho de la región (RF-019-19, UI-12): menos de la mitad, para que su borde derecho no llegue al centro de la vista."""
 
 # La cantera con dos superficies (spec 014, T23; RF-014-04).
 AREA = "excavation_area"
@@ -898,8 +898,14 @@ def summary_items(summary: Sequence[tuple[str, bool]], measure: Callable[[str], 
     limit = max(60.0 * scale, (size[0] - covered) * SUMMARY_WIDTH_FRACTION - 2.0 * margin)
     lines = [(part, alert) for text, alert in summary
              for part in wrap_text(text, measure, limit)]
-    width = max(float(measure(part)) for part, _alert in lines)
     top = size[1] - margin - SUMMARY_TOP_PX * scale
+    room = int((top - pad - size[1] / 2.0) // row)  # las filas que caben por encima del centro (RF-019-19, UI-12)
+    if len(lines) > max(room, 1):
+        keep = max(room, 1) - 1
+        hidden = len(lines) - keep
+        lines = lines[:keep] + [(tr("… and {count} more lines (the report of the order has them)",
+                                    count=format_number(float(hidden), 0)), False)]
+    width = max(float(measure(part)) for part, _alert in lines)
     height = len(lines) * row
     items: list[Any] = [Box(left - pad, top - height - pad, left + width + pad, top + pad,
                             dh_overlay.PANEL)]

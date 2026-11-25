@@ -8515,10 +8515,14 @@ def _draw_route_params(layout: Any, self: Any) -> None:
     """Los nueve parámetros de la ruta de «trazar» en el diálogo ``self``, **cada uno con su tipo** (HIPÓTESIS sin valor por defecto y el presupuesto con el suyo: :func:`_route_text`)."""
     route = layout.box()
     route.label(text=tr("Search of the route: the type of each value is shown"), translate=False)
-    for prop, param, label in _route_rows():
+    rows = _route_rows()
+    kinds, shared = des_panels.fold_kinds([_route_text(param) for _prop, param, _label in rows])
+    for (prop, _param, label), kind in zip(rows, kinds, strict=True):
         row = route.row()
         row.prop(self, prop, text=label, translate=False)
-        row.label(text=_route_text(param), translate=False)
+        if kind:
+            row.label(text=kind, translate=False)
+    des_panels.draw_shared_kind(route, kinds, shared)  # el tipo, una vez (UI-09)
 
 
 class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _CreatesInSteps, _ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
@@ -9063,10 +9067,14 @@ class GEOBLENDER_OT_des_road_access(_CreatesInSteps, _ChainsEntityLayer, _Calcul
         box.prop(self, "name_field", text=tr("Name field"), translate=False)
         walkable = layout.box()
         walkable.label(text=tr("Walkable ground and berms: the type of each value is shown"), translate=False)
-        for prop, param, label in _access_rows():
+        rows = _access_rows()
+        kinds, shared = des_panels.fold_kinds([_access_text(param) for _prop, param, _label in rows])
+        for (prop, _param, label), kind in zip(rows, kinds, strict=True):
             row = walkable.row()
             row.prop(self, prop, text=label, translate=False)
-            row.label(text=_access_text(param), translate=False)
+            if kind:
+                row.label(text=kind, translate=False)
+        des_panels.draw_shared_kind(walkable, kinds, shared)  # el tipo, una vez (UI-09)
 
     # --- Lo pedido ----------------------------------------------------------------------------
 
