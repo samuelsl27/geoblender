@@ -60,6 +60,7 @@ from bpy.props import (
 )
 
 from ...core.paths import READ_ONLY_DIRS_ENV, READ_ONLY_DIRS_SEPARATOR, ReadOnlyDirs
+from .appearance import GEOBLENDER_PG_core_appearance
 
 # Valores por defecto y límites del umbral del cerrojo (spec 002 §11; core.project.lock).
 LOCK_STALE_DEFAULT = 30
@@ -341,6 +342,13 @@ class GEOBLENDER_PG_core_object(bpy.types.PropertyGroup):
             "tell whether the view is up to date"
         ),
         default="",
+        options=_STATIC,
+    )
+    # Spec 019 (T07; RF-019-07): el aspecto del elemento en la vista (sin coordenadas).
+    look: PointerProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_appearance,
+        name="Appearance",
+        description="How the element looks in the views: color, transparency, visibility and more",
         options=_STATIC,
     )
     figures: CollectionProperty(  # type: ignore[valid-type]

@@ -42,6 +42,7 @@ from __future__ import annotations
 from ...core import i18n
 from ..registry import PropertyTranslator, register_classes, unregister_classes
 from . import (
+    appearance,
     core,
     core_constraints,
     des,
@@ -59,7 +60,7 @@ from . import (
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los grupos antes de quien los usa.
 classes: tuple[type, ...] = (
-    *core.classes, *gis.classes, *provenance.classes, *dh.classes, *views.classes,
+    *appearance.classes, *core.classes, *gis.classes, *provenance.classes, *dh.classes, *views.classes,
     *versions.classes, *res.classes, *core_constraints.classes, *des.classes, *ui.classes,
     *jobs.classes, *preferences.classes
 )

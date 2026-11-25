@@ -12760,3 +12760,35 @@ es = "no es un número (por ejemplo 1 234,5 o 1234.5)"
 
 ["Magnitude"]
 es = "Magnitud"
+
+# El aspecto de un elemento en su objeto (spec 019, T07) ---------------------------------
+
+["Appearance"]
+es = "Aspecto"
+
+["How the element looks in the views: color, transparency, visibility and more"]
+es = "Cómo se ve el elemento en las vistas: color, transparencia, visibilidad y más"
+
+["Name shown for the element in the views"]
+es = "Nombre con que se muestra el elemento en las vistas"
+
+["Color of the element in the views"]
+es = "Color del elemento en las vistas"
+
+["Transparency of the element in the views, in percent"]
+es = "Transparencia del elemento en las vistas, en porcentaje"
+
+["Show the element in the views"]
+es = "Mostrar el elemento en las vistas"
+
+["Width of the lines of the element, in pixels"]
+es = "Grosor de las líneas del elemento, en píxeles"
+
+["Size of the points of the element, in pixels"]
+es = "Tamaño de los puntos del elemento, en píxeles"
+
+["Show the names of the parts of the element"]
+es = "Mostrar los nombres de las partes del elemento"
+
+["Show the edges of the element over its faces"]
+es = "Mostrar las aristas del elemento sobre sus caras"
