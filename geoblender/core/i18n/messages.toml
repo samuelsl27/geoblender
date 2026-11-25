@@ -12733,3 +12733,21 @@ es = "Elementos"
 
 ["Colored by {legend}"]
 es = "Coloreado por {legend}"
+
+["Notice"]
+es = "Aviso"
+
+["Time to live"]
+es = "Plazo"
+
+["the level must be one of: {levels}"]
+es = "el nivel debe ser uno de: {levels}"
+
+["the message cannot be empty"]
+es = "el mensaje no puede estar vacío"
+
+["the time to live must be greater than zero"]
+es = "el plazo debe ser mayor que cero"
+
+["the reason must be one of: {reasons}"]
+es = "el motivo debe ser uno de: {reasons}"

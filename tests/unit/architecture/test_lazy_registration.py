@@ -131,6 +131,8 @@ HEAVY: frozenset[str] = frozenset({
     # El aspecto de los elementos de la 019 (spec 019, T02): el catálogo, los predefinidos y la validación; los pide el panel
     # del elemento al usarlo, no habilitar (RNF-001-03, RNF-019-04).
     "core.appearance.catalog", "core.appearance.merge", "core.appearance.model",
+    # La cola de avisos con caducidad (spec 019, T05): la usa la barra de estado al avisar, no habilitar.
+    "core.notices",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 
