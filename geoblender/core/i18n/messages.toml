@@ -12804,6 +12804,9 @@ es = "Restablecido: {what} de {count} elementos"
 ["various values"]
 es = "varios valores"
 
+["a legend"]
+es = "una leyenda"
+
 ["{count} elements"]
 es = "{count} elementos"
 

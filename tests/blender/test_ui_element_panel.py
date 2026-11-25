@@ -419,6 +419,92 @@ for _name in [n for n in dir(ElementLookPanelTest) if n.startswith("test_") and 
     setattr(ElementMultiPanelTest, _name, None)  # las de T09 y T10 no se repiten
 
 
+class _FakeLegend:
+    """Una leyenda por campo de prueba: ``current`` es el campo activo («» = ninguna) y ``fields`` los que ofrece."""
+
+    def __init__(self, ui_context: Any, current: str = "elem:Cu") -> None:
+        self.field = ui_context.Field
+        self.active = current
+
+    def fields(self, context: Any) -> list[Any]:
+        return [self.field("elem:Cu", "Cu (%)"), self.field("elem:Au", "Au (g/t)")]
+
+    def current(self, context: Any) -> str:
+        return self.active
+
+    def apply(self, context: Any, field: str) -> None:
+        self.active = field
+
+
+class ElementLegendPanelTest(ElementLookPanelTest):
+    """Spec 019, T13 (HU-019-1; RF-019-13; plan 019 §5.2, D-8): el elemento coloreado por una leyenda por campo."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ui_context = vf.extension("bl.ui.context")
+        self.legend = _FakeLegend(self.ui_context)
+        self.ui_context.register_legend_provider("DRILLHOLES", self.legend)
+        self.addCleanup(self.ui_context.unregister_legend_provider, "DRILLHOLES")
+
+    def holes(self) -> bpy.types.Object:
+        """Un elemento de tipo sondeos (coloreable por leyenda), activo."""
+        obj = self.surface()
+        obj.geoblender.kind = "DRILLHOLES"
+        return obj
+
+    # Heredadas de la T10 y de la T12: no se repiten
+    test_frequent_up_front_and_the_rest_folded = None  # type: ignore[assignment]
+    test_default_is_shown_as_such_and_reset_button_goes_back = None  # type: ignore[assignment]
+    test_color_and_transparency_are_seen_in_the_object = None  # type: ignore[assignment]
+    test_label_changes_the_outliner_not_the_stable_name = None  # type: ignore[assignment]
+    test_out_of_range_is_rejected_with_object_field_and_value = None  # type: ignore[assignment]
+    test_reset_says_what_it_restored = None  # type: ignore[assignment]
+    test_look_panel_is_where_the_card_is = None  # type: ignore[assignment]
+
+    def test_active_legend_is_named_color_is_not_editable_transparency_is(self) -> None:
+        """RF-019-13, D-8, UI-04, UI-30/31: con una leyenda activa el panel dice «Coloreado por <leyenda>» con el
+        nombre de la persona (sin código); el color no se ofrece, la transparencia sí."""
+        self.holes()
+        drawn = self.drawn(LOOK)
+        self.assertIn("Coloreado por Cu (%)", drawn.texts())
+        self.assertNotIn("elem:Cu", " ".join(drawn.texts()))
+        self.assertEqual(self.props(LOOK), ["label", "transparency", "visible"])
+
+    def test_transparency_still_applies_with_a_legend(self) -> None:
+        """RF-019-13: la transparencia se edita aunque mande la leyenda."""
+        obj = self.holes()
+        obj.geoblender.look.transparency = 30
+        self.assertAlmostEqual(obj.color[3], 0.7, places=3)
+
+    def test_removing_the_legend_brings_back_the_panel_color(self) -> None:
+        """RF-019-13, D-8: el color guardado no se pierde con la leyenda; al quitarla, el panel lo ofrece de nuevo."""
+        obj = self.holes()
+        obj.geoblender.look.color = (1.0, 0.0, 0.0)
+        self.assertNotIn("color", self.props(LOOK))
+        self.legend.active = ""
+        drawn = self.drawn(LOOK)
+        self.assertIn("color", self.props(LOOK))
+        self.assertFalse([text for text in drawn.texts() if text.startswith("Coloreado por")])
+        self.assertEqual(tuple(round(c, 3) for c in obj.geoblender.look.color), (1.0, 0.0, 0.0))
+
+    def test_type_without_legend_keeps_its_color(self) -> None:
+        """RF-019-13: un tipo que no se colorea por leyenda sigue con su color editable."""
+        self.surface()
+        self.assertIn("color", self.props(LOOK))
+        self.assertFalse([text for text in self.drawn(LOOK).texts() if text.startswith("Coloreado por")])
+
+    def test_legend_text_fits(self) -> None:
+        """UI-28: «Coloreado por <leyenda>» cabe a las escalas de la spec."""
+        self.holes()
+        width = self.labels.sidebar_width(bpy.context)
+        for scale in at_scales():
+            assert_fits(self, self.drawn(LOOK, width_px=width), width, scale=scale)
+
+
+for _name in [n for n in dir(ElementLegendPanelTest) if n.startswith("test_") and n not in vars(ElementLegendPanelTest)]:
+    setattr(ElementLegendPanelTest, _name, None)  # las de T09, T10 y T12 no se repiten
+
+
 PROJECT = "GEOBLENDER_PT_ui_project"
 FOREIGN = "GEOBLENDER_PT_ui_foreign"
 NEW_PROJECT = "geoblender.core_new_project"

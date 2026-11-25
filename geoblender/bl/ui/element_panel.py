@@ -120,6 +120,32 @@ def _group(context: Any) -> list[Any]:
     return group if obj is not None and len(group) > 1 and group[0] is obj else []
 
 
+def legend_of(obj: Any, context: Any) -> str | None:
+    """El nombre de la leyenda por campo que colorea a ``obj`` (RF-019-13, D-8): la que da el proveedor de la Leyenda de
+    su tipo si el tipo se colorea por leyenda y hay un campo activo; con el nombre de la persona (el título del campo),
+    nunca su código. ``None`` si ninguna manda."""
+    from ...core.appearance import catalog
+    from . import context as ui_context
+
+    kind = str(obj.geoblender.kind)
+    if not catalog.legend_driven(kind):
+        return None
+    provider = ui_context.kind_legend_provider(kind)
+    if provider is None:
+        return None
+    current = provider.current(context)
+    if not current:
+        return None
+    return next((field.label for field in provider.fields(context) if field.id == current), tr("a legend"))
+
+
+def _color_rule(obj: Any, group: list[Any] | None, context: Any) -> Any:
+    """Quién manda en el color del elemento o de la selección (``core.appearance.merge.color_rule``)."""
+    from ...core.appearance import merge
+
+    return merge.color_rule([legend_of(item, context) for item in (group or [obj])])
+
+
 def _mixed(group: list[Any]) -> Any:
     """El aspecto común de ``group`` (``core.appearance.merge``): un valor por propiedad común o «varios valores»."""
     from ...core.appearance import merge
@@ -128,7 +154,8 @@ def _mixed(group: list[Any]) -> Any:
     return merge.common([appearance.read(obj) for obj in group])
 
 
-def draw_look(layout: Any, obj: Any, props: tuple[str, ...], group: list[Any] | None = None) -> None:
+def draw_look(layout: Any, obj: Any, props: tuple[str, ...], group: list[Any] | None = None,
+              context: Any = None) -> None:
     """Las propiedades de aspecto ``props`` que ofrece el tipo de ``obj``, con selectores y deslizadores nativos
     (``Object.geoblender.look``). Junto al valor que nadie cambió, «predefinido» (UI-03, y en texto, no solo en color:
     UI-30/31); junto al cambiado, un botón que vuelve al predefinido (``ui_appearance_reset``). No lee el proyecto."""
@@ -136,8 +163,12 @@ def draw_look(layout: Any, obj: Any, props: tuple[str, ...], group: list[Any] | 
     changed_props = _changed_props(obj, props)
     mixed = _mixed(group) if group else None
     is_mixed = hasattr(mixed, "is_various")  # una selección que no es toda igual
+    rule = _color_rule(obj, group, context if context is not None else bpy.context)
     for prop in _offered(obj, props):
         if is_mixed and prop not in mixed.props:  # con tipos distintos, solo lo común (P-10)
+            continue
+        if prop == "color" and not rule.editable:  # manda la leyenda: se dice y no se edita (RF-019-13, D-8)
+            card.draw_lines(layout, rule.text, labels.sidebar_width(bpy.context) - card.BOX_MARGIN_PX, icon="COLOR")
             continue
         various = is_mixed and mixed.is_various(prop)
         row = layout.row(align=True)
@@ -170,7 +201,7 @@ class GEOBLENDER_PT_ui_element_look(bpy.types.Panel):
         if obj is None:
             return
         group = _group(context)
-        draw_look(self.layout, obj, FREQUENT, group)
+        draw_look(self.layout, obj, FREQUENT, group, context)
         if _changed_props(obj, FREQUENT + RARE):
             self.layout.operator(RESET_OPERATOR).scope = "SELECTION" if group else "ELEMENT"
 
@@ -197,7 +228,7 @@ class GEOBLENDER_PT_ui_element_look_more(bpy.types.Panel):
     def draw(self, context: Any) -> None:
         obj = _shown_object(context)
         if obj is not None:
-            draw_look(self.layout, obj, RARE, _group(context))
+            draw_look(self.layout, obj, RARE, _group(context), context)
 
 
 PROJECT_PANEL = "GEOBLENDER_PT_ui_project"
