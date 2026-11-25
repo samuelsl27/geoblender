@@ -216,6 +216,9 @@ def _close() -> tuple[str, ...]:
     _stop_heartbeat()
     if project is None:
         return ()
+    from . import appearance  # al usarlo: el aspecto pendiente se escribe antes de cerrar (spec 019, T08)
+
+    appearance.flush_before_close(project)
     warnings = project.close()
     for message in warnings:
         notify(message)

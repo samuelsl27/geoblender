@@ -12792,3 +12792,29 @@ es = "Mostrar los nombres de las partes del elemento"
 
 ["Show the edges of the element over its faces"]
 es = "Mostrar las aristas del elemento sobre sus caras"
+
+# Escritura diferida, restablecer y deshacer el aspecto (spec 019, T08) -------------------
+
+["Reset: {what} of «{name}»"]
+es = "Restablecido: {what} de «{name}»"
+
+["Reset: {what} of {count} elements"]
+es = "Restablecido: {what} de {count} elementos"
+
+["all the appearance"]
+es = "todo el aspecto"
+
+["Appearance saved only in this file: the project is read-only"]
+es = "Aspecto guardado solo en este fichero: el proyecto está en solo lectura"
+
+["Appearance saved only in this file: the project is of schema {schema}, without appearance"]
+es = "Aspecto guardado solo en este fichero: el proyecto es del esquema {schema}, sin aspecto"
+
+["Select an element of the project"]
+es = "Seleccione un elemento del proyecto"
+
+["Reset: nothing to reset"]
+es = "Nada que restablecer"
+
+["Property"]
+es = "Propiedad"

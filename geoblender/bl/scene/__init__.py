@@ -56,6 +56,7 @@ from . import (
     live,
     project_session,
     res_views,
+    appearance,
     undo_watch,
     versions,
     view_link,
@@ -75,6 +76,7 @@ def register() -> None:
         view_link.register()
         georef.register()
         undo_watch.register()
+        appearance.register()
         gis_views.register()
         dh_view.register()
         res_views.register()
@@ -92,6 +94,7 @@ def register() -> None:
         res_views.unregister()
         dh_view.unregister()
         gis_views.unregister()
+        appearance.unregister()
         undo_watch.unregister()
         georef.unregister()
         view_link.unregister()
@@ -113,6 +116,7 @@ def unregister() -> None:
         res_views.unregister()
         dh_view.unregister()
         gis_views.unregister()
+        appearance.unregister()
         undo_watch.unregister()
         georef.unregister()
         view_link.unregister()

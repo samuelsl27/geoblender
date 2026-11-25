@@ -744,3 +744,25 @@ description.es = "Crea un perfil de pista, completa los valores que le faltan o 
 entry = "017"
 action = "P"
 frequency = 1
+
+[[command]]
+key = "geoblender.ui_appearance_reset"
+kind = "internal"
+label.en = "Reset appearance"
+label.es = "Restablecer el aspecto"
+description.en = "Restore the default appearance of the element (or of a property). Only the appearance table of the project is written: the data, its versions and its provenance do not change"
+description.es = "Devuelve el aspecto predefinido al elemento (o a una propiedad). Solo se escribe la tabla de aspecto del proyecto: el dato, sus versiones y su procedencia no cambian"
+entry = "003"
+action = "A"
+frequency = 3
+
+[[command]]
+key = "geoblender.ui_appearance_flush"
+kind = "internal"
+label.en = "Save the pending appearance"
+label.es = "Guardar el aspecto pendiente"
+description.en = "Write now the appearance changes still waiting (they are written 0.5 s after the last change). Only the appearance table of the project is written"
+description.es = "Escribe ahora los cambios de aspecto que esperan (se escriben 0,5 s después del último cambio). Solo se escribe la tabla de aspecto del proyecto"
+entry = "003"
+action = "A"
+frequency = 3

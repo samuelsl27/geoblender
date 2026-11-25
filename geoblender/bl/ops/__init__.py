@@ -43,6 +43,7 @@ from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
 from . import (
+    appearance,
     core,
     core_constraints,
     core_provenance,
@@ -63,7 +64,8 @@ from . import (
 # contrato 2): core (spec 002) y views (spec 010), ui y geo (spec 003; geo: el recorte de la
 # vista, D-1), jobs (spec 004), core_provenance (spec 008) y versions (spec 009).
 classes: tuple[type, ...] = (*core.classes, *views.classes, *ui.classes, *geo.classes,
-                             *jobs.classes, *core_provenance.classes, *versions.classes)
+                             *jobs.classes, *core_provenance.classes, *versions.classes,
+                             *appearance.classes)
 
 # Los de la topografía (spec 006), los de los sondeos (spec 005), los de la cubicación (spec 011)
 # y los de las restricciones (spec 012), después.

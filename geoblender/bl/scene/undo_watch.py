@@ -103,6 +103,12 @@ def _restored_safely(scene: Any) -> None:
         restored(scene)
     except Exception:  # noqa: BLE001 - un manejador que falla no tumba Blender
         LOGGER.exception("No se pudo avisar de lo registrado tras deshacer o rehacer")
+    try:
+        from . import appearance  # al usarlo; R-5 (spec 019, T08): tras deshacer o rehacer, manda la tabla del aspecto
+
+        appearance.reconcile()
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("No se pudo conciliar el aspecto con el proyecto tras deshacer o rehacer")
 
 
 @persistent
