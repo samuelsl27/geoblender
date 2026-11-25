@@ -12852,3 +12852,42 @@ es = "Cómo se ve el elemento en las vistas: rótulo, color, transparencia y vis
 
 ["Line width, point size, labels and wireframe of the element, only the ones its type has"]
 es = "Grosor de línea, tamaño de punto, etiquetas y malla visible del elemento, solo los que tiene su tipo"
+
+# Sin elemento activo y objeto ajeno (spec 019, T11) ---------------------------------------
+
+["Project status"]
+es = "Estado del proyecto"
+
+["The state of the project when no element of it is active, and what can be done now"]
+es = "El estado del proyecto cuando no hay un elemento suyo activo, y lo que se puede hacer ahora"
+
+["No project open"]
+es = "No hay ningún proyecto abierto"
+
+["Create or open a project to start working"]
+es = "Crea o abre un proyecto para empezar a trabajar"
+
+["Project: {name}"]
+es = "Proyecto: {name}"
+
+["CRS: EPSG:{epsg}"]
+es = "SRC: EPSG:{epsg}"
+
+["Select an element in the 3D view to see its card and appearance"]
+es = "Selecciona un elemento en la vista 3D para ver su ficha y su aspecto"
+
+["Object outside the project"]
+es = "Objeto fuera del proyecto"
+
+["An object of Blender that is not part of the project: only its type, name, visibility and color; nothing is written in the project"]
+es = "Un objeto de Blender que no es del proyecto: solo su tipo, nombre, visibilidad y color; no se escribe nada en el proyecto"
+
+["Not part of the project"]
+es = "No pertenece al proyecto"
+
+["It is an object of Blender: nothing about it is stored in the project"]
+es = "Es un objeto de Blender: no se guarda nada de él en el proyecto"
+
+["Blender type: {kind}"]
+es = "Tipo de Blender: {kind}"
+

@@ -6,9 +6,11 @@
 ``bl.ui.card``: lo que la barra N de la Vista 3D (``view_panels``) enseñaba como «Elemento activo», que ahora es una línea
 con un botón que lleva aquí (UI-29: cada dato, en un sitio). Va **solo** cuando el filtro reversible de los paneles
 nativos (T15) quite los de Blender; hasta entonces se registra el último y no reordena nada (``bl_order`` no reordena los
-paneles nativos en 5.2, solo cuenta el orden de registro). Sin objeto activo la pestaña Objeto no existe: el editor queda
-vacío (se acepta; T11 dice el estado del proyecto). Solo se muestra con un proyecto abierto y un objeto que es la vista de
-un dato suyo (el objeto ajeno, T11). El panel no tiene «Aceptar» (UI-27) ni escribe nada en el proyecto.
+paneles nativos en 5.2, solo cuenta el orden de registro). Sin objeto activo la pestaña Objeto no existe: el estado del proyecto va en Propiedades ▸
+Escena (T11, ``GEOBLENDER_PT_ui_project``; nombre, EPSG, versión activa y las acciones que sirven, o «no hay proyecto
+abierto» con crear y abrir). Con un objeto que no es de Geoblender, ``GEOBLENDER_PT_ui_foreign`` dice que no pertenece
+al proyecto y enseña su tipo, nombre, visibilidad y color de Blender, sin escribir nada en el proyecto (P-11, D-7). Esta ficha solo se muestra con un proyecto abierto y un objeto que es la vista de
+un dato suyo. El panel no tiene «Aceptar» (UI-27) ni escribe nada en el proyecto.
 
 La orden ``geoblender.ui_show_element`` (:mod:`bl.ops.element`) pone la pestaña Objeto en el editor de Propiedades.
 """
@@ -21,7 +23,7 @@ import bpy
 
 from ...core.i18n import tr
 from ..scene import project_session
-from . import card, view_panels
+from . import card, labels, view_panels
 
 TRANSLATION_CONTEXT = "Geoblender"
 ELEMENT_PANEL = "GEOBLENDER_PT_ui_element"
@@ -157,11 +159,105 @@ class GEOBLENDER_PT_ui_element_look_more(bpy.types.Panel):
             draw_look(self.layout, obj, RARE)
 
 
+PROJECT_PANEL = "GEOBLENDER_PT_ui_project"
+FOREIGN_PANEL = "GEOBLENDER_PT_ui_foreign"
+NEW_PROJECT = "geoblender.core_new_project"
+OPEN_PROJECT = "geoblender.core_open_project"
+CLOSE_PROJECT = "geoblender.core_close_project"
+NEW_VERSION = "geoblender.core_new_version"
+
+
+def _width(context: Any) -> float:
+    return labels.sidebar_width(context) - card.BOX_MARGIN_PX
+
+
+def _version_text() -> str:
+    """La versión activa del proyecto («V3 · título») o «sin versión»."""
+    from ..scene import versions
+
+    shown = versions.active()
+    if shown is None:
+        return tr("No version")
+    return f"{shown.code} · {shown.title}" if shown.title else str(shown.code)
+
+
+class GEOBLENDER_PT_ui_project(bpy.types.Panel):
+    """The state of the project when no element of it is active, and what can be done now"""
+
+    bl_idname = PROJECT_PANEL
+    bl_label = "Project status"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "scene"
+    bl_translation_context = TRANSLATION_CONTEXT
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _shown_object(context) is None and not _is_foreign(context)
+
+    def draw(self, context: Any) -> None:
+        layout, width = self.layout, _width(context)
+        project = project_session.current()
+        if project is None:
+            card.draw_lines(layout, tr("No project open"), width, icon="INFO")
+            card.draw_lines(layout, tr("Create or open a project to start working"), width)
+            layout.operator(NEW_PROJECT)
+            layout.operator(OPEN_PROJECT)
+            return
+        from ..scene import georef
+
+        reference = georef.project_georeference()
+        card.draw_lines(layout, tr("Project: {name}", name=project.name), width, icon="FILE_FOLDER")
+        if reference is not None:
+            card.draw_lines(layout, tr("CRS: EPSG:{epsg}", epsg=reference.crs_epsg), width)
+        card.draw_lines(layout, tr("Active version: {version}", version=_version_text()), width)
+        card.draw_lines(layout, tr("Select an element in the 3D view to see its card and appearance"), width)
+        layout.operator(NEW_VERSION)
+        layout.operator(CLOSE_PROJECT)
+
+
+def _is_foreign(context: Any) -> bool:
+    """Con un proyecto abierto, el objeto activo no es la vista de un dato suyo (una cámara, una luz, una malla ajena)."""
+    if project_session.current() is None:
+        return False
+    obj = view_panels._active_object(context)  # noqa: SLF001
+    return obj is not None and _shown_object(context) is None
+
+
+class GEOBLENDER_PT_ui_foreign(bpy.types.Panel):
+    """An object of Blender that is not part of the project: only its type, name, visibility and color; nothing is written in the project"""
+
+    bl_idname = FOREIGN_PANEL
+    bl_label = "Object outside the project"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "object"
+    bl_translation_context = TRANSLATION_CONTEXT
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _is_foreign(context)
+
+    def draw(self, context: Any) -> None:
+        layout, width = self.layout, _width(context)
+        obj = view_panels._active_object(context)  # noqa: SLF001
+        card.draw_lines(layout, tr("Not part of the project"), width, icon="INFO")
+        card.draw_lines(layout, tr("It is an object of Blender: nothing about it is stored in the project"), width)
+        kind = obj.bl_rna.properties["type"].enum_items[obj.type].name
+        card.draw_lines(layout, tr("Blender type: {kind}", kind=kind), width)
+        card.draw_lines(layout, tr("Name: {name}", name=obj.name), width)
+        layout.prop(obj, "hide_viewport", text=tr("Visible"), invert_checkbox=True, translate=False)
+        layout.prop(obj, "color", text=tr("Color"), translate=False)
+
+
 def localize() -> None:
     """Los títulos en el idioma de la interfaz (antes de registrar)."""
     GEOBLENDER_PT_ui_element.bl_label = tr("Geoblender element")
     GEOBLENDER_PT_ui_element_look.bl_label = tr("Appearance")
     GEOBLENDER_PT_ui_element_look_more.bl_label = tr("More appearance")
+    GEOBLENDER_PT_ui_project.bl_label = tr("Project status")
+    GEOBLENDER_PT_ui_foreign.bl_label = tr("Object outside the project")
 
 
-classes: tuple[type, ...] = (GEOBLENDER_PT_ui_element, GEOBLENDER_PT_ui_element_look, GEOBLENDER_PT_ui_element_look_more)
+classes: tuple[type, ...] = (GEOBLENDER_PT_ui_element, GEOBLENDER_PT_ui_element_look, GEOBLENDER_PT_ui_element_look_more,
+                             GEOBLENDER_PT_ui_project, GEOBLENDER_PT_ui_foreign)

@@ -333,5 +333,124 @@ class ElementLookPanelTest(ElementPanelTest):
         self.assertIsNotNone(obj)
 
 
+PROJECT = "GEOBLENDER_PT_ui_project"
+FOREIGN = "GEOBLENDER_PT_ui_foreign"
+NEW_PROJECT = "geoblender.core_new_project"
+OPEN_PROJECT = "geoblender.core_open_project"
+CLOSE_PROJECT = "geoblender.core_close_project"
+
+
+class ElementEmptyStatesTest(ElementPanelTest):
+    """Spec 019, T11 (HU-019-1; RF-019-11, RF-019-12; plan 019 P-11, D-7): sin elemento activo y objeto ajeno."""
+
+    # Heredadas de la T09: no se repiten
+    test_card_of_each_element_has_its_fields_in_two_boxes = None  # type: ignore[assignment]
+    test_new_element_says_no_provenance_yet = None  # type: ignore[assignment]
+    test_coordinates_are_text_and_absolute = None  # type: ignore[assignment]
+    test_lines_of_the_module_enter_the_card = None  # type: ignore[assignment]
+    test_sidebar_no_longer_repeats_the_card = None  # type: ignore[assignment]
+    test_panel_is_in_properties_object_tab_only_for_elements = None  # type: ignore[assignment]
+    test_drawing_does_not_read_the_project_and_fits = None  # type: ignore[assignment]
+
+    def deactivate(self) -> None:
+        bpy.context.view_layer.objects.active = None
+        self.panels.on_active_changed()
+
+    def foreign(self, kind: str = "CAMERA") -> bpy.types.Object:
+        """Un objeto de Blender que no es de Geoblender (una cámara o un cubo), activo."""
+        data = bpy.data.cameras.new("Cam") if kind == "CAMERA" else bpy.data.meshes.new("Cubo")
+        obj = bpy.data.objects.new("Ajeno", data)
+        bpy.context.scene.collection.objects.link(obj)
+        self.addCleanup(bpy.data.objects.remove, obj)
+        self.activate_object(obj)
+        return obj
+
+    def operators(self, panel: str) -> list[str]:
+        return [item.target for item in self.drawn(panel).of_kind("operator")]
+
+    def test_without_project_it_says_so_and_offers_new_and_open(self) -> None:
+        """RF-019-11, UI-09, UI-13: sin proyecto, el panel dice qué pasa y ofrece crear o abrir uno."""
+        self.ps.close()
+        self.deactivate()
+        self.assertTrue(getattr(bpy.types, PROJECT).poll(bpy.context))
+        lines = self.lines(PROJECT)
+        self.assertIn("No hay ningún proyecto abierto", lines)
+        self.assertEqual([op for op in self.operators(PROJECT)], [NEW_PROJECT, OPEN_PROJECT])
+
+    def test_without_element_it_shows_the_project_state(self) -> None:
+        """RF-019-11, UI-24/25: con proyecto y sin elemento activo, nombre, EPSG y versión activa, y las acciones
+        que sirven; no un panel vacío."""
+        self.three()
+        self.deactivate()
+        project = self.ps.current()
+        self.assertTrue(getattr(bpy.types, PROJECT).poll(bpy.context))
+        lines = self.lines(PROJECT)
+        self.assertIn(f"Proyecto: {project.name}", lines)
+        self.assertTrue(any(line.startswith("EPSG:") or "EPSG:" in line for line in lines), lines)
+        self.assertEqual(len([line for line in lines if line.startswith("Versión activa: ")]), 1, lines)
+        self.assertTrue(any("Selecciona un elemento" in line for line in lines), lines)
+        self.assertIn(CLOSE_PROJECT, self.operators(PROJECT))
+
+    def test_project_panel_goes_away_with_an_element_and_back_when_the_project_closes(self) -> None:
+        """RF-019-11 (caso límite): con un elemento activo del proyecto el panel de estado no sale; con el proyecto
+        cerrado y el elemento aún seleccionado, vuelve al estado sin elemento."""
+        grid, _mdt, _derived = self.three()
+        panel = getattr(bpy.types, PROJECT)
+        self.activate(grid.uid)
+        self.assertFalse(panel.poll(bpy.context))
+        self.assertFalse(getattr(bpy.types, FOREIGN).poll(bpy.context))
+        self.ps.close()
+        self.panels.on_active_changed()
+        self.assertTrue(panel.poll(bpy.context))
+        self.assertIn("No hay ningún proyecto abierto", self.lines(PROJECT))
+        self.assertFalse(getattr(bpy.types, ELEMENT).poll(bpy.context))
+
+    def test_camera_does_not_belong_to_the_project_and_writes_nothing(self) -> None:
+        """RF-019-12, P-11, D-7: con una cámara, «no pertenece al proyecto», tipo de Blender, nombre, visibilidad y
+        color; ni la ficha ni el aspecto del proyecto; el proyecto no cambia."""
+        self.three()
+        counter = self.data.change_counter()
+        obj = self.foreign("CAMERA")
+        self.assertTrue(getattr(bpy.types, FOREIGN).poll(bpy.context))
+        for panel in (ELEMENT, LOOK, PROJECT):
+            self.assertFalse(getattr(bpy.types, panel).poll(bpy.context), panel)
+        lines = self.lines(FOREIGN)
+        self.assertIn("No pertenece al proyecto", lines)
+        self.assertIn("Nombre: Ajeno", lines)
+        self.assertTrue(any(line.startswith("Tipo de Blender: ") for line in lines), lines)
+        props = [item.target for item in self.drawn(FOREIGN).of_kind("prop")]
+        self.assertEqual(props, ["hide_viewport", "color"])
+        obj.color = (1.0, 0.0, 0.0, 1.0)
+        self.assertEqual(self.data.change_counter(), counter)
+        self.assertFalse(self.operators(FOREIGN))
+
+    def test_foreign_mesh_is_the_same_and_has_no_appearance_data(self) -> None:
+        """RF-019-12: un cubo ajeno se trata igual (sin dato del proyecto); su aspecto de Geoblender no se toca."""
+        self.three()
+        obj = self.foreign("MESH")
+        self.assertTrue(getattr(bpy.types, FOREIGN).poll(bpy.context))
+        self.assertIn("No pertenece al proyecto", self.lines(FOREIGN))
+        self.assertEqual(str(obj.geoblender.dataset_uid), "")
+        self.assertFalse(obj.geoblender.look.is_property_set("color"))
+
+    def test_foreign_panel_not_without_project(self) -> None:
+        """Sin proyecto, el estado del proyecto manda (RF-019-11): el panel de objeto ajeno no sale."""
+        self.ps.close()
+        self.foreign("CAMERA")
+        self.assertFalse(getattr(bpy.types, FOREIGN).poll(bpy.context))
+        self.assertTrue(getattr(bpy.types, PROJECT).poll(bpy.context))
+
+    def test_panels_fit_at_three_scales(self) -> None:
+        """UI-28: las etiquetas caben a las escalas de la spec."""
+        self.three()
+        self.deactivate()
+        width = self.labels.sidebar_width(bpy.context)
+        for scale in at_scales():
+            assert_fits(self, self.drawn(PROJECT, width_px=width), width, scale=scale)
+        self.foreign("CAMERA")
+        for scale in at_scales():
+            assert_fits(self, self.drawn(FOREIGN, width_px=width), width, scale=scale)
+
+
 if __name__ == "__main__":
     unittest.main()
