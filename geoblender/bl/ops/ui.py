@@ -59,6 +59,10 @@
   revisión anterior (``geoblender_layout_rev`` frente a ``areas.LAYOUT_REV``); la confirmación
   dice cuáles y que las anteriores **no se borran ni se cambian**; cancelarla no deja nada. Sin
   disposición anterior, su ``poll`` falla con «ya está al día». Sin ``UNDO``: es interfaz.
+- ``geoblender.ui_blender_settings`` (spec 019, T19; RF-019-03; ADR-0032 punto 3): «Ajustes de Blender» abre una
+  ventana nueva (``wm.window_new``) que pasa, en el ciclo siguiente, a un espacio de trabajo no marcado («Layout»),
+  donde Propiedades es la nativa y completa; la ventana original no cambia. Sin ``UNDO``: es interfaz; al cerrar la
+  ventana no queda nada.
 - ``geoblender.ui_open_command_line`` (RF-003-26; F10, con la puerta de modo;
   Herramientas ▸ Línea de comandos): abre una ventana con el campo ``query`` ya activo; al
   escribir, la lista son los resultados de la búsqueda del catálogo (``bl.ui.
@@ -692,6 +696,31 @@ class GEOBLENDER_OT_ui_update_layout(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GEOBLENDER_OT_ui_blender_settings(bpy.types.Operator):
+    """Open a window with the full Blender properties editor; closing it leaves nothing behind"""
+
+    bl_idname = "geoblender.ui_blender_settings"
+    bl_label = "Blender settings…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return getattr(context, "window", None) is not None
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import switcher
+
+        window = context.window
+        if switcher.settings_workspace(window) is None:
+            self.report({"WARNING"}, tr("There is no Blender workspace in this file to show its settings"))
+            return {"CANCELLED"}
+        if switcher.open_blender_settings(window) is None:
+            self.report({"WARNING"}, tr("Could not open the Blender settings window"))
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+
 def _command_line_search(_operator: Any, _context: Any, edit_text: str) -> list[str]:
     """La lista del campo de la línea de comandos al escribir (``bl.ui.command_line``)."""
     from ..ui import command_line  # diferido, como el conmutador
@@ -949,6 +978,7 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_remove_layout,
     GEOBLENDER_OT_ui_restore_layout,
     GEOBLENDER_OT_ui_update_layout,
+    GEOBLENDER_OT_ui_blender_settings,
     GEOBLENDER_OT_ui_open_command_line,
     GEOBLENDER_OT_ui_show_shortcuts,
     GEOBLENDER_OT_ui_show_aliases,

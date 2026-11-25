@@ -117,6 +117,7 @@ class _Session:
     seen: set[tuple[int, str]] = field(default_factory=set)  # (ventana, espacio) visitados
     layout_notified: bool = False  # el aviso de la disposición anterior, una vez por fichero
     attempts: int = 0
+    settings: list[tuple[int, str]] = field(default_factory=list)  # (ventana nueva, espacio) por fijar
 
 
 _SESSION = _Session()
@@ -138,6 +139,7 @@ def forget() -> None:
     _SESSION.windows.clear()
     _SESSION.seen.clear()
     _SESSION.layout_notified = False
+    _SESSION.settings.clear()
 
 
 # Avisar de que se conmutó a Blender ------------------------------------------------------------
@@ -328,6 +330,73 @@ def activate(window: Any, workspace: Any) -> None:
         notify_outdated_layout()
 
 
+# «Ajustes de Blender» (spec 019, T19; RF-019-03; ADR-0032 punto 3) ----------------------------------
+
+SETTINGS_DELAY_S = 0.1  # «el ciclo siguiente»: ``window.workspace`` es diferido y cerraría las ventanas emergentes
+
+
+def _new_window(window: Any) -> Any | None:
+    """Abre una ventana nueva (``wm.window_new``, con el área de Propiedades de ``window`` si la tiene) y
+    la devuelve; ``None`` si Blender no la abre (sin interfaz, el operador no tiene contexto)."""
+    areas = list(window.screen.areas)
+    area = next((a for a in areas if a.type == "PROPERTIES"), areas[0] if areas else None)
+    region = next((r for r in area.regions if r.type == "WINDOW"), None) if area is not None else None
+    if area is None or region is None:
+        return None
+    before = {w.as_pointer() for w in bpy.context.window_manager.windows}
+    try:
+        with bpy.context.temp_override(window=window, screen=window.screen, area=area, region=region):
+            bpy.ops.wm.window_new()
+    except RuntimeError:
+        return None
+    return next((w for w in bpy.context.window_manager.windows if w.as_pointer() not in before), None)
+
+
+def settings_workspace(window: Any) -> Any | None:
+    """El espacio de trabajo **no marcado** donde Propiedades es la nativa y completa: el anterior de Blender de
+    ``window`` o «Layout»; si no, el primero que no sea de Geoblender; ``None`` si todos lo son."""
+    choice = choose_target(
+        current=window.workspace.name if window.workspace else "", names=[ws.name for ws in bpy.data.workspaces],
+        marked=_marked(), mode="BLENDER", previous_blender=window_state(window).previous_blender,
+        main=main_workspace(),
+    )
+    if choice.noop:  # la ventana ya está en un espacio de Blender: el mismo vale
+        return window.workspace
+    return bpy.data.workspaces.get(choice.target) if choice.target else None
+
+
+def open_blender_settings(window: Any) -> Any | None:
+    """Abre la ventana de «Ajustes de Blender»: una ventana nueva que pasa, **en el ciclo siguiente**
+    (:func:`settle_settings`), a un espacio no marcado. ``window`` no se toca. Devuelve la ventana nueva o ``None``."""
+    workspace = settings_workspace(window)
+    if workspace is None:
+        return None
+    new = _new_window(window)
+    if new is None:
+        return None
+    _SESSION.settings.append((new.as_pointer(), workspace.name))
+    if not bpy.app.timers.is_registered(settle_settings):
+        bpy.app.timers.register(settle_settings, first_interval=SETTINGS_DELAY_S)
+    return new
+
+
+def settle_settings(windows: Any = None) -> None:
+    """Fija el espacio de cada ventana de «Ajustes de Blender» abierta (lo llama el temporizador; ``windows``,
+    solo para probar) y deja al conmutador comprobar que se aplicó."""
+    todo, _SESSION.settings[:] = list(_SESSION.settings), []
+    if windows is None:
+        windows = bpy.context.window_manager.windows
+    by_pointer = {w.as_pointer(): w for w in windows}
+    for pointer, name in todo:
+        window, workspace = by_pointer.get(pointer), bpy.data.workspaces.get(name)
+        if window is None or workspace is None:
+            continue  # la cerraron antes de tiempo
+        window.workspace = workspace
+        window_state(window).pending = name
+    if todo:
+        _schedule()
+
+
 def _show_tool_header(window: Any) -> None:
     key = (window.as_pointer(), window.workspace.name)
     if key in _SESSION.seen:
@@ -398,6 +467,8 @@ def unregister() -> None:
             window.workspace = bpy.data.workspaces[choice.target]
     if bpy.app.timers.is_registered(check_pending):
         bpy.app.timers.unregister(check_pending)
+    if bpy.app.timers.is_registered(settle_settings):
+        bpy.app.timers.unregister(settle_settings)
     if on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load_post)
     _BLENDER_HOOKS.clear()

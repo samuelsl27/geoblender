@@ -28,6 +28,7 @@ from . import card, labels, view_panels
 TRANSLATION_CONTEXT = "Geoblender"
 ELEMENT_PANEL = "GEOBLENDER_PT_ui_element"
 ELEMENT_LABEL = "Geoblender element"  # msgid del título
+SETTINGS_OPERATOR = "geoblender.ui_blender_settings"  # «Ajustes de Blender» (T19), al pie del panel
 
 
 class GEOBLENDER_PT_ui_element(bpy.types.Panel):
@@ -52,8 +53,16 @@ class GEOBLENDER_PT_ui_element(bpy.types.Panel):
         group = _group(context)
         if group:
             _draw_summary(self.layout, context, group)
+            draw_settings_button(self.layout)
             return
         card.draw_card(self.layout, context)
+        draw_settings_button(self.layout)
+
+
+def draw_settings_button(layout: Any) -> None:
+    """El botón «Ajustes de Blender…» al pie del panel (RF-019-03, UI-32): abre una ventana con Propiedades nativa."""
+    layout.separator()
+    layout.operator(SETTINGS_OPERATOR, icon="PREFERENCES")
 
 
 def _draw_summary(layout: Any, context: Any, group: list[Any]) -> None:

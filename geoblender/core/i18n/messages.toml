@@ -676,6 +676,17 @@ es = "«{name}»"
 ["Layouts renewed: {names}"]
 es = "Disposiciones renovadas: {names}"
 
+# Ajustes de Blender (spec 019, T19) -------------------------------------------------
+
+["Could not open the Blender settings window"]
+es = "No se pudo abrir la ventana de ajustes de Blender"
+
+["There is no Blender workspace in this file to show its settings"]
+es = "Este fichero no tiene un espacio de trabajo de Blender donde mostrar sus ajustes"
+
+["Blender settings…"]
+es = "Ajustes de Blender…"
+
 # Menú del tipo activo (spec 003, T26) -------------------------------------------------
 
 ["Selection ({n})"]

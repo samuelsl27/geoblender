@@ -470,7 +470,9 @@ class ActiveItemTest(unittest.TestCase):
         self.assertEqual(self.lines()[0], mdt.name)
         self.activate(sketch)
         self.assertEqual(self.lines(), [NOT_OURS])
-        self.assertEqual([item.target for item in self.drawn().of_kind("operator")], [])
+        # Sin acciones de la ficha: solo el acceso «Ajustes de Blender» al pie del panel (spec 019, T19).
+        self.assertEqual([item.target for item in self.drawn().of_kind("operator")
+                          if item.target != "geoblender.ui_blender_settings"], [])
         gone = bpy.data.objects.new("Sin dato", None)
         bpy.context.scene.collection.objects.link(gone)
         gone.geoblender.dataset_uid = vf.extension("core.ids").new_uid()

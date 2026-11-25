@@ -1551,6 +1551,16 @@ action = "T"
 frequency = 1
 
 [[menu.group.item]]
+key = "geoblender.ui_blender_settings"
+label.en = "Blender settings…"
+label.es = "Ajustes de Blender…"
+description.en = "Open a window with the full Blender properties editor; closing it leaves nothing behind"
+description.es = "Abre una ventana con el editor de Propiedades de Blender completo; al cerrarla no queda nada"
+entry = "003"
+action = "A"
+frequency = 0
+
+[[menu.group.item]]
 key = "geoblender.ui_edit_palette"
 label.en = "IMGA palette and styles…"
 label.es = "Paleta y estilos IMGA…"
