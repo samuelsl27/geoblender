@@ -197,14 +197,15 @@ class PitGuideDocTest(unittest.TestCase):
         self.assertIn("des.pit_*", text)
 
     def test_the_head_says_it_is_in_main_unseen_and_pending_review(self) -> None:
-        """Definición de hecho §3.7 (T37): el recuadro dice, sin jerga, que la 018 está **en `main`, sin publicar y sin cerrar**, que se probó **sin pantalla**, que **aún no se vio
-        en pantalla ni se contrastó con el proyecto de referencia** y que la guía está **pendiente de la revisión de Samuel**; y lleva su fecha y su spec."""
+        """Definición de hecho §3.7 (T37 y T42): el recuadro dice, sin jerga, que la 018 está **cerrada** (Samuel, 25/11/2026; spec 0.14) y en `main`, que se probó **sin pantalla**,
+        que el contraste con el proyecto de referencia **no concluyó**, que lo que no se vio en pantalla sigue abierto y que la guía está **pendiente de la revisión de Samuel**; y
+        lleva su fecha y su spec."""
         head = one_line(re.sub(r"(?m)^> ?", "", self.guide[:self.guide.index("## 1. Las palabras")]))
-        for fact in ("**Fecha:** 24/11/2026", "**Spec:** 018", "**en `main`, sin publicar y sin cerrar**", "**sin pantalla**", "**Aún no se ha visto en pantalla**",
-                     "**ni se ha contrastado con el proyecto de referencia de IMGA**", "**pendiente de la revisión de Samuel**"):
+        for fact in ("**Fecha:** 24/11/2026", "**Spec:** 018", "**cerrada** (Samuel, 25/11/2026; spec 0.14)", "en `main`", "**sin pantalla**", "**Queda abierto:**",
+                     "**no concluyó**", "lo que no se vio en pantalla", "**pendiente de la revisión de Samuel**"):
             with self.subTest(head=fact):
                 self.assertIn(fact, head)
-        for stale in ("cerrada y publicada", "Cerrada por Samuel", "verificación única", "Silvestre"):
+        for stale in ("cerrada y publicada", "sin cerrar", "Aún no se ha visto en pantalla", "verificación única", "Silvestre"):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, head)
         self.assertIsNone(JARGON.search(head))
@@ -421,8 +422,8 @@ class PitCardDocTest(unittest.TestCase):
                 self.assertIn(figure.key, owned)
 
     def test_the_state_of_the_018_is_said_in_the_head_and_the_table(self) -> None:
-        """Definición de hecho §3.7 (T37): la cabecera y la fila de «Specs y entradas» dicen lo mismo: la 018, en `main`, sin publicar y sin cerrar, con las tareas de la T01 a la T37,
-        la guía de uso y lo que falta; y la fila antigua «Corta por bancos (R-35)» ya no está."""
+        """Definición de hecho §3.7 (T37): la cabecera y la fila de «Specs y entradas» dicen lo mismo: la 018, **cerrada** por Samuel el 25/11/2026 (0.14), en `main`, con las tareas de la T01 a la T37,
+        la guía de uso y lo abierto al cierre (T42); y la fila antigua «Corta por bancos (R-35)» ya no está."""
         head = one_line(self.text[:self.text.index("## Responsabilidad")])
         row = re.search(r"^\| 018-des-corta-por-bancos .*$", self.text, re.MULTILINE)
         self.assertIsNotNone(row)
@@ -431,8 +432,12 @@ class PitCardDocTest(unittest.TestCase):
             with self.subTest(place=name):
                 for fact in ("de la T01 a la T37", "`docs/usuario/corta-por-bancos.md`"):
                     self.assertIn(fact, text)
-        self.assertIn("aún no publicada ni cerrada", head)  # la cabecera no puede decir «sin publicar» ni «sin cerrar»: la prueba de la 017 lo prohíbe en ella
-        self.assertIn("sin publicar y sin cerrar", row.group(0))
+        self.assertIn("**cerrada** por Samuel el 25/11/2026 (0.14", head)  # la cabecera no puede decir «a falta de publicar»: la prueba de la 017 lo prohíbe en ella
+        self.assertIn("`verificacion.md` §7", head)
+        self.assertIn("**cerrada** el 25/11/2026", row.group(0))
+        for stale in ("aún no publicada ni cerrada", "sin publicar y sin cerrar"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, head + row.group(0))
         self.assertNotIn("| Corta por bancos (R-35) | §2: motor vectorial", self.text)
         self.assertIn("Desde la spec 018", head)
 
@@ -459,20 +464,30 @@ class PitStateDocTest(unittest.TestCase):
                 self.assertIn(fact, self.traps)
 
     def test_the_index_says_the_018_state(self) -> None:
-        """Definición de hecho §3.7 (T37): la fila 018 del índice dice que está en `main`, sin publicar y sin cerrar, con la T01 a la T37 hechas y su guía."""
+        """Definición de hecho §3.7 (T37): la fila 018 del índice dice que está **cerrada** (25/11/2026, por Samuel; spec 0.14), en `main`, con la T01 a la T37 hechas, su guía y lo abierto al cierre (T42)."""
         row = one_line(next(line for line in self.index.splitlines() if line.startswith("| 018 |")))
-        for fact in ("de la T01 a la T37", "`docs/usuario/corta-por-bancos.md`", "sin publicar", "sin cerrar"):
+        for fact in ("de la T01 a la T37", "`docs/usuario/corta-por-bancos.md`", "**Cerrada** (25/11/2026, por Samuel: «Sí»; spec 0.14)", "`verificacion.md` §7",
+                     "no concluyente", "-69,6 %", "CE-018-13", "DIFF-018k", "DIFF-001a"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, row)
+        self.assertNotIn("sin cerrar", row.split("; antes: ")[0])
 
-    def test_the_roadmap_says_r35_is_implemented_not_closed(self) -> None:
-        """Plan 018 §5.6 (T37): R-35 pasa de «pendiente» a la spec 018 en implementación (con R-36 y R-40 como dependencias), con su registro del 24/11/2026."""
+    def test_the_roadmap_says_r35_is_closed(self) -> None:
+        """Plan 018 §5.6 (T37 y T42): R-35 pasa de «pendiente» a la spec 018 **hecha y cerrada** el 25/11/2026 (con R-36 y R-40 como dependencias y lo abierto de
+        `verificacion.md` §7), con su registro del 24/11/2026 y el del cierre."""
         row = next(line for line in self.roadmap.splitlines() if line.startswith("| R-35 |"))
         self.assertNotIn("| pendiente |", row)
-        for fact in ("018-des-corta-por-bancos", "R-36", "R-40", "sin publicar", "sin cerrar"):
+        for fact in ("018-des-corta-por-bancos", "R-36", "R-40", "**hecha**", "**cerrada** por Samuel el 25/11/2026 (spec 0.14)", "`verificacion.md` §7", "no concluyente",
+                     "CE-018-13"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, row)
+        self.assertNotIn("sin cerrar", row)
         self.assertTrue(any(line.startswith("| 2026-11-24 | R-35:") for line in self.roadmap.splitlines()))
+        close = [line for line in self.roadmap.splitlines() if line.startswith("| 2026-11-25 | R-35:")]
+        self.assertEqual(len(close), 1)
+        for fact in ("Samuel cierra la spec 018", "spec 0.14", "no concluyente", "-69,6 %", "CE-018-13", "DIFF-018k", "la spec 019"):
+            with self.subTest(close=fact):
+                self.assertIn(fact, close[0])
 
     def test_the_readme_and_the_changelog_have_the_guide_and_the_entry(self) -> None:
         """Definición de hecho §3.7 (T37): el README de la carpeta enlaza la guía y la lista de guías la describe; el CHANGELOG del código tiene la entrada «Corta por bancos» en
@@ -482,9 +497,10 @@ class PitStateDocTest(unittest.TestCase):
         entry = self.changelog[self.changelog.index("- **Corta por bancos**"):]
         entry = entry[:entry.index("- **Pistas y rampas**")]
         for fact in ("spec 018, R-35", "ascendente", "descendente", "roseta", "espiral", "zig-zag", "línea de cielo", "HIPÓTESIS", "Expandir banco…",
-                     "sin publicar", "sin cerrar", "no se ha visto en pantalla", "no parte de la concha"):
+                     "cerrada por Samuel el 25/11/2026", "Abierto al cierre", "no concluyó", "-69,6 %", "no se vieron en pantalla", "no parte de la concha"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, entry)
+        self.assertNotIn("sin cerrar", entry)
         self.assertIsNone(JARGON.search(entry), "el CHANGELOG se escribe para el ingeniero de minas, sin jerga de tareas")
 
 

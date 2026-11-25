@@ -43,7 +43,7 @@ en pantalla con eventos simulados, sin ratón real). Y traza pistas y rampas con
 curvas, su rasante acotada y su sección grabada, y dice a dónde se llega a pie y qué bermas, plataformas y zonas «requiere acceso» quedan
 comunicadas, que la verificación de los límites ya comprueba (spec 017, cerrada el 22/11/2026 y vista en pantalla con eventos simulados, sin ratón real). Y saca
 los bancos de una corta como polilíneas con cota, desde un fondo o desde un límite, con una roseta de taludes, rampas en espiral y en zig-zag, la línea de cielo y la
-superficie de la corta (spec 018, hecha, pendiente de verla en pantalla, de contrastarla con el proyecto de referencia y de cerrarla). Lo de
+superficie de la corta (spec 018, cerrada el 25/11/2026; abierto: el contraste con el proyecto de referencia, que no concluyó, y la cifra de un ingeniero de IMGA). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -129,8 +129,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
 
-- **Corta por bancos** (spec 018, R-35; en `main`, sin publicar y sin cerrar: no se ha visto en pantalla y no se ha contrastado con el proyecto de referencia, y esta entrada está pendiente de la
-  revisión de Samuel). Hasta ahora Geoblender diseñaba en la rejilla: daba la envolvente y el escalonado, pero no las líneas de cada banco. Lo que se hace con un programa minero es otra cosa: se parte de
+- **Corta por bancos** (spec 018, R-35; cerrada por Samuel el 25/11/2026, con la spec en su 0.14 y lo abierto anotado en «Abierto al cierre», abajo; vista en pantalla con eventos simulados y un ensayo
+  de un agente, sin la cifra de una persona de IMGA). Hasta ahora Geoblender diseñaba en la rejilla: daba la envolvente y el escalonado, pero no las líneas de cada banco. Lo que se hace con un programa minero es otra cosa: se parte de
   una línea de fondo, o de la cresta de un límite legal, se da una altura de banco, un ángulo de cara y una berma, y salen los bancos uno a uno, como polilíneas con su cota, con las rampas que los comunican
   y dónde cada banco sale al terreno. Eso es lo que se entrega a perforación y voladura y lo que se contrasta con la propiedad. Ahora está en `Diseño ▸ Corta por bancos`: `Nueva corta…`,
   `Expandir banco…`, `Rampa…`, `Roseta de taludes…`, `Línea de cielo…` y `Superficie y sólido…`.
@@ -172,7 +172,14 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     en su primera línea que se cierran con Esc o con un clic fuera (son ventanas emergentes de Blender, sin botón de cerrar).
   - **Lo que no hace todavía:** no parte de la concha óptima (R-49) ni diseña la corta de forma automática (R-55); no admite polígonos con huecos; no mezcla bancos por berma distintos entre sectores; la rampa de la
     descendente no se calcula con bancos dobles, con varios límites con rampa ni sobre el primer banco de altura variable; una rampa se ha medido sobre 20 bancos en espiral y 5 en zig-zag. Esta guía
-    y lo anterior se han comprobado sin pantalla; falta verlo con el ratón y contrastarlo con el proyecto de referencia. Guía de uso: `docs/usuario/corta-por-bancos.md`.
+    y lo anterior se han comprobado sin pantalla y con eventos simulados. Guía de uso: `docs/usuario/corta-por-bancos.md`.
+  - **Abierto al cierre (25/11/2026):** el contraste con el proyecto de referencia se ejecutó y **no concluyó** (la corta ascendente sale un -69,6 % en volumen respecto de la superficie de la referencia,
+    que tiene mesetas intermedias, dos fondos, rampas y sectores que la ficha del proyecto no trae; haría falta un banco completo, en una spec futura); la cifra de un ingeniero de IMGA para el
+    ensayo (el ensayo simulado de un agente tardó ≈ 21 min) está pendiente; no se vieron en pantalla el hover y el arrastre con la vista previa, las flechas de la roseta ni el texto de progreso con Esc;
+    el botón «Cancel» de los diálogos sale en el idioma de Blender; en los errores de la plataforma, la pista, el acopio, la retirada, el contrafuerte y el cuerpo siguen viéndose claves internas;
+    las ventanas de roseta y rampa se cierran con Esc, sin botón; el desfase con distancias de 0,5 a 12 m y un cuello estrecho tiene un límite conocido (8 de 80 casos); la superficie cumple su plazo hasta
+    ≈ 115.000 puntos; y la comprobación completa del código cuesta ≈ +27 s más. Samuel debe revisar los cambios de criterio que pidió: el del desfase, el del contraste ascendente, el del espejo
+    del NAS y el de habilitar Geoblender en ≤ 0,57 s.
 
 - **Pistas y rampas** (spec 017, R-40; cerrada el 22/11/2026: verificada y vista en pantalla con eventos simulados, sin ratón real, a falta de
   contrastarla con el proyecto de referencia). En el proyecto de referencia las pistas se resolvieron con cinco métodos sucesivos repartidos en varios

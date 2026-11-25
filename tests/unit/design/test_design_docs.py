@@ -2664,7 +2664,7 @@ class RoadsStateDocTest(unittest.TestCase):
             problems += [f"{where}: no dice «{fact}»" for fact in (CLOSED_017_INDEX if where == "specs/README.md" else (CLOSED_017,)) if fact not in text]
             problems += [f"{where}: dice «{stale}»" for stale in (*STALE_STATE_017, *STALE_OPEN_017) if stale in text]
         self.assertEqual(problems, [])
-        self.assertIn("001, 013, 014, 015, 016 y 017 cerradas (la 016, acopios, contrafuerte y cuerpos apoyados, cerrada y publicada el 20/11/2026; la 017, pistas y rampas, R-40, ", agents)
+        self.assertIn("001, 013, 014, 015, 016, 017 y 018 cerradas (la 016, acopios, contrafuerte y cuerpos apoyados, cerrada y publicada el 20/11/2026; la 017, pistas y rampas, R-40, ", agents)
         self.assertIn("002, 003, 004, 005, 006, 008, 009, 010, 011 y 012 en `main` y publicadas; 007 sin su T34.", agents)  # lo demás del estado no cambia
         self.assertNotIn("**017** (pistas y rampas, R-40) en `main`", agents)  # ya no es la excepción que iba aparte, sin publicar y sin cerrar
 

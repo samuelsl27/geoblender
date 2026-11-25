@@ -29,7 +29,10 @@ de minas, para su propio trabajo de proyectos de explotación y restauración.
 > rellenar: declara el límite legal y el perímetro de actuación, guarda las restricciones tipadas
 > (también editables en QGIS), busca lo intocable por sector, lo compila todo a máscaras sobre la
 > rejilla del proyecto y verifica en m³ por recinto cualquier superficie de diseño (spec 012;
-> en `main`, sin publicar, a falta de su comprobación en pantalla).
+> en `main`, sin publicar, a falta de su comprobación en pantalla). Y saca los bancos de una
+> corta como polilíneas con cota, con roseta de taludes, rampas en espiral y en zig-zag, línea de cielo
+> y superficie de la corta (spec 018, cerrada el 25/11/2026; abierto: su contraste con el proyecto de
+> referencia, que no concluyó, y la cifra de un ingeniero de IMGA).
 > La 002, la 003, la 004, la 006 y la 005 están comprobadas con Blender 5.2.1 (la
 > interfaz, los trabajos, la topografía y los sondeos, en la pantalla de referencia de IMGA), y
 > la 002, la 006 y la 005 también con QGIS 4.2 sin su interfaz (PyQGIS); la 002, en la red con
