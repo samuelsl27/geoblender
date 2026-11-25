@@ -41,7 +41,8 @@ from typing import Any
 import bpy
 from bpy.app.handlers import persistent
 
-from . import gate, native_filter
+from ...core.i18n import tr
+from . import areas, gate, native_filter
 from .commands import catalog
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
@@ -114,6 +115,7 @@ class WindowState:
 class _Session:
     windows: dict[int, WindowState] = field(default_factory=dict)
     seen: set[tuple[int, str]] = field(default_factory=set)  # (ventana, espacio) visitados
+    layout_notified: bool = False  # el aviso de la disposición anterior, una vez por fichero
     attempts: int = 0
 
 
@@ -135,6 +137,7 @@ def forget() -> None:
     """Olvida el estado de sesión (al abrir otro fichero, CW §3.3)."""
     _SESSION.windows.clear()
     _SESSION.seen.clear()
+    _SESSION.layout_notified = False
 
 
 # Avisar de que se conmutó a Blender ------------------------------------------------------------
@@ -231,6 +234,46 @@ def forget_resources_library() -> None:
             bpy.data.libraries.remove(library)
 
 
+# La revisión de la disposición (spec 019, T18; P-9, R-4) ------------------------------------------
+
+
+def outdated_layouts() -> list[str]:
+    """Los nombres (del catálogo) de las disposiciones que el fichero tiene con una revisión
+    anterior a ``areas.LAYOUT_REV`` (``WorkSpace["geoblender_layout_rev"]``; sin la clave, la 1).
+    No cambia nada."""
+    revisions = {ws.name: ws.get(areas.REV_KEY) for ws in bpy.data.workspaces
+                 if gate.is_geoblender_workspace(ws)}
+    return areas.outdated_names(revisions, [layout.workspace for layout in catalog().layouts])
+
+
+def notify_outdated_layout() -> bool:
+    """Al entrar en Geoblender: si el fichero tiene una disposición anterior, lo avisa **una
+    vez** («La disposición de este fichero es anterior…», 10 s en la barra de estado) y no
+    cambia nada solo (P-9). Devuelve si avisó."""
+    if _SESSION.layout_notified or not outdated_layouts():
+        return False
+    _SESSION.layout_notified = True
+    from . import provenance  # diferido: provenance importa media interfaz
+
+    provenance.show_undo_notice(tr("The layout of this file is older: Layouts ▾ ▸ Update the layout"))
+    return True
+
+
+def update_layouts(window: Any) -> list[str]:
+    """Renueva las disposiciones anteriores: anexa una copia nueva de cada una desde los
+    recursos y **conserva las anteriores** (principio 7: nada del usuario se borra ni se
+    renombra). Si ``window`` usa una anterior, pasa (diferido) a su copia nueva. Devuelve los
+    nombres de las copias nuevas."""
+    created: list[str] = []
+    for name in outdated_layouts():
+        old = bpy.data.workspaces.get(name)
+        fresh = load_workspace(name)
+        created.append(fresh.name)
+        if old is not None and window is not None and window.workspace == old:
+            activate(window, fresh)
+    return created
+
+
 def toggle(window: Any, mode: str = "TOGGLE") -> Result:
     """Conmuta ``window`` al modo pedido (CW §3): guarda el anterior en el estado de
     sesión, anexa el destino si hace falta y lo asigna (diferido)."""
@@ -256,7 +299,9 @@ def toggle(window: Any, mode: str = "TOGGLE") -> Result:
     window.workspace = workspace
     state.pending = workspace.name
     _schedule()
-    if not choice.to_geoblender:
+    if choice.to_geoblender:
+        notify_outdated_layout()
+    else:
         _entered_blender()
     return Result(workspace.name, appended)
 
@@ -279,6 +324,8 @@ def activate(window: Any, workspace: Any) -> None:
     if (current is not None and gate.is_geoblender_workspace(current)
             and not gate.is_geoblender_workspace(workspace)):
         _entered_blender()
+    elif (current is None or not gate.is_geoblender_workspace(current))             and gate.is_geoblender_workspace(workspace):
+        notify_outdated_layout()
 
 
 def _show_tool_header(window: Any) -> None:

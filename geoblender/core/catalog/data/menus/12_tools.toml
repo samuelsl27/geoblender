@@ -1528,6 +1528,16 @@ action = "A"
 frequency = 0
 
 [[menu.group.item.item]]
+key = "geoblender.ui_update_layout"
+label.en = "Update the layout"
+label.es = "Actualizar la disposición"
+description.en = "Add the current layout of the Geoblender resources for the layouts of this file that are older. The previous ones are not deleted or changed"
+description.es = "Añade la disposición actual de los recursos de Geoblender para las de este fichero que son anteriores. Las anteriores no se borran ni se cambian"
+entry = "003"
+action = "A"
+frequency = 0
+
+[[menu.group.item.item]]
 separator = true
 
 [[menu.group.item.item]]

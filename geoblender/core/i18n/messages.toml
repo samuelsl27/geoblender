@@ -653,6 +653,29 @@ es = "Se ha quitado la disposición «{name}»; los datos siguen en el fichero"
 ["The layout «{name}» has been restored"]
 es = "Se ha restaurado la disposición «{name}»"
 
+# Actualizar la disposición (spec 019, T18) -----------------------------------------
+
+["The layout of this file is older: Layouts ▾ ▸ Update the layout"]
+es = "La disposición de este fichero es anterior: Disposición ▾ ▸ Actualizar la disposición"
+
+["The layout of this file is already up to date"]
+es = "La disposición de este fichero ya está al día"
+
+["Update the layout"]
+es = "Actualizar la disposición"
+
+["These layouts of the file will be renewed:"]
+es = "Se renovarán estas disposiciones del fichero:"
+
+["The previous ones are not deleted: they stay in the file"]
+es = "Las anteriores no se borran: se quedan en el fichero"
+
+["«{name}»"]
+es = "«{name}»"
+
+["Layouts renewed: {names}"]
+es = "Disposiciones renovadas: {names}"
+
 # Menú del tipo activo (spec 003, T26) -------------------------------------------------
 
 ["Selection ({n})"]

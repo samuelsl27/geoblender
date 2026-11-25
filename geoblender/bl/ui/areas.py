@@ -19,8 +19,12 @@ Dos cosas, ambas datos sin ``bpy`` (se pueden leer sin Blender):
 
 from __future__ import annotations
 
+import re
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 
+REV_KEY = "geoblender_layout_rev"  # la propiedad del espacio de trabajo (la escribe el generador)
+FIRST_REV = 1  # un espacio de Geoblender sin la clave es de la 003 (revisión 1)
 LAYOUT_REV = 2  # 1: la 003 (con línea de tiempo); 2: la 019 T16 (sin barra inferior, pestañas)
 
 #: Las cuatro decisiones posibles (clave → texto que lleva el documento).
@@ -30,6 +34,23 @@ DECISIONS: dict[str, str] = {
     "HIDDEN": "oculta",
     "BLENDER": "de Blender",
 }
+
+
+def base_name(name: str) -> str:
+    """El nombre de un espacio sin el sufijo ``.001`` que Blender añade a una copia."""
+    return re.sub(r"\.\d{3}$", "", name)
+
+
+def outdated_names(revisions: Mapping[str, int | None], known: Collection[str]) -> list[str]:
+    """Las disposiciones de ``known`` (nombres del catálogo, en su orden) que el fichero tiene
+    con una revisión anterior a :data:`LAYOUT_REV` (T18; P-9; R-4). ``revisions`` es
+    «espacio de Geoblender → su ``geoblender_layout_rev``» (``None``: sin la clave). Una copia
+    renovada («<nombre>.001») con la revisión actual cuenta: esa disposición ya está al día."""
+    best: dict[str, int] = {}
+    for name, rev in revisions.items():
+        base = base_name(name)
+        best[base] = max(best.get(base, FIRST_REV), FIRST_REV if rev is None else rev)
+    return [name for name in known if name in best and best[name] < LAYOUT_REV]
 
 
 @dataclass(frozen=True)

@@ -51,6 +51,7 @@ PANEL = "GEOBLENDER_PT_ui_layouts"
 ADD = "geoblender.ui_add_layout"
 REMOVE = "geoblender.ui_remove_layout"
 RESTORE = "geoblender.ui_restore_layout"
+UPDATE = "geoblender.ui_update_layout"
 TOGGLE_ROW = "geoblender.ui_toggle_quick_access_row"
 CHECK_INTERVAL_S = 0.05
 CHECK_ATTEMPTS = 40  # unos 2 s: si la ventana no cambia, el espacio se queda
@@ -185,6 +186,22 @@ def remove_check(context: Any, _cmd: Any = None) -> str:
 def restore_check(context: Any, _cmd: Any = None) -> str:
     """«No aplicable ahora» de «Restaurar la disposición» (RF-003-09)."""
     return restore_problem(context_workspace(context))
+
+
+def update_check(_context: Any = None, _cmd: Any = None) -> str:
+    """«No aplicable ahora» de «Actualizar la disposición» (UI-13; T18): "" si el fichero tiene
+    una disposición anterior; si no, por qué no."""
+    if switcher.outdated_layouts():
+        return ""
+    return tr("The layout of this file is already up to date")
+
+
+def update_text() -> str:
+    """Lo que dice la confirmación de «Actualizar la disposición» (UI-15): cuáles se renuevan
+    y que las anteriores no se borran."""
+    names = ", ".join(f"«{name}»" for name in switcher.outdated_layouts())
+    return (f"{tr('These layouts of the file will be renewed:')} {names}. "
+            f"{tr('The previous ones are not deleted: they stay in the file')}")
 
 
 def _main_workspace(window: Any) -> Any:
@@ -324,6 +341,7 @@ class GEOBLENDER_PT_ui_layouts(bpy.types.Panel):
         column = layout.column(align=True)
         draw_command(column, REMOVE, context=context)
         draw_command(column, RESTORE, context=context)
+        draw_command(column, UPDATE, context=context)
         layout.separator(type="LINE")
         column = layout.column(align=True)
         draw_command(column, TOGGLE_ROW, context=context)
@@ -342,6 +360,7 @@ def register() -> None:
     """Las comprobaciones de Quitar y Restaurar y el manejador ``load_post``."""
     register_check(REMOVE, remove_check)
     register_check(RESTORE, restore_check)
+    register_check(UPDATE, update_check)
     if on_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(on_load_post)
 
@@ -354,5 +373,6 @@ def unregister() -> None:
         bpy.app.handlers.load_post.remove(on_load_post)
     unregister_check(REMOVE)
     unregister_check(RESTORE)
+    unregister_check(UPDATE)
     _STATE.pending = []
     _STATE.attempts = 0

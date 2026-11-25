@@ -54,6 +54,11 @@
   ``workspace``; la principal no se quita y nunca se borran datos: si no se puede, lo
   dicen y no cambian nada. Las disposiciones de una entrada aún no entregada (R-62, R-57)
   informan «Disponible en …» y no cambian nada. Son interfaz: sin ``UNDO``.
+- ``geoblender.ui_update_layout`` (spec 019, T18; RF-019-03; P-9, R-4): «Actualizar la
+  disposición» añade una copia nueva (desde los recursos) de cada disposición del fichero con la
+  revisión anterior (``geoblender_layout_rev`` frente a ``areas.LAYOUT_REV``); la confirmación
+  dice cuáles y que las anteriores **no se borran ni se cambian**; cancelarla no deja nada. Sin
+  disposición anterior, su ``poll`` falla con «ya está al día». Sin ``UNDO``: es interfaz.
 - ``geoblender.ui_open_command_line`` (RF-003-26; F10, con la puerta de modo;
   Herramientas ▸ Línea de comandos): abre una ventana con el campo ``query`` ya activo; al
   escribir, la lista son los resultados de la búsqueda del catálogo (``bl.ui.
@@ -647,6 +652,46 @@ class GEOBLENDER_OT_ui_restore_layout(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class GEOBLENDER_OT_ui_update_layout(bpy.types.Operator):
+    """Add the current layout of the Geoblender resources for the layouts of this file that are older. The previous ones are not deleted or changed"""
+
+    bl_idname = "geoblender.ui_update_layout"
+    bl_label = "Update the layout"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        from ..ui import layouts
+
+        problem = layouts.update_check()
+        if problem:
+            cls.poll_message_set(problem)
+        return not problem
+
+    def invoke(self, context: Any, _event: Any) -> set[str]:
+        return context.window_manager.invoke_props_dialog(
+            self, width=420, confirm_text=tr("Update the layout"))
+
+    def draw(self, _context: Any) -> None:
+        from ..ui import switcher
+
+        column = self.layout.column()
+        column.label(text=tr("These layouts of the file will be renewed:"), translate=False)
+        for name in switcher.outdated_layouts():
+            column.label(text=tr("«{name}»", name=name), translate=False)
+        column.label(text=tr("The previous ones are not deleted: they stay in the file"),
+                     translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        from ..ui import switcher
+
+        created = switcher.update_layouts(getattr(context, "window", None))
+        self.report({"INFO"}, tr("Layouts renewed: {names}",
+                                 names=", ".join(f"«{name}»" for name in created)))
+        return {"FINISHED"}
+
+
 def _command_line_search(_operator: Any, _context: Any, edit_text: str) -> list[str]:
     """La lista del campo de la línea de comandos al escribir (``bl.ui.command_line``)."""
     from ..ui import command_line  # diferido, como el conmutador
@@ -903,6 +948,7 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_ui_add_layout,
     GEOBLENDER_OT_ui_remove_layout,
     GEOBLENDER_OT_ui_restore_layout,
+    GEOBLENDER_OT_ui_update_layout,
     GEOBLENDER_OT_ui_open_command_line,
     GEOBLENDER_OT_ui_show_shortcuts,
     GEOBLENDER_OT_ui_show_aliases,

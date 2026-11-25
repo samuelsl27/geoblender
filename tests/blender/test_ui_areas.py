@@ -14,6 +14,9 @@ fábrica: ``docs/trampas.md``). Comprueba lo que genera ``tools/inblender/make_u
   espacio (P-7).
 - P-9: cada espacio lleva ``geoblender_layout_rev`` igual a ``areas.LAYOUT_REV``.
 - El generador es reproducible: dos ejecuciones dan el mismo fichero.
+- P-9, R-4 (T18): un fichero con la revisión anterior avisa una vez al conmutar y no se cambia
+  solo; «Actualizar la disposición» crea los espacios nuevos y conserva los anteriores;
+  cancelar no deja nada; sin cambio de revisión, ni aviso ni orden activa.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -25,6 +28,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 import bpy
 
@@ -37,6 +41,7 @@ BLEND_NAME = "geoblender_ui.blend"
 GENERATOR = ROOT / "tools" / "inblender" / "make_ui_blend.py"
 FALLBACK = "Layout"
 PHASES = "Geoblender · Fases"
+DATA = "Geoblender · Datos"
 REV_KEY = "geoblender_layout_rev"
 
 
@@ -208,6 +213,144 @@ class UiAreasTest(unittest.TestCase):
             self.assertEqual(first.read_bytes(), second.read_bytes())
             self.assertEqual(first.read_bytes(), self.blend.read_bytes(),
                              "geoblender_ui.blend no es la salida del generador: regenerarlo")
+
+
+class LayoutRevisionPureTest(unittest.TestCase):
+    """P-9: qué disposiciones son anteriores, sobre nombres y revisiones (sin ``bpy``)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.release()
+        blender_ext.enable()
+        cls.areas = _module("bl.ui.areas")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.release()
+
+    def test_outdated_names(self) -> None:
+        rev = self.areas.LAYOUT_REV
+        known = ["G", "G · Datos", "G · Fases"]
+        found = self.areas.outdated_names({"G": rev - 1, "G · Datos": None, "G · Fases": rev}, known)
+        self.assertEqual(found, ["G", "G · Datos"])  # sin clave = la revisión 1 (la 003)
+        # Una copia nueva («G.001») con la revisión actual ya renovó la disposición.
+        renewed = self.areas.outdated_names({"G": rev - 1, "G.001": rev}, known)
+        self.assertEqual(renewed, [])
+        self.assertEqual(self.areas.outdated_names({"G": rev}, known), [])
+        self.assertEqual(self.areas.outdated_names({}, known), [])
+        # Un espacio marcado que no es del catálogo no se renueva.
+        self.assertEqual(self.areas.outdated_names({"Mío": 1}, known), [])
+
+
+class LayoutUpdateTest(unittest.TestCase):
+    """P-9, R-4: el aviso una vez y la orden explícita «Actualizar la disposición»."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        blender_ext.release()
+        blender_ext.load_file()
+        blender_ext.enable()
+        cls.areas = _module("bl.ui.areas")
+        cls.switcher = _module("bl.ui.switcher")
+        cls.layouts = _module("bl.ui.layouts")
+        cls.main = cls.switcher.main_workspace()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        blender_ext.load_file()
+        blender_ext.release()
+
+    def setUp(self) -> None:
+        blender_ext.load_file()
+        self.switcher.forget()
+        self.window = bpy.context.window_manager.windows[0]
+        self.objects = sorted(obj.name for obj in bpy.data.objects)
+
+    def add(self, layout_id: str) -> None:
+        with bpy.context.temp_override(window=self.window):
+            bpy.ops.geoblender.ui_add_layout(layout=layout_id)
+
+    def make_old(self) -> None:
+        """Un fichero guardado con la disposición anterior: la principal y «Datos» en la 1."""
+        self.add("MAIN")
+        self.add("DATA")
+        for ws in bpy.data.workspaces:
+            if ws.geoblender_mode:
+                ws[REV_KEY] = self.areas.LAYOUT_REV - 1
+
+    def snapshot(self) -> dict[str, object]:
+        return {ws.name: ws.get(REV_KEY) for ws in bpy.data.workspaces}
+
+    def notice(self) -> object:
+        return mock.patch(f"{module_name()}.bl.ui.provenance.show_undo_notice")
+
+    def test_warns_once_and_changes_nothing(self) -> None:
+        """P-9, UI-09: al conmutar con una disposición anterior, un aviso, una vez; el
+        fichero no se cambia solo."""
+        self.make_old()
+        before = self.snapshot()
+        self.assertEqual(self.switcher.outdated_layouts(), [self.main, DATA])
+        with self.notice() as show:
+            self.switcher.toggle(self.window, "GEOBLENDER")
+            self.switcher.toggle(self.window, "BLENDER")
+            self.switcher.toggle(self.window, "GEOBLENDER")
+        self.assertEqual(show.call_count, 1)
+        self.assertIn("anterior", show.call_args.args[0])
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(sorted(obj.name for obj in bpy.data.objects), self.objects)
+
+    def test_update_creates_new_and_keeps_old(self) -> None:
+        """RF-019-03: la orden crea los espacios nuevos, conserva los anteriores y no deja
+        la biblioteca; después, ya no hay nada que renovar."""
+        self.make_old()
+        old = self.snapshot()
+        with bpy.context.temp_override(window=self.window):
+            self.assertEqual(bpy.ops.geoblender.ui_update_layout(), {"FINISHED"})
+        now = self.snapshot()
+        for name, rev in old.items():
+            self.assertIn(name, now, "se borró un espacio anterior")
+            self.assertEqual(now[name], rev, "se cambió un espacio anterior")
+        fresh = sorted(set(now) - set(old))
+        self.assertEqual(len(fresh), 2, fresh)
+        for name in fresh:
+            self.assertEqual(bpy.data.workspaces[name].get(REV_KEY), self.areas.LAYOUT_REV)
+            self.assertTrue(bpy.data.workspaces[name].geoblender_mode)
+        self.assertEqual(len(bpy.data.libraries), 0)
+        self.assertEqual(self.switcher.outdated_layouts(), [])
+        self.assertFalse(bpy.ops.geoblender.ui_update_layout.poll())
+        with self.notice() as show:
+            self.switcher.toggle(self.window, "GEOBLENDER")
+        self.assertEqual(show.call_count, 0)
+        self.assertEqual(sorted(obj.name for obj in bpy.data.objects), self.objects)
+
+    def test_cancel_leaves_nothing(self) -> None:
+        """UI-15: la confirmación dice cuáles se renuevan; cancelarla no deja nada."""
+        self.make_old()
+        before = self.snapshot()
+        # En segundo plano Blender confirma solo el diálogo: se prueba lo que ``invoke`` pide.
+        operator = bpy.types.GEOBLENDER_OT_ui_update_layout
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = mock.Mock(window_manager=mock.Mock(invoke_props_dialog=dialog))
+        self.assertEqual(operator.invoke(operator, context, None), {"RUNNING_MODAL"})
+        dialog.assert_called_once()
+        self.assertEqual(self.snapshot(), before)
+        text = self.layouts.update_text()
+        self.assertIn(self.main, text)
+        self.assertIn(DATA, text)
+        self.assertIn("no se borran", text)
+
+    def test_up_to_date_has_no_notice_and_command_is_disabled(self) -> None:
+        """UI-13: sin cambio de revisión, ni aviso ni orden activa (con su causa)."""
+        self.add("MAIN")
+        self.assertEqual(self.switcher.outdated_layouts(), [])
+        with self.notice() as show:
+            self.switcher.toggle(self.window, "GEOBLENDER")
+        self.assertEqual(show.call_count, 0)
+        self.assertFalse(bpy.ops.geoblender.ui_update_layout.poll())
+        self.assertIn("al día", self.layouts.update_check(bpy.context))
+        self.make_old()
+        self.assertEqual(self.layouts.update_check(bpy.context), "")
+        self.assertTrue(bpy.ops.geoblender.ui_update_layout.poll())
 
 
 if __name__ == "__main__":
