@@ -335,6 +335,30 @@ class RoadViewsTest(road_ops.RoadOpsTest):
         self.assertGreater(np.abs(axis[:, 2] - old_axis[:, 2]).max(), 0.05, "la rasante cambió y el objeto la enseña")
         self.assertEqual(self.refresh_view().reloaded, (), "lo que hay en la escena ya es lo de hoy")
 
+    def test_e_b_the_label_of_the_road_survives_stale_recompute_and_reload(self) -> None:
+        """F-2, RF-019-07, RF-019-08, P-2 (T34): con un rótulo puesto a la pista, cambiar un parámetro (obsoleta), recalcular y cargar de nuevo deja **el nombre de su objeto** (el
+        del Outliner) con el rótulo: el del objeto marcado obsoleto y el del regenerado; en el espejo y en la tabla ``gb_appearance`` ya estaba."""
+        first = self.code_of(FIRST)
+        uid = self.uids["road"]
+        appearance = _module("bl.scene.appearance")
+        label = "Otro 019"
+        self.loaded()[uid].geoblender.look.label = label
+        self.assertEqual(appearance.flush(), 1)
+        self.assertIn(label, self.loaded()[uid].name)
+        self.change(first, "end_level_m", "100,9")
+        self.refresh_view()
+        stale = self.loaded()[uid]
+        self.assertIn("OBSOLETO", stale.name)
+        self.assertIn(label, stale.name, "la marca de obsoleto no pierde el rótulo")
+        self.recompute()
+        self.load(uid)
+        regenerated = self.loaded()[uid]
+        self.assertIsNot(regenerated, stale)
+        self.assertEqual(regenerated.geoblender.look.label, label)
+        self.assertEqual(self.rows("SELECT value FROM gb_appearance WHERE prop = 'label'")[0][0], label)
+        self.assertIn(label, regenerated.name, "el objeto regenerado lleva el rótulo")
+        self.assertTrue(regenerated.name.endswith("[VIGENTE]"), regenerated.name)
+
     def test_f_a_discarded_road_stays_unbacked_and_what_rested_on_it_shows_stale(self) -> None:
         """RF-015-25, RF-015-17, D-12 (M4): un ramal que parte del eje de la pista (``RDW-001@20``: se apoya en ella) tiene su objeto; al **descartar** la pista, la vista deja el
         suyo **sin respaldo** («· SIN RESPALDO»: sigue en la escena, sin borrarse ni cambiar) y el del ramal, que perdió su apoyo, **obsoleto**; el dato descartado no se puede volver a

@@ -747,12 +747,22 @@ def named(item: bpy.types.ID, name: str) -> bool:
     return changed
 
 
+def _own_label(objects: Sequence[bpy.types.Object]) -> str:
+    """El rótulo que la persona dio a estos objetos (``Object.geoblender.look.label``; spec 019, RF-019-07, P-2): manda sobre el
+    título en el nombre que se les genera, para que marcar el dato obsoleto o al día no lo pierda (T34, F-2). '' sin rótulo."""
+    for obj in objects:
+        label = getattr(obj, OBJECT_PROPERTY).look.label.strip()
+        if label:
+            return label
+    return ""
+
+
 def _show_group(objects: Sequence[bpy.types.Object], view: ItemView, loader: Loader | None,
                 collection: bpy.types.Collection | None, live: Mapping[str, Any],
                 title: str | None = None, version: str | None = None) -> bool:
     """Pone al día los objetos ``objects`` de un dato y la colección del dato (véase
     :func:`show_view_state`); devuelve si cambió algo."""
-    wanted = _shown(objects, view, loader, title, version)
+    wanted = _shown(objects, view, loader, _own_label(objects) or title, version)
     name = wanted.name
     if name is None and wanted.state_text is not None:
         shown = collection.name if collection is not None else _shown_name(objects[0], None)

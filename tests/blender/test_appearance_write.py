@@ -152,6 +152,47 @@ class AppearanceWriteTest(unittest.TestCase):
         self.assertEqual(_appearance().flush(), 1)
         self.assertEqual(self._rows(obj), {"transparency": "55"})
 
+    def _refresh_view(self) -> None:
+        """«Refrescar» (F5) por sus pasos."""
+        for _step in vf.extension("bl.scene.refresh").refresh_steps(bpy.context, self.project.project):
+            pass
+
+    def _only(self, uid: str) -> bpy.types.Object:
+        found = [o for o in bpy.data.objects if o.geoblender.dataset_uid == uid]
+        self.assertEqual(len(found), 1)
+        return found[0]
+
+    def test_f2_the_label_survives_stale_recompute_and_reload(self) -> None:
+        """F-2, RF-019-07, RF-019-08, P-2: con un rótulo puesto, marcar el dato obsoleto, recalcularlo y recargarlo deja el nombre del objeto (el del Outliner) con
+        el rótulo, en cada paso."""
+        data, uid = self.project, self.objs[0].geoblender.dataset_uid
+        name = data.names[0]
+        self.objs[0].geoblender.look.label = "Otro 019"
+        self.assertEqual(_appearance().flush(), 1)
+        self.assertIn("Otro 019", self._only(uid).name)
+        self.assertEqual(data.make_stale(), (name,))
+        self._refresh_view()
+        stale = self._only(uid)
+        self.assertIn("OBSOLETO", stale.name)
+        self.assertIn("Otro 019", stale.name, "la marca de obsoleto no pierde el rótulo")
+        data.recompute(name)
+        self._refresh_view()
+        again = self._only(uid)
+        self.assertNotIn("OBSOLETO", again.name)
+        self.assertIn("Otro 019", again.name, "el objeto regenerado lleva el rótulo")
+        self.assertEqual(again.geoblender.look.label, "Otro 019")
+
+    def test_f2_the_label_names_every_kind_of_surface_the_same_way(self) -> None:
+        """F-2: el nombre que se genera al marcar obsoleto o al día usa el rótulo del espejo, sea cual sea el tipo (TIN, sólido y pista llevan el mismo camino)."""
+        views = vf.extension("bl.scene.views")
+        obj = self.objs[1]
+        self.assertEqual(views._own_label([obj]), "")
+        for kind in ("TIN", "DESIGN", "DESIGN_ENTITY"):
+            obj.geoblender.kind = kind
+            obj.geoblender.look.label = f"Rótulo {kind}"
+            self.assertEqual(views._own_label([obj]), f"Rótulo {kind}")
+            self.assertIn(f"Rótulo {kind}", obj.name)
+
     def test_objects_without_data_write_nothing(self) -> None:
         """Un objeto sin dato del proyecto (el ancla de prueba) solo cambia su espejo: nada pendiente."""
         mesh = bpy.data.meshes.new("sin dato")
