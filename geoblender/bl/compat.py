@@ -157,6 +157,34 @@ def native_tool_settings_px(mode: str) -> float:
     return float(_by_version(_NATIVE_TOOL_SETTINGS_PX).get(mode, NATIVE_TOOL_SETTINGS_OTHER_PX))
 
 
+# Filtro de paneles nativos (spec 019, T15; ADR-0032 punto 2) ---------------------------------
+
+
+@dataclass(frozen=True)
+class NativeFilterShape:
+    """La forma que debe tener el árbol de paneles del editor de Propiedades para filtrarlo
+    (R-8): el contexto de la pestaña visible y el mínimo de clases esperado."""
+
+    context: str
+    min_classes: int
+    blender_version: str
+    measured: str
+
+
+# Medido el 25/11/2026 (T01) en 5.2.1: el contexto Objeto tiene 26 clases de Python (con las
+# de Cycles); sin Cycles habría 19. Si una versión nueva cambia el árbol, el filtro cae al
+# modo degradado y lo dice una vez.
+_NATIVE_FILTER: dict[tuple[int, int], NativeFilterShape] = {
+    (5, 2): NativeFilterShape(context="object", min_classes=19, blender_version="5.2.1",
+                              measured="2026-11-25"),
+}
+
+
+def native_filter_shape() -> NativeFilterShape:
+    """El árbol de paneles que filtra :mod:`bl.ui.native_filter` en esta versión."""
+    return _by_version(_NATIVE_FILTER)
+
+
 # Barra de estado (spec 003; RF-003-28; AR §6): lo que dejan ocupado a escala 1,0 las ayudas
 # de teclado de la herramienta (izquierda) y la información de Blender (derecha) antes de los
 # campos de Geoblender. Estimación que se mide en la GUI (M15).

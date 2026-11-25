@@ -28,7 +28,9 @@ la Leyenda y del Filtro de datos (``context``: al desregistrar, se olvidan) → 
 comandos (``command_line``: al desregistrar, olvida su última lista) → ayuda (``help``:
 al desregistrar, olvida la última página escrita) → conmutador
 (``switcher``: su manejador ``load_post``; al desregistrar, devuelve cada ventana en modo
-Geoblender a su espacio de Blender y retira su temporizador) → atajos del catálogo en el
+Geoblender a su espacio de Blender y retira su temporizador) → filtro de paneles nativos
+(``native_filter``, spec 019: se pone mientras alguna ventana esté en modo Geoblender; al
+desregistrar, se retira y se devuelve cada ``poll``) → atajos del catálogo en el
 *keyconfig* de complementos (``keymap``). Cada paso
 anota cómo deshacerse en una pila, y :func:`unregister` la recorre al revés: deshace solo
 lo hecho, también si el registro falló a medias. Las dos son idempotentes.
@@ -56,6 +58,7 @@ from . import (
     keymap,
     layouts,
     menus,
+    native_filter,
     pit_panels,
     provenance,
     quick_access,
@@ -146,6 +149,7 @@ def register() -> None:
         (lambda: None, command_line.clear),
         (lambda: None, help_pages.clear),
         (switcher.register, switcher.unregister),
+        (native_filter.register, native_filter.unregister),
         (keymap.register, keymap.unregister),
     )
     try:
@@ -176,6 +180,7 @@ def repair() -> str:
     jobs.install()
     provenance.install()
     version_panels.install()
+    native_filter.rescan()
     keymap.unregister()
     keymap.register()
     commands.refresh()

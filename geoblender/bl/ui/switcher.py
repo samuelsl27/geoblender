@@ -41,7 +41,7 @@ from typing import Any
 import bpy
 from bpy.app.handlers import persistent
 
-from . import gate
+from . import gate, native_filter
 from .commands import catalog
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
@@ -297,6 +297,7 @@ def check_pending() -> float | None:
     """Temporizador: comprueba que los destinos pendientes se han aplicado (y deja visible
     la fila 2); vuelve a mirar mientras quede alguno, unos 2 s como mucho."""
     waiting = False
+    changed = False
     for window in bpy.context.window_manager.windows:
         state = _SESSION.windows.get(window.as_pointer())
         if state is None or state.pending is None:
@@ -304,8 +305,11 @@ def check_pending() -> float | None:
         if window.workspace is not None and window.workspace.name == state.pending:
             state.pending = None
             _show_tool_header(window)
+            changed = True
         else:
             waiting = True
+    if changed:
+        native_filter.sync()  # ADR-0032 punto 2, P-5: el filtro vive mientras haya una ventana
     _SESSION.attempts += 1
     if waiting and _SESSION.attempts < CHECK_ATTEMPTS:
         return CHECK_INTERVAL_S
