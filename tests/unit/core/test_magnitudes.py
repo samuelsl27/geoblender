@@ -37,6 +37,13 @@ class FormatTest(unittest.TestCase):
             self.assertEqual(magnitudes.format("length", value, language="es"),
                              format_number(value, 2) + " m")
 
+    def test_position_is_three_coordinates_with_their_unit(self) -> None:
+        """T25: la posición de la ficha, X, Y y Z absolutas con la unidad de la coordenada (sin float32)."""
+        self.assertEqual(magnitudes.format_position(736512.344, 4435871.019, 180.0, language="es"),
+                         f"X 736{THIN_SPACE}512,34 m  Y 4{THIN_SPACE}435{THIN_SPACE}871,02 m  Z 180,00 m")
+        self.assertEqual(magnitudes.format_position(736512.344, 4400000.456, 0.0, language="en"),
+                         "X 736,512.34 m  Y 4,400,000.46 m  Z 0.00 m")
+
     def test_no_negative_zero(self) -> None:
         self.assertEqual(magnitudes.format("percent", -0.01, language="es"), "0,0 %")
 

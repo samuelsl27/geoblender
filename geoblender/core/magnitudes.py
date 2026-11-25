@@ -19,7 +19,7 @@ from types import MappingProxyType
 from .errors import GeoblenderError
 from .i18n import THIN_SPACE, format_number, language as active_language, tr
 
-__all__ = ["MAGNITUDES", "Magnitude", "format", "parse"]
+__all__ = ["MAGNITUDES", "Magnitude", "format", "format_position", "parse"]
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,13 @@ def format(name: str, value: float, *, language: str | None = None) -> str:  # n
         if text.startswith("-") and float(text.replace(THIN_SPACE, "").replace(",", ".")) == 0:
             text = text[1:]
     return f"{text} {magnitude.unit}" if magnitude.unit else text
+
+
+def format_position(x: float, y: float, z: float, *, language: str | None = None) -> str:
+    """Una posición absoluta como ``X 736 512,34 m  Y 4 435 871,02 m  Z 180,00 m``: cada eje con el formato de la
+    magnitud ``coordinate`` (float64; nunca pasa por float32)."""
+    return "  ".join(f"{axis} {format('coordinate', value, language=language)}"
+                     for axis, value in zip("XYZ", (x, y, z), strict=True))
 
 
 def parse(name: str, text: str) -> float:

@@ -14,3 +14,19 @@ entries = [
     "es:No se ha calculado nada en «{name}»: confirme las semillas fuera de la coronación y de las zonas a sostener para calcular con ellas (desde un guion, con confirm_outside=True) -> stable-name",
     "es:Tipos que se pueden seleccionar en la vista; escribe Object.hide_select -> stable-name",
 ]
+
+[formats]
+# UI-07, RF-019-17: números formateados a mano en bl/ («fichero: expresión») y textos con la marca decimal, la
+# unidad o los decimales de otra forma que la de core.magnitudes («idioma:texto -> regla»); tests/unit/test_ui_formats.py.
+entries = [
+    "bl/ops/core.py: {project.grid_step_m:.1f}",
+    "bl/ops/core.py: {step:.1f}",
+    "bl/ops/core.py: {value:.3f}",
+    "bl/ops/des_pit.py: {float(value):,.2f}",
+    "bl/ops/gis.py: {float(value):.6f}",
+    "bl/ops/versions.py: {size / factor:.1f}",
+    "en:The azimuth is not between 0° and 360°: correct it (degrees from north, clockwise). -> unit-glued",
+    "en:The inclination is not between −90° and 90°: correct it (degrees from the horizontal, negative downwards). -> unit-glued",
+    "es:El azimut no está entre 0° y 360°: corríjalo (grados desde el norte, en el sentido de las agujas del reloj). -> unit-glued",
+    "es:La inclinación no está entre −90° y 90°: corríjala (grados desde la horizontal, negativa hacia abajo). -> unit-glued",
+]

@@ -145,7 +145,7 @@ class ElementPanelTest(unittest.TestCase):
         origin = self.data.project.origin
         corners = [tuple(c) for c in obj.bound_box]
         centre = [(min(c[i] for c in corners) + max(c[i] for c in corners)) / 2.0 for i in range(3)]
-        expected = vf.extension("core.i18n").format_xyz(
+        expected = vf.extension("core.magnitudes").format_position(
             centre[0] + origin.x0, centre[1] + origin.y0, centre[2] + origin.z0)
         shown = expected.replace("  ", " ")  # las etiquetas se parten por palabras
         self.assertIn(f"Posición: {shown}", self.lines())

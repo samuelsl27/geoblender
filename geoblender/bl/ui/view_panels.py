@@ -128,7 +128,7 @@ from ...core.datasets.model import DatasetStatus
 from ...core.errors import GeoblenderError
 from ...core.georef.transform import local_to_world
 from ...core.gpkg.header import read_header
-from ...core.i18n import format_number, format_xyz, language, tr, translate
+from ...core.i18n import format_number, language, tr, translate
 from ...core.provenance import contract
 from ...core.provenance.messages import render
 from ...core.timeutil import parse_utc
@@ -592,7 +592,7 @@ def _object_lines(project: Project, obj: Any) -> list[CardLine]:
 def position_line(project: Project, obj: Any) -> CardLine | None:
     """Las coordenadas ABSOLUTAS del centro de la extensión de ``obj``, **como texto** (RF-019-14,
     principio 6: nunca una propiedad de 32 bits): la extensión local (``bound_box`` por la matriz
-    del objeto) en float64 más el GeoOrigin del proyecto, con ``core.i18n.format_xyz``. Sin
+    del objeto) en float64 más el GeoOrigin del proyecto, con ``core.magnitudes.format_position``. Sin
     geometría o sin origen, ``None``."""
     try:
         origin = project.origin
@@ -605,7 +605,9 @@ def position_line(project: Project, obj: Any) -> CardLine | None:
         return None
     if not all(np.isfinite((x, y, z))):
         return None
-    return CardLine(ROW_FIELD, tr("Position: {xyz}", xyz=format_xyz(x, y, z)))
+    from ...core import magnitudes  # al usarlo: registrar no lo carga
+
+    return CardLine(ROW_FIELD, tr("Position: {xyz}", xyz=magnitudes.format_position(x, y, z)))
 
 
 def _fill(view: Any, project_uid: str, uid: str, found: ItemCard | None,
