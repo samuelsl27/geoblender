@@ -260,6 +260,7 @@ from ...design import profiles as design_profiles
 from ...design import provenance as design_provenance
 from ...design.model import (PERIMETER_SEGMENT, BenchProfile, CellClass, Order, SeedKind, Surface,
                              ToFinalMode, ZoneKind)
+from ...design import params as design_params
 from ...design.params import BenchParam, RoadProfileParam, bench_key, road_profile_key
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
@@ -356,8 +357,20 @@ def number_text(value: float | None, param: BenchParam) -> str:
 
 def design_error_text(exc: design_messages.DesignError) -> str:
     """El texto de un error del diseño en el idioma de Geoblender (``DesignError.text`` es el
-    español), con las notas que lo acompañan (las partes de RF-014-08, T47)."""
-    return exc.text_in(language())
+    español), con las notas que lo acompañan (las partes de RF-014-08, T47). Si su campo es la clave de un valor de una entidad
+    (``des.pit.pit_003.arc_tol_m``), enseña **el nombre del valor** («Tolerancia de los arcos del desfase»), no la clave (UI-08; T40i)."""
+    return exc.text_in(language(), field=readable_field(exc.values.get("field"), language()))
+
+
+def readable_field(key: object, shown_language: str) -> str | None:
+    """El nombre visible, en ``shown_language``, del valor de una entidad que nombra la clave ``key`` (``des.pit.pit_003.arc_tol_m`` → «Tolerancia de los arcos del desfase»); ``None`` si no es
+    la clave de un valor de una entidad o su definición no tiene etiqueta."""
+    parsed = design_params.parse_entity_key(key)
+    if parsed is None:
+        return None
+    _code, kind, name = parsed
+    label = design_params.entity_params(kind).template(name).label_msgid
+    return translate(shown_language, label) if label else None
 
 
 def parameter_text(project_record: Any, own: Any, key: str, version: Any) -> str:

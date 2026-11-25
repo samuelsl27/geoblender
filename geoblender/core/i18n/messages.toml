@@ -12632,3 +12632,6 @@ es = "Solo lectura: no se puede guardar nada en el proyecto; el motivo está arr
 
 ["It starts from {surface}, not from the ground: a floor that is not below that surface is rejected; to start from the ground, choose it in «Start surface»"]
 es = "Parte de {surface}, no del terreno: un fondo que no queda por debajo de esa superficie se rechaza; para partir del terreno, elíjalo en «Superficie de partida»"
+
+["It is under «More options» of the dialog; the guide gives starting values"]
+es = "Está en «Más opciones» del diálogo; la guía da valores de partida"

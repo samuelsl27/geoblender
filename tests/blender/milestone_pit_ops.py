@@ -378,9 +378,9 @@ class PitOpsTest(unittest.TestCase):
 
         for changes, texts in (({"name": " "}, ("Escriba el nombre de la corta",)),
                                ({"name": "Corta de la orden"}, ("El nombre «Corta de la orden» ya lo tiene la entidad «Corta de la orden» en V01",)),
-                               ({"profile": "none"}, ("entidad «Rechazada»", ".profile»", "no tiene valor")),
-                               ({"arc_tol": ""}, (f"Capa «{h2.FLOORS}»", ".arc_tol_m»", "no tiene valor")),
-                               ({"simplify": "-1"}, (f"Capa «{h2.FLOORS}»", ".simplify_m» = -1", "está fuera de su rango")),
+                               ({"profile": "none"}, ("entidad «Rechazada»", "«Perfil de banco base de la corta»", "no tiene valor")),
+                               ({"arc_tol": ""}, (f"Capa «{h2.FLOORS}»", "«Tolerancia de los arcos del desfase»", "no tiene valor")),
+                               ({"simplify": "-1"}, (f"Capa «{h2.FLOORS}»", "«Tolerancia de simplificación de las polilíneas» = -1", "está fuera de su rango")),
                                ({"start": self.terrain["llano"]}, ("no puede partir de", "ya parte la entidad «Corta de la orden»"))):
             with self.subTest(cambios=changes):
                 with self.assertRaises(RuntimeError) as caught:
@@ -497,6 +497,68 @@ class PitOpsTest(unittest.TestCase):
         self.assertEqual(held.name, "Con roseta")
         self.assertEqual(self.state(), before, "calcular no escribe nada")
         self.des_ops.discard_calculation()
+
+    def test_l_the_missing_tolerance_speaks_in_readable_words(self) -> None:
+        """UI-07, UI-08, UI-09, T40i (ensayo de CE-018-13): el rechazo por una tolerancia sin valor nombra la entidad y **el valor por su nombre** («Tolerancia de los arcos del desfase»), nunca la
+        clave interna ``des.pit.pit_003.arc_tol_m``, y dice qué hacer (desplegar «Más opciones»); un valor fuera de rango, también con su nombre; en inglés, igual."""
+        params = h2._module("design.params")
+        missing = self.messages.DesignError
+        for param, value, code in (("arc_tol_m", None, "des.entity_param_missing"), ("simplify_m", -1.0, "des.entity_param_range")):
+            with self.assertRaises(missing) as caught:
+                params.check_entity_param("Rechazada", "PIT-003", param, value, layer="gis_fea_h2_fondos")
+            self.assertEqual(caught.exception.code, code)
+            text = self.des_pit.pit_error_text(caught.exception)
+            self.assertNotIn("des.pit.", text)
+            self.assertIn("«Rechazada»", text)
+            self.assertNotIn("pit_003", text)
+            if param == "arc_tol_m":
+                self.assertIn("«Tolerancia de los arcos del desfase»", text)
+                self.assertIn("Más opciones", text)
+            else:
+                self.assertIn("«Tolerancia de simplificación de las polilíneas»", text)
+        self.i18n.set_language("en")
+        with self.assertRaises(missing) as caught:
+            params.check_entity_param("Rejected", "PIT-003", "arc_tol_m", None, layer="gis_fea_h2_fondos")
+        text = self.des_pit.pit_error_text(caught.exception)
+        self.assertIn("«Tolerance of the arcs of the offset»", text)
+        self.assertNotIn("des.pit.", text)
+        self.assertIn("More options", text)
+
+    def test_m_a_failed_calculate_keeps_what_was_typed_for_the_next_time_without_writing(self) -> None:
+        """UI-14, T40i (ensayo de CE-018-13: un «Calcular» fallido obligaba a rellenar todo otra vez, ≈ 12 clics): lo escrito en el diálogo se recuerda **en memoria** (nada en el proyecto) si el
+        cálculo falla o se cancela, se pone de nuevo al reabrir, solo una vez, y se olvida si el cálculo sale bien, si cambia el proyecto o la versión o si quien lanza la orden da sus valores."""
+        self.refresh()
+        before = self.state()
+        failing = self.form(name="Mal hecha", arc_tol="", simplify="0,05", max_benches="3", n_berm="1")
+        with self.assertRaises(RuntimeError):
+            bpy.ops.geoblender.des_create_pit("EXEC_DEFAULT", **failing)
+        self.assertEqual(self.state(), before, "recordarlo no escribe nada en el proyecto")
+        reopened = self.fake(name="", max_benches="", simplify="", arc_tol="", n_berm="")
+        reopened.properties = SimpleNamespace(is_property_set=lambda name: False)
+        context = SimpleNamespace(window=platform_ops.window(), selected_objects=(), window_manager=SimpleNamespace(invoke_props_dialog=mock.Mock(return_value={"RUNNING_MODAL"})))
+        self.pit.invoke(reopened, context, None)
+        self.assertEqual((reopened.name, reopened.max_benches, reopened.simplify, reopened.n_berm), ("Mal hecha", "3", "0,05", "1"), "lo escrito vuelve")
+        again = self.fake(name="", max_benches="", simplify="")
+        self.pit.invoke(again, context, None)
+        self.assertEqual(again.max_benches, "", "solo una vez")
+        # un cálculo que sale bien lo olvida
+        self.des_pit.remember_typed(self.fake(name="Vieja", max_benches="9"))
+        self.calculate_pit(self.form(name="Buena", start=self.terrain["roseta"]))
+        self.des_ops.discard_calculation()
+        fresh = self.fake(name="", max_benches="")
+        self.pit.invoke(fresh, context, None)
+        self.assertEqual(fresh.max_benches, "")
+        # lo que da quien lanza la orden manda sobre lo recordado
+        self.des_pit.remember_typed(self.fake(name="Vieja", max_benches="9"))
+        given = self.fake(name="Mía", max_benches="2", properties=SimpleNamespace(is_property_set=lambda name: name in ("name", "max_benches")))
+        self.pit.invoke(given, context, None)
+        self.assertEqual((given.name, given.max_benches), ("Mía", "2"))
+        # otra versión: no se aplica
+        self.des_pit.remember_typed(self.fake(name="Vieja", max_benches="9"))
+        with mock.patch.object(self.des_pit.scene_versions, "active_version", return_value="otra-version"):
+            other = self.fake(name="", max_benches="")
+            self.pit.invoke(other, context, None)
+            self.assertEqual(other.max_benches, "")
 
     # --- z: desactivar -----------------------------------------------------------------------------
 

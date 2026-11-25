@@ -358,6 +358,51 @@ def _pit_fields() -> tuple[str, ...]:
     return tuple(name for name in GEOBLENDER_OT_des_create_pit.__annotations__ if name not in _PIT_HIDDEN and name != "mean_reason")
 
 
+_TYPED: dict[str, Any] = {}
+"""Lo escrito en el diálogo de «Nueva corta…» cuando el cálculo falló o se canceló (T40i, UI-14): solo en memoria, **nada en el proyecto**; ``key`` es el proyecto y la versión de entonces."""
+
+
+def _typing_key() -> tuple[Any, str]:
+    return (getattr(SESSION.project, "uid", None), scene_versions.active_version() or "")
+
+
+def remember_typed(operator: Any) -> None:
+    """Recuerda, en memoria, lo escrito en el diálogo de ``operator`` (T40i): se pone de nuevo en el siguiente diálogo, una sola vez, si es el mismo proyecto y la misma versión."""
+    _TYPED.clear()
+    _TYPED.update(key=_typing_key(), values={name: getattr(operator, name) for name in _pit_fields()})
+
+
+def forget_typed() -> None:
+    """Olvida lo recordado (el cálculo salió bien)."""
+    _TYPED.clear()
+
+
+def _restore_typed(operator: Any) -> None:
+    """Pone en ``operator`` lo recordado (:func:`remember_typed`) salvo lo que dio quien lo lanzó; se usa una sola vez y solo con el mismo proyecto y versión. Un valor que ya no es válido
+    (una capa que ya no está) se salta."""
+    found = dict(_TYPED)
+    _TYPED.clear()
+    if not found or found["key"] != _typing_key():
+        return
+    for name, value in found["values"].items():
+        if operator.properties.is_property_set(name):
+            continue
+        try:
+            setattr(operator, name, value)
+        except (TypeError, ValueError):
+            LOGGER.info("No se recupera lo escrito en «%s»: ya no es válido", name)
+
+
+def pit_error_text(exc: BaseException) -> str:
+    """El texto de un error de «Nueva corta…»: el de ``design_error_text`` y, si falta una tolerancia del desfase, dónde está y qué hacer (T40i, UI-09)."""
+    text = design_error_text(exc)
+    if isinstance(exc, design_messages.DesignError) and exc.code == "des.entity_param_missing":
+        parsed = design_params.parse_entity_key(exc.values.get("field"))
+        if parsed is not None and parsed[1] == "pit" and parsed[2] in {param for _prop, param in _tolerance_rows()}:
+            text = f"{text} " + tr("It is under «More options» of the dialog; the guide gives starting values")
+    return text
+
+
 def _start_notice(start: str) -> str | None:
     """RF-018-03, T40h: el aviso del diálogo cuando la partida es una entidad (por defecto, la última de la cadena: otra corta) y no el terreno, con su nombre legible (el de la lista) y cómo
     elegir otra; ``None`` si la partida es una superficie."""
@@ -538,6 +583,7 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
             des_panels.refresh_choices(project)
             des_panels.refresh_platform_choices(project)
             refresh_pit_choices(project)
+            _restore_typed(self)  # lo escrito antes de un cálculo que falló (T40i)
             self._propose(context, project)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
@@ -686,13 +732,15 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
         project = SESSION.project
         version = scene_versions.active_version() or ""
         code = self.code.strip()
+        if not code:
+            remember_typed(self)  # si falla o se cancela, el diálogo vuelve a abrirse con lo escrito (T40i)
         try:
             request = self._entity_request(project, version, code) if code else self._request()
         except ProfileFormError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
-            self.report({"ERROR"}, design_error_text(exc))
+            self.report({"ERROR"}, pit_error_text(exc))
             return {"CANCELLED"}
         ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog, version=version)
         if ready is None:
@@ -749,6 +797,7 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
         calculated = not self._chain
         done = _ChainsEntityLayer._finished(self, context, opened)
         if calculated:
+            forget_typed()  # el cálculo salió bien: nada que recordar
             _show_calculated_preview(opened)
         return done
 
@@ -834,7 +883,7 @@ class GEOBLENDER_OT_des_create_pit(_ClearsEntityPreview, _CreatesInSteps, _Chain
         return _CalculateAndCreate._cancelled_text(self)
 
     def _error_text(self, exc: GeoblenderError) -> str:
-        found = _CalculateAndCreate._error_text(self, exc)
+        found = pit_error_text(exc)
         if self._chain:
             return f"{found} " + tr("The pit is created: only the declared constraints and the masks have not been brought up to date")
         return found

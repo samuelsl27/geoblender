@@ -4227,10 +4227,12 @@ class DesignError(GeoblenderError):
                          context=self.values)
         self.args = (self.text,)
 
-    def text_in(self, language: str = "es") -> str:
+    def text_in(self, language: str = "es", *, field: str | None = None) -> str:
         """El texto del error en ``language`` (``"es"`` o ``"en"``) con sus notas detrás, de sus
-        valores en JSON (:func:`render`)."""
-        return " ".join((render(self.code, language=language, **self.values),
+        valores en JSON (:func:`render`). ``field``: el nombre que se enseña en lugar de la clave
+        del campo (T40i: el de su etiqueta, para que la interfaz no escriba una clave interna)."""
+        shown = self.values if field is None else {**self.values, "field": field}
+        return " ".join((render(self.code, language=language, **shown),
                          *(render(note, language=language, **values)
                            for note, values in self.notes)))
 
