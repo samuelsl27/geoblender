@@ -353,6 +353,16 @@ class ElementLookPanelTest(ElementPanelTest):
         self.assertEqual(self.appearance.reset_message(["transparency"], done),
                          f"Restablecido: Transparencia de «{obj.name}»")
 
+    def test_look_comes_first_and_the_card_starts_folded(self) -> None:
+        """T38 (H3, F-8; CE-019-01): «Aspecto» va antes que la ficha en Propiedades ▸ Objeto (el orden es el de registro) y
+        queda desplegado; la ficha, con su «Procedencia», empieza plegada. «Más aspecto» sigue a su padre."""
+        order = [cls.__name__ for cls in vf.extension("bl.ui.element_panel").classes]
+        self.assertLess(order.index("GEOBLENDER_PT_ui_element_look"), order.index("GEOBLENDER_PT_ui_element"))
+        self.assertLess(order.index("GEOBLENDER_PT_ui_element_look"), order.index("GEOBLENDER_PT_ui_element_look_more"))
+        self.assertLess(order.index("GEOBLENDER_PT_ui_element_look_more"), order.index("GEOBLENDER_PT_ui_element"))
+        self.assertNotIn("DEFAULT_CLOSED", getattr(getattr(bpy.types, LOOK), "bl_options", set()))
+        self.assertIn("DEFAULT_CLOSED", getattr(bpy.types, ELEMENT).bl_options)
+
     def test_look_panel_is_where_the_card_is(self) -> None:
         """P-1: el panel del aspecto va en Propiedades ▸ Objeto, con el mismo filtro que la ficha."""
         obj = self.surface()

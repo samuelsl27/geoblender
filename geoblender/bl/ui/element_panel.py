@@ -5,7 +5,7 @@
 :class:`GEOBLENDER_PT_ui_element` va en Propiedades, pestaña **Objeto**, con la caja «Ficha» y la caja «Procedencia» de
 ``bl.ui.card``: lo que la barra N de la Vista 3D (``view_panels``) enseñaba como «Elemento activo», que ahora es una línea
 con un botón que lleva aquí (UI-29: cada dato, en un sitio). Va **solo** cuando el filtro reversible de los paneles
-nativos (T15) quite los de Blender; hasta entonces se registra el último y no reordena nada (``bl_order`` no reordena los
+nativos (T15) quite los de Blender; va **debajo** de «Aspecto» y plegada (T38) (``bl_order`` no reordena los
 paneles nativos en 5.2, solo cuenta el orden de registro). Sin objeto activo la pestaña Objeto no existe: el estado del proyecto va en Propiedades ▸
 Escena (T11, ``GEOBLENDER_PT_ui_project``; nombre, EPSG, versión activa y las acciones que sirven, o «no hay proyecto
 abierto» con crear y abrir). Con un objeto que no es de Geoblender, ``GEOBLENDER_PT_ui_foreign`` dice que no pertenece
@@ -39,6 +39,7 @@ class GEOBLENDER_PT_ui_element(bpy.types.Panel):
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "object"
+    bl_options = {"DEFAULT_CLOSED"}  # T38 (H3): el aspecto, a la vista; la ficha, debajo y plegada
     bl_translation_context = TRANSLATION_CONTEXT
 
     @classmethod
@@ -344,5 +345,6 @@ def localize() -> None:
     GEOBLENDER_PT_ui_foreign.bl_label = tr("Object outside the project")
 
 
-classes: tuple[type, ...] = (GEOBLENDER_PT_ui_element, GEOBLENDER_PT_ui_element_look, GEOBLENDER_PT_ui_element_look_more,
+# El orden de registro es el de la pestaña (``bl_order`` no reordena en 5.2): «Aspecto» primero, la ficha debajo (T38).
+classes: tuple[type, ...] = (GEOBLENDER_PT_ui_element_look, GEOBLENDER_PT_ui_element_look_more, GEOBLENDER_PT_ui_element,
                              GEOBLENDER_PT_ui_project, GEOBLENDER_PT_ui_foreign)

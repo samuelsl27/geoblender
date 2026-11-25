@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 REV_KEY = "geoblender_layout_rev"  # la propiedad del espacio de trabajo (la escribe el generador)
 FIRST_REV = 1  # un espacio de Geoblender sin la clave es de la 003 (revisión 1)
-LAYOUT_REV = 2  # 1: la 003 (con línea de tiempo); 2: la 019 T16 (sin barra inferior, pestañas)
+LAYOUT_REV = 3  # 1: la 003 (con línea de tiempo); 2: la 019 T16 (sin barra inferior, pestañas); 3: T38 (Outliner más alto)
 
 #: Las cuatro decisiones posibles (clave → texto que lleva el documento).
 DECISIONS: dict[str, str] = {

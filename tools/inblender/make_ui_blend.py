@@ -55,8 +55,10 @@ import sys
 if __name__ == "__main__":  # como guion: sin __pycache__ en el repositorio (importado por
     sys.dont_write_bytecode = True  # una prueba, manda el lanzador de las pruebas)
 
+import ctypes  # noqa: E402
 import importlib  # noqa: E402
 import re  # noqa: E402
+import struct  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import bpy  # noqa: E402
@@ -147,6 +149,50 @@ def configure_view(area: bpy.types.Area, *, sidebar: bool = False,
         space.region_3d.view_rotation = rotation
 
 
+# T38 (H3, F-8): el Outliner a ≈ 280 px a 1001 px de ventana. La base «Modeling» trae 189 + 839 px; el borde se lleva a 304 + 727.
+OUTLINER_PX = 304
+PROPERTIES_PX = 727
+_EDGE_INSET = 2  # el rectángulo de un área queda 2 px dentro de sus vértices
+
+
+def move_column_edge(workspace: bpy.types.WorkSpace, outliner_px: int = OUTLINER_PX) -> None:
+    """Mueve el borde entre el Outliner (arriba) y Propiedades (abajo) para que el Outliner mida ``outliner_px``.
+
+    ``screen.area_move`` devuelve ``CANCELLED`` en segundo plano (no hay ventana), y ``area_join`` deja áreas fantasma: se
+    escriben con ``ctypes`` los dos vértices del borde y los rectángulos de las dos áreas, sobre la disposición que
+    Blender 5.2.1 tiene de ``ScrArea`` (v1..v4 en 16, ``totrct`` en 56, ``winx/winy`` en 76) y de ``ScrVert`` (``vec`` en 24).
+    Cada lectura se comprueba contra lo que Blender dice del área; si no coincide, falla en voz alta.
+    """
+    outliner, props = _only(workspace, "OUTLINER"), _only(workspace, "PROPERTIES")
+    o_ptr, p_ptr = outliner.as_pointer(), props.as_pointer()
+    o_rect = struct.unpack("<4i", ctypes.string_at(o_ptr + 56, 16))  # xmin, xmax, ymin, ymax
+    p_rect = struct.unpack("<4i", ctypes.string_at(p_ptr + 56, 16))
+    if (o_rect[2], o_rect[3] - o_rect[2] + 1) != (outliner.y, outliner.height) or p_rect[2] != props.y:
+        raise RuntimeError("la disposición de ScrArea no es la esperada (¿otra versión de Blender?)")
+    if p_rect[3] + 2 * _EDGE_INSET != o_rect[2]:
+        raise RuntimeError("el Outliner no está justo sobre Propiedades")
+    total = (o_rect[3] - p_rect[2] + 1)
+    props_height = total - outliner_px
+    new_p_top = p_rect[2] + props_height - 1  # ymax de Propiedades
+    new_o_bottom = new_p_top + 2 * _EDGE_INSET  # ymin del Outliner
+    edge_y = new_p_top + _EDGE_INSET
+    old_edge_y = p_rect[3] + _EDGE_INSET
+    moved = 0
+    for ptr in (o_ptr, p_ptr):
+        for offset in (16, 24, 32, 40):  # v1..v4
+            vert = struct.unpack("<Q", ctypes.string_at(ptr + offset, 8))[0]
+            x, y = struct.unpack("<2h", ctypes.string_at(vert + 24, 4))
+            if y == old_edge_y:
+                ctypes.memmove(vert + 24, struct.pack("<2h", x, edge_y), 4)
+                moved += 1
+    if moved != 2:  # los dos vértices del borde (compartidos por las dos áreas)
+        raise RuntimeError(f"se esperaban 2 vértices en el borde y hay {moved}")
+    ctypes.memmove(p_ptr + 56 + 12, struct.pack("<i", new_p_top), 4)  # ymax
+    ctypes.memmove(p_ptr + 78, struct.pack("<h", props_height), 2)  # winy
+    ctypes.memmove(o_ptr + 56 + 8, struct.pack("<i", new_o_bottom), 4)  # ymin
+    ctypes.memmove(o_ptr + 78, struct.pack("<h", outliner_px), 2)
+
+
 def configure_outliner(area: bpy.types.Area) -> None:
     """El Outliner del espacio Geoblender (PC §5.5)."""
     space = _space(area, "OUTLINER")
@@ -177,6 +223,7 @@ def columns(name: str, *, sidebar: bool = True) -> tuple[bpy.types.WorkSpace, bp
     view = _only(workspace, "VIEW_3D")
     configure_outliner(_only(workspace, "OUTLINER"))
     configure_properties(_only(workspace, "PROPERTIES"))
+    move_column_edge(workspace)
     configure_view(view, sidebar=sidebar, rotation=PLAN)
     return workspace, view
 

@@ -147,6 +147,16 @@ class UiAreasTest(unittest.TestCase):
         self.assertTrue(fallback.use_filter_object_camera)
         self.assertTrue(fallback.use_filter_object_light)
 
+    def test_right_column_gives_the_outliner_about_280_px(self) -> None:
+        """T38 (H3, F-8): el Outliner mide 304 px y Propiedades 727 (a 1001 px de ventana, ≈ 280 y ≈ 668); el «Layout» de respaldo
+        conserva 189 y 839. Se lee del ``.blend`` (``area.height``); el generador mueve el borde porque ``area_move`` no sirve sin ventana."""
+        self.assertGreaterEqual(self.areas.LAYOUT_REV, 3)
+        for name in self.names:
+            heights = {a.type: a.height for a in self.loaded[name].screens[0].areas if a.type in ("OUTLINER", "PROPERTIES")}
+            self.assertEqual(heights, {"OUTLINER": 304, "PROPERTIES": 727}, name)
+        fallback = {a.type: a.height for a in self.loaded[FALLBACK].screens[0].areas if a.type in ("OUTLINER", "PROPERTIES")}
+        self.assertEqual(fallback, {"OUTLINER": 189, "PROPERTIES": 839})
+
     def test_layout_revision(self) -> None:
         """P-9: la revisión de la disposición, un entero igual al de la extensión."""
         self.assertIsInstance(self.areas.LAYOUT_REV, int)
