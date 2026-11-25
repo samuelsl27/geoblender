@@ -12801,6 +12801,15 @@ es = "Restablecido: {what} de «{name}»"
 ["Reset: {what} of {count} elements"]
 es = "Restablecido: {what} de {count} elementos"
 
+["various values"]
+es = "varios valores"
+
+["{count} elements"]
+es = "{count} elementos"
+
+["{count} elements of {kinds} types"]
+es = "{count} elementos de {kinds} tipos"
+
 ["all the appearance"]
 es = "todo el aspecto"
 

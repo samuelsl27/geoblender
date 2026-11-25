@@ -49,7 +49,21 @@ class GEOBLENDER_PT_ui_element(bpy.types.Panel):
         return bool(uid) and owner == project.uid
 
     def draw(self, context: Any) -> None:
+        group = _group(context)
+        if group:
+            _draw_summary(self.layout, context, group)
+            return
         card.draw_card(self.layout, context)
+
+
+def _draw_summary(layout: Any, context: Any, group: list[Any]) -> None:
+    """Varios elementos seleccionados (RF-019-10): el resumen en lugar de la ficha («3 elementos»; con tipos distintos,
+    «3 elementos de 2 tipos», P-10). No lee el proyecto."""
+    kinds = len({obj.geoblender.kind for obj in group})
+    text = (tr("{count} elements", count=len(group)) if kinds == 1
+            else tr("{count} elements of {kinds} types", count=len(group), kinds=kinds))
+    box = layout.box()
+    card.draw_lines(box, text, _width(context), icon="INFO")
 
 
 LOOK_PANEL = "GEOBLENDER_PT_ui_element_look"
@@ -97,18 +111,42 @@ def _changed_props(obj: Any, props: tuple[str, ...]) -> set[str]:
             if look.is_property_set(prop) and (now.get(prop) or "") != (default.get(prop) or "")}
 
 
-def draw_look(layout: Any, obj: Any, props: tuple[str, ...]) -> None:
+def _group(context: Any) -> list[Any]:
+    """Los elementos seleccionados si son varios y el activo es uno de ellos; si no, vacío (RF-019-10)."""
+    from ..scene import appearance
+
+    obj = _shown_object(context)
+    group = appearance.selected_elements(context)
+    return group if obj is not None and len(group) > 1 and group[0] is obj else []
+
+
+def _mixed(group: list[Any]) -> Any:
+    """El aspecto común de ``group`` (``core.appearance.merge``): un valor por propiedad común o «varios valores»."""
+    from ...core.appearance import merge
+    from ..scene import appearance
+
+    return merge.common([appearance.read(obj) for obj in group])
+
+
+def draw_look(layout: Any, obj: Any, props: tuple[str, ...], group: list[Any] | None = None) -> None:
     """Las propiedades de aspecto ``props`` que ofrece el tipo de ``obj``, con selectores y deslizadores nativos
     (``Object.geoblender.look``). Junto al valor que nadie cambió, «predefinido» (UI-03, y en texto, no solo en color:
     UI-30/31); junto al cambiado, un botón que vuelve al predefinido (``ui_appearance_reset``). No lee el proyecto."""
     look = obj.geoblender.look
     changed_props = _changed_props(obj, props)
+    mixed = _mixed(group) if group else None
+    is_mixed = hasattr(mixed, "is_various")  # una selección que no es toda igual
     for prop in _offered(obj, props):
+        if is_mixed and prop not in mixed.props:  # con tipos distintos, solo lo común (P-10)
+            continue
+        various = is_mixed and mixed.is_various(prop)
         row = layout.row(align=True)
         row.prop(look, prop, text=_name(prop), slider=prop in _SLIDERS, translate=False)
-        if prop in changed_props:
+        if various:
+            row.label(text=tr("various values"), translate=False)
+        elif prop in changed_props:
             button = row.operator(RESET_OPERATOR, text="", icon="LOOP_BACK")
-            button.scope, button.prop = "PROPERTY", prop
+            button.scope, button.prop = ("SELECTION" if group else "PROPERTY"), prop
         else:
             row.label(text=tr("default"), translate=False)
 
@@ -131,9 +169,10 @@ class GEOBLENDER_PT_ui_element_look(bpy.types.Panel):
         obj = _shown_object(context)
         if obj is None:
             return
-        draw_look(self.layout, obj, FREQUENT)
+        group = _group(context)
+        draw_look(self.layout, obj, FREQUENT, group)
         if _changed_props(obj, FREQUENT + RARE):
-            self.layout.operator(RESET_OPERATOR).scope = "ELEMENT"
+            self.layout.operator(RESET_OPERATOR).scope = "SELECTION" if group else "ELEMENT"
 
 
 class GEOBLENDER_PT_ui_element_look_more(bpy.types.Panel):
@@ -151,12 +190,14 @@ class GEOBLENDER_PT_ui_element_look_more(bpy.types.Panel):
     @classmethod
     def poll(cls, context: Any) -> bool:
         obj = _shown_object(context)
+        if obj is not None and len(_group(context)) and len({o.geoblender.kind for o in _group(context)}) > 1:
+            return False  # tipos distintos: solo visibilidad y transparencia (P-10)
         return obj is not None and bool(_offered(obj, RARE))
 
     def draw(self, context: Any) -> None:
         obj = _shown_object(context)
         if obj is not None:
-            draw_look(self.layout, obj, RARE)
+            draw_look(self.layout, obj, RARE, _group(context))
 
 
 PROJECT_PANEL = "GEOBLENDER_PT_ui_project"

@@ -42,20 +42,20 @@ DELAY_S = 0.5
 
 __all__ = ["APPLIERS", "DELAY_S", "MATERIAL_PREFIX", "apply", "discard", "flush", "mirror", "offered", "on_changed",
            "on_load_pre", "on_save_pre", "read", "reapply", "reconcile", "register", "reset", "reset_message",
-           "restore", "set_clock", "sweep", "unregister"]
+           "restore", "selected_elements", "set_clock", "spread", "sweep", "unregister"]
 
 MATERIAL_PREFIX = "Geoblender look · "
 """El comienzo del nombre del material de visualización de un objeto (después, el nombre del objeto)."""
 
 def _domain() -> Any:
     """Los módulos del dominio del aspecto, al usarlos (registrar no los importa: RNF-001-03)."""
-    from ...core.appearance import catalog, model, store
+    from ...core.appearance import catalog, merge, model, store
 
     class _D:
         pass
 
     d = _D()
-    d.catalog, d.model, d.store = catalog, model, store  # type: ignore[attr-defined]
+    d.catalog, d.merge, d.model, d.store = catalog, merge, model, store  # type: ignore[attr-defined]
     return d
 
 
@@ -227,6 +227,51 @@ def on_changed(look_group: Any, prop: str | None = None) -> None:
     if prop in values:
         apply(obj, {prop: values[prop]})
     mark(obj, prop)
+    if not _spreading:
+        spread(obj, prop)
+
+
+_spreading = False  # mientras se copia un valor a los demás seleccionados, sus ``update`` no vuelven a copiar
+
+
+def selected_elements(context: Any = None) -> list[Any]:
+    """Los objetos seleccionados que son la vista de un dato del proyecto abierto, el activo primero (T12; RF-019-10)."""
+    context = context if context is not None else bpy.context
+    project = project_session.current()
+    if project is None:
+        return []
+    chosen = [obj for obj in getattr(context, "selected_objects", None) or ()
+              if obj.geoblender.kind != "NONE" and obj.geoblender.dataset_uid and obj.geoblender.project_uid == project.uid]
+    active = getattr(getattr(context, "view_layer", None), "objects", None)
+    active = getattr(active, "active", None)
+    chosen.sort(key=lambda obj: obj is not active)
+    return chosen
+
+
+def spread(obj: Any, prop: str) -> int:
+    """Con varios elementos seleccionados y ``obj`` el activo, copia a los demás el valor que ``prop`` acaba de tomar en
+    ``obj`` (RF-019-10): cada uno lo aplica y lo anota como un cambio propio, en la misma transacción de escritura y en
+    el mismo paso de deshacer. Con tipos distintos (P-10) solo la transparencia y la visibilidad; el rótulo no se copia
+    nunca. Devuelve a cuántos se copió."""
+    global _spreading
+    if prop == "label":
+        return 0
+    group = selected_elements()
+    if len(group) < 2 or group[0] is not obj:
+        return 0
+    uniform = all(other.geoblender.kind == obj.geoblender.kind for other in group)
+    if not uniform and prop not in _domain().merge.MULTI_KIND_PROPS:
+        return 0
+    value, copied = getattr(obj.geoblender.look, prop), 0
+    _spreading = True
+    try:
+        for other in group[1:]:
+            if prop in offered(other.geoblender.kind):
+                setattr(other.geoblender.look, prop, tuple(value) if prop == "color" else value)
+                copied += 1
+    finally:
+        _spreading = False
+    return copied
 
 
 def reapply(objects: Iterable[Any]) -> int:

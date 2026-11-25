@@ -333,6 +333,92 @@ class ElementLookPanelTest(ElementPanelTest):
         self.assertIsNotNone(obj)
 
 
+class ElementMultiPanelTest(ElementLookPanelTest):
+    """Spec 019, T12 (HU-019-1; RF-019-10; plan 019 P-10, RNF-019-01): varios elementos seleccionados."""
+
+    def multi(self, kinds: tuple[str, ...] = ("DTM", "DTM", "DTM")) -> list[bpy.types.Object]:
+        """Tres elementos cargados, con los tipos ``kinds``, seleccionados; el primero, activo."""
+        grid, mdt, derived = self.three()
+        self.data.load(bpy.context, derived.uid)
+        objs = [vf.objects_of(bpy.data, record.uid)[0] for record in (grid, mdt, derived)]
+        for obj, kind in zip(objs, kinds):
+            obj.geoblender.kind = kind
+        for obj in bpy.context.view_layer.objects:
+            obj.select_set(False)
+        for obj in objs:
+            obj.select_set(True)
+        self.activate_object(objs[0])
+        return objs
+
+    def test_same_type_shows_summary_and_various_values_where_they_differ(self) -> None:
+        """RF-019-10: tres superficies, una con otro color: la ficha dice «3 elementos» y el color, «varios valores»;
+        lo que coincide enseña su valor."""
+        objs = self.multi()
+        objs[1].geoblender.look.color = (1.0, 0.0, 0.0)
+        self.assertIn("3 elementos", self.lines())
+        self.assertEqual(self.drawn(LOOK).texts().count("varios valores"), 1)
+        self.assertEqual(self.props(LOOK), ["color", "transparency", "visible"])  # el rótulo es de cada uno
+        objs[0].geoblender.look.color = (1.0, 0.0, 0.0)  # el activo; los demás se igualan
+        self.assertEqual(self.drawn(LOOK).texts().count("varios valores"), 0)
+
+    def test_changing_a_value_applies_to_all_and_one_undo_reverts_all(self) -> None:
+        """RF-019-10, UI-15: cambiar el color o la transparencia del activo los deja iguales en todos (espejo, objeto y
+        tabla, en una transacción); un solo deshacer los devuelve a todos."""
+        objs = self.multi()
+        objs[1].geoblender.look.color = (0.0, 1.0, 0.0)
+        objs[0].geoblender.look.color = (1.0, 0.0, 0.0)
+        objs[0].geoblender.look.transparency = 40
+        for obj in objs:
+            self.assertEqual(tuple(round(c, 3) for c in obj.color), (1.0, 0.0, 0.0, 0.6))
+            self.assertEqual(self.appearance.read(obj).get("transparency"), "40")
+        for obj in objs:  # lo que hace Blender al deshacer un paso (dentro de los 0,5 s): el objeto y el espejo vuelven
+            obj.color = (1.0, 1.0, 1.0, 1.0)
+            for prop in ("color", "transparency"):
+                obj.geoblender.look.property_unset(prop)
+        vf.extension("bl.scene.undo_watch").on_undo_post(bpy.context.scene)
+        before = self.data.change_counter()
+        self.assertEqual(self.appearance.flush(), 0)  # nada que escribir
+        self.assertEqual(self.data.change_counter(), before)
+        for obj in objs:
+            self.assertAlmostEqual(obj.color[3], 1.0, places=3)
+        objs[0].geoblender.look.transparency = 40  # y escribir: una sola transacción para los tres
+        self.assertEqual(self.appearance.flush(), 3)
+        self.assertEqual(self.data.change_counter(), before + 1)
+
+    def test_different_types_show_only_the_common_fields(self) -> None:
+        """RF-019-10, P-10: tipos distintos, «3 elementos de 2 tipos» y solo visibilidad y transparencia, que se aplican
+        a todos; el color del activo no se propaga."""
+        objs = self.multi(("DTM", "DESIGN_ENTITY", "DTM"))
+        self.assertIn("3 elementos de 2 tipos", self.lines())
+        self.assertEqual(self.props(LOOK), ["transparency", "visible"])
+        self.assertEqual(self.props(LOOK_MORE), [])
+        objs[0].geoblender.look.transparency = 30
+        objs[0].geoblender.look.color = (1.0, 0.0, 0.0)
+        for obj in objs:
+            self.assertAlmostEqual(obj.color[3], 0.7, places=3)
+        self.assertFalse(objs[1].geoblender.look.is_property_set("color"))
+
+    def test_one_selected_element_is_not_a_group(self) -> None:
+        """RF-019-10: con un solo elemento seleccionado no hay resumen ni «varios valores»."""
+        objs = self.multi()
+        for obj in objs[1:]:
+            obj.select_set(False)
+        self.assertNotIn("3 elementos", self.lines())
+        self.assertEqual(self.drawn(LOOK).texts().count("varios valores"), 0)
+
+    def test_group_panels_fit(self) -> None:
+        """UI-28: las etiquetas de la selección múltiple caben a las escalas de la spec."""
+        self.multi(("DTM", "DESIGN_ENTITY", "DTM"))
+        width = self.labels.sidebar_width(bpy.context)
+        for scale in at_scales():
+            assert_fits(self, self.drawn(ELEMENT, width_px=width), width, scale=scale)
+            assert_fits(self, self.drawn(LOOK, width_px=width), width, scale=scale)
+
+
+for _name in [n for n in dir(ElementLookPanelTest) if n.startswith("test_") and n not in vars(ElementMultiPanelTest)]:
+    setattr(ElementMultiPanelTest, _name, None)  # las de T09 y T10 no se repiten
+
+
 PROJECT = "GEOBLENDER_PT_ui_project"
 FOREIGN = "GEOBLENDER_PT_ui_foreign"
 NEW_PROJECT = "geoblender.core_new_project"
