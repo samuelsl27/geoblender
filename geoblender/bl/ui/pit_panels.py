@@ -349,7 +349,18 @@ def _draw_chosen(layout: Any, item: Any, width: float, writable: bool, save: str
     des_panels._draw_text(box, item.summary, width)
     if item.problem:
         des_panels._draw_text(box, item.problem, width, alert=True)
-    elif len(item.lines):
+    shown = des_panels.view()
+    more = shown is not None and shown.pit_details
+    if shown is not None:  # lo largo (los derivados y los valores con su fuente) va plegado: la ventana cabe (UI-01, UI-02; T40k)
+        fold = box.row()
+        fold.prop(shown, "pit_details", text=tr("Details"), icon="TRIA_DOWN" if more else "TRIA_RIGHT", emboss=False, translate=False)
+    if not more:
+        edit = box.row()
+        edit.enabled = writable
+        button = edit.operator(save, text=tr("Complete or rename…"), icon="GREASEPENCIL", translate=False)
+        button.code = item.code
+        return
+    if not item.problem and len(item.lines):
         box.label(text=tr("Derived values (not parameters)"), translate=False)
         for line in item.lines:
             des_panels._draw_text(box, line.name, width, alert=bool(line.alert))
@@ -378,6 +389,7 @@ def _draw(layout: Any, *, items: Any, index: int, report: Any, listing: str, col
     writable = blocked is None
     width = labels.dialog_width(des_panels.PROFILES_WIDTH_PX)
     des_panels._draw_blocked(layout, blocked, width)
+    labels.draw_wrapped(layout, tr("To close this window press Esc or click outside it"), width, icon="INFO")  # no tiene botón de cerrar: es una ventana emergente de Blender (T40k)
     create = layout.row()
     create.enabled = writable
     button = create.operator(save, text=new_text, icon="ADD", translate=False)

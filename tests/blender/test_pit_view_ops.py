@@ -32,7 +32,7 @@ from tests.blender import milestone_pit_h2 as h2
 from tests.blender import milestone_pit_ops as pit_ops
 from tests.blender import test_platform_ops as platform_ops
 from tests.support import blender_ext, step_modals
-from tests.support.fake_layout import draw, operator_self
+from tests.support.fake_layout import FakeLayout, draw, operator_self
 from tests.support.trees import remove_tree
 
 SKYLINE = "geoblender.des_pit_skyline"
@@ -139,6 +139,28 @@ class PitViewOpsTest(pit_ops.PitOpsTest):
         self.assertLessEqual(len([item for item in shown.items if item.kind in ("prop", "label", "operator", "prop_search")]), 32)
 
     # --- b: las cifras de la línea de cielo --------------------------------------------------------
+
+    def test_vb2_the_skyline_shows_a_visible_report_and_says_when_there_is_none(self) -> None:
+        """UI-10, UI-13, T40k (ensayo de CE-018-13: «Mostrar» no daba ninguna confirmación visible): con pantalla, la orden **abre una ventana** con el informe (el título dice la corta y la versión y
+        luego van las cifras); sin línea de cielo, el informe lo dice; sin pantalla (guion), solo los informes."""
+        manager = SimpleNamespace(popup_menu=mock.Mock())
+        reports: list[str] = []
+        fake = operator_self(self.skyline, report=lambda kind, text: reports.append(text), pit=PIT_NAME, update_layer=False, in_steps=False)
+        with mock.patch.object(self.des_pit, "_has_screen", return_value=True):
+            self.assertEqual(self.skyline.execute(fake, SimpleNamespace(window_manager=manager)), {"FINISHED"})
+        manager.popup_menu.assert_called_once()
+        drawn = FakeLayout()
+        manager.popup_menu.call_args.args[0](SimpleNamespace(layout=drawn), None)
+        text = " ".join(drawn.texts())
+        self.assertIn(f"«{PIT_NAME}»", text)
+        self.assertIn("m", text)
+        self.assertEqual(manager.popup_menu.call_args.kwargs["title"], "Línea de cielo…")
+        silent = SimpleNamespace(popup_menu=mock.Mock())
+        self.sky_run()
+        self.skyline.execute(operator_self(self.skyline, report=lambda kind, text: None, pit=PIT_NAME, update_layer=False, in_steps=False), SimpleNamespace(window_manager=silent))
+        silent.popup_menu.assert_not_called()
+        empty = SimpleNamespace(name="Sin cielo", code="PIT-009", version_code="V01", figures=(), legal=None, perimeter=None)
+        self.assertIn("no tiene línea de cielo", " ".join(self.des_pit._skyline_lines(empty)))
 
     def test_vb_the_skyline_shows_its_figures_and_writes_nothing(self) -> None:
         """RF-018-29, RF-008-30 (M4): la orden enseña las cifras de la línea de cielo tal como las registró la corta (con su unidad y su tipo) y no escribe nada con la capa al día."""

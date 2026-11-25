@@ -12671,3 +12671,9 @@ es = "Banco de la capa que se expande, de la lista (automático: el banco 1)"
 
 ["Part of the bench, from the list: 0 is the first; the others only if the bench has several parts"]
 es = "Parte del banco, de la lista: la 0 es la primera; las demás solo si el banco tiene varias partes"
+
+["Details"]
+es = "Detalles"
+
+["To close this window press Esc or click outside it"]
+es = "Para cerrar esta ventana pulse Esc o haga clic fuera de ella"

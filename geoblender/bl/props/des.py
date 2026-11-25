@@ -251,6 +251,7 @@ class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
     pit_roses: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_des_pit_item, options=_STATIC,
     )
+    pit_details: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
     pit_rose_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
     pit_roses_project: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     pit_rose_report: CollectionProperty(  # type: ignore[valid-type]

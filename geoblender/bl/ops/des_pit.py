@@ -1833,6 +1833,24 @@ def _metres(value: float) -> str:
     return text if i18n.language() == "en" else text.replace(",", " ").replace(".", ",")
 
 
+def _has_screen(manager: Any) -> bool:
+    """Si hay una pantalla donde abrir una ventana (no en un guion en segundo plano). Aparte para que las pruebas lo sustituyan."""
+    return not bpy.app.background and manager is not None and bool(manager.windows)
+
+
+def _popup_report(context: Any, lines: list[str], title: str) -> None:
+    """Abre una ventana emergente con ``lines`` (cada una partida al ancho del diálogo): la respuesta visible de una orden que solo informa (T40k, UI-10). Sin pantalla, nada."""
+    manager = getattr(context, "window_manager", None)
+    if not _has_screen(manager):
+        return
+
+    def draw(popup: Any, _context: Any) -> None:
+        for line in lines:
+            des_panels.draw_wrapped(popup.layout, line, DIALOG_WIDTH)
+
+    manager.popup_menu(draw, title=title, icon="INFO")
+
+
 def _skyline_lines(shown: Any) -> list[str]:
     """Lo que dice el informe de la línea de cielo de ``shown`` (``design.pit_view.SkylineReport``): su título, sus cifras con su insignia de tipo y el lugar de las distancias."""
     language = i18n.language()
@@ -1894,8 +1912,10 @@ class GEOBLENDER_OT_des_pit_skyline(_EntitySteps, DesignCommandAware, Provenance
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
         self.report_log = []
-        for text in _skyline_lines(shown):
+        lines = _skyline_lines(shown)
+        for text in lines:
             self._report({"INFO"}, text)
+        _popup_report(context, lines, tr("Skyline…"))  # la barra de estado deja el informe unos segundos: la ventana lo deja a la vista
         if not shown.layer_pending:
             self._report({"INFO"}, tr("The skyline layer of {version} is already up to date", version=shown.version_code))
             return {"FINISHED"}

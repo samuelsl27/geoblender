@@ -290,6 +290,13 @@ class PitEditOpsTest(unittest.TestCase):
                                                    ("rampa", OPEN_RAMP, "GEOBLENDER_PT_des_pit_ramps", "ramps", "longitud de eje", 6)):
             with self.subTest(ventana=name):
                 shown = self.opened(opener)
+                shown.pit_details = False
+                folded = draw(getattr(bpy.types, panel), bpy.context)
+                self.assertNotIn(derived, " ".join(folded.texts()), "T40k: plegada por defecto, la ventana cabe")
+                self.assertTrue([item for item in folded.items if item.target == "pit_details"], "el pliegue se ve")
+                self.assertIn("Esc", " ".join(folded.texts()), "T40k: dice cómo se cierra")
+                self.assertLess(len(folded.items), 40)
+                shown.pit_details = True
                 layout = draw(getattr(bpy.types, panel), bpy.context)
                 texts = " ".join(layout.texts())
                 self.assertIn(derived, texts)

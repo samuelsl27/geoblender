@@ -167,6 +167,9 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     su clave interna, y, si es una tolerancia del desfase, dónde está («Más opciones») y que la guía da valores de partida.
   - **«Expandir banco…» se elige de listas**: la línea de partida, el banco y la parte se ofrecen en listas leídas de la capa (cada línea con su banco, su tipo, su parte y su cota) en lugar de pedirlas
     como texto libre, con una propuesta (el primer banco, su tipo y la parte 0); con una línea elegida no se pide banco, tipo ni parte. La guía explica qué poner en «Parte» (la 0, la primera).
+  - **«Línea de cielo…» responde y las ventanas de rosetas y rampas caben**: al pulsar Mostrar se abre una ventana con el informe de la línea de cielo (antes solo salía unos segundos en la barra de
+    estado); si la corta no sale a superficie, lo dice. «Roseta de taludes…» y «Rampa…» enseñan la elegida en pocas líneas, con sus valores derivados y sus parámetros plegados en «Detalles», y dicen
+    en su primera línea que se cierran con Esc o con un clic fuera (son ventanas emergentes de Blender, sin botón de cerrar).
   - **Lo que no hace todavía:** no parte de la concha óptima (R-49) ni diseña la corta de forma automática (R-55); no admite polígonos con huecos; no mezcla bancos por berma distintos entre sectores; la rampa de la
     descendente no se calcula con bancos dobles, con varios límites con rampa ni sobre el primer banco de altura variable; una rampa se ha medido sobre 20 bancos en espiral y 5 en zig-zag. Esta guía
     y lo anterior se han comprobado sin pantalla; falta verlo con el ratón y contrastarlo con el proyecto de referencia. Guía de uso: `docs/usuario/corta-por-bancos.md`.
