@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Lista base de la interfaz (spec 019, P-3): lo existente que aún no cumple cada regla de UI.
+# Solo puede BAJAR: una entrada ya corregida y no quitada hace fallar la prueba; la vacía la spec 020.
+
+[strings]
+# UI-08, RF-019-16: «idioma:texto -> regla» (tests/unit/test_ui_strings.py).
+entries = [
+    "en:Each table of the column mapping (mapping_json) says its file and its role: {item} -> stable-name",
+    "en:Nothing has been computed in «{name}»: confirm the seeds outside the crown and the zones to hold to compute with them (from a script, with confirm_outside=True) -> stable-name",
+    "en:The column mapping (mapping_json) is not JSON -> stable-name",
+    "en:Types that can be selected in the view; it writes Object.hide_select -> stable-name",
+    "es:Cada tabla de la correspondencia de columnas (mapping_json) dice su fichero y su papel: {item} -> stable-name",
+    "es:La correspondencia de columnas (mapping_json) no es JSON -> stable-name",
+    "es:No se ha calculado nada en «{name}»: confirme las semillas fuera de la coronación y de las zonas a sostener para calcular con ellas (desde un guion, con confirm_outside=True) -> stable-name",
+    "es:Tipos que se pueden seleccionar en la vista; escribe Object.hide_select -> stable-name",
+]
