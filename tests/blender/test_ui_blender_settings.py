@@ -111,6 +111,22 @@ class BlenderSettingsTest(unittest.TestCase):
         self.assertFalse(bpy.app.timers.is_registered(self.switcher.settle_settings))
         self.assertEqual(self.switcher._SESSION.settings, [])  # noqa: SLF001
 
+    def test_without_a_free_workspace_it_says_why_and_what_to_do(self) -> None:
+        """RF-019-03, UI-09 (T41 f): si todos los espacios de Blender están ocupados o marcados (``settings_workspace`` da
+        ``None``), la orden no falla en silencio: avisa de por qué no abre y qué hacer, y no abre ninguna ventana."""
+        reports: list[tuple[set[str], str]] = []
+        operator = bpy.types.GEOBLENDER_OT_ui_blender_settings
+        fake_self = SimpleNamespace(report=lambda kind, text: reports.append((kind, text)))
+        with mock.patch.object(self.switcher, "settings_workspace", return_value=None),                 mock.patch.object(self.switcher, "_new_window") as opener:
+            # ``report`` de un operador real no se puede sustituir: se llama a ``execute`` con un ``self`` simulado.
+            self.assertEqual(operator.execute(fake_self, SimpleNamespace(window=self.window)), {"CANCELLED"})
+        self.assertEqual(opener.call_count, 0)
+        ((kind, text),) = reports
+        self.assertEqual(kind, {"WARNING"})
+        self.assertIn("en uso", text)
+        self.assertIn("Cierre", text)  # qué hacer
+        self.assertNotIn("_", text)
+
     def test_disabling_leaves_no_timer_nor_pending(self) -> None:
         """UI-16/17: desactivar la extensión no deja temporizador ni ventanas pendientes."""
         self.open()

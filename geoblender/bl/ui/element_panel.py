@@ -333,6 +333,34 @@ class GEOBLENDER_PT_ui_project(bpy.types.Panel):
         layout.operator(CLOSE_PROJECT)
 
 
+CLOSED_PANEL = "GEOBLENDER_PT_ui_closed"
+
+
+class GEOBLENDER_PT_ui_closed(bpy.types.Panel):
+    """What the Object tab says when the project was closed but the active object still shows data of it"""
+
+    bl_idname = CLOSED_PANEL
+    bl_label = "Project status"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "object"
+    bl_translation_context = TRANSLATION_CONTEXT
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        if project_session.current() is not None:
+            return False
+        uid, _owner = view_panels.shown_by(view_panels._active_object(context))  # noqa: SLF001
+        return bool(uid)
+
+    def draw(self, context: Any) -> None:
+        layout, width = self.layout, _width(context)
+        card.draw_lines(layout, tr("No project open"), width, icon="INFO")
+        card.draw_lines(layout, tr("Create or open a project to start working"), width)
+        layout.operator(NEW_PROJECT)
+        layout.operator(OPEN_PROJECT)
+
+
 def _is_foreign(context: Any) -> bool:
     """Con un proyecto abierto, el objeto activo no es la vista de un dato suyo (una cámara, una luz, una malla ajena)."""
     if project_session.current() is None:
@@ -374,8 +402,9 @@ def localize() -> None:
     GEOBLENDER_PT_ui_element_look_more.bl_label = tr("More appearance")
     GEOBLENDER_PT_ui_project.bl_label = tr("Project status")
     GEOBLENDER_PT_ui_foreign.bl_label = tr("Object outside the project")
+    GEOBLENDER_PT_ui_closed.bl_label = tr("Project status")
 
 
 # El orden de registro es el de la pestaña (``bl_order`` no reordena en 5.2): «Aspecto» primero, la ficha debajo (T38).
 classes: tuple[type, ...] = (GEOBLENDER_PT_ui_element_look, GEOBLENDER_PT_ui_element_look_more, GEOBLENDER_PT_ui_element,
-                             GEOBLENDER_PT_ui_project, GEOBLENDER_PT_ui_foreign)
+                             GEOBLENDER_PT_ui_project, GEOBLENDER_PT_ui_foreign, GEOBLENDER_PT_ui_closed)

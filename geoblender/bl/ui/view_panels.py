@@ -749,6 +749,13 @@ def _draw_lines(layout: Any, text: str, width: float, *, icon: str = "NONE",
         column.label(text=line, icon=shown, translate=False)
 
 
+def not_shown_text(obj: Any) -> str:
+    """Por qué no hay ficha: sin objeto activo, eso (T41 b); con uno, que no muestra un dato del proyecto."""
+    if obj is None:
+        return tr("There is no active object")
+    return tr("The active object does not show data of this project")
+
+
 def draw_active_item(layout: Any, context: Any) -> None:
     """El contenido de :class:`GEOBLENDER_PT_core_active_item` (spec 019, T09; UI-29: cada dato se
     edita y se lee en un sitio): una línea con el nombre del dato del objeto activo y el botón
@@ -759,8 +766,7 @@ def draw_active_item(layout: Any, context: Any) -> None:
     obj = _active_object(context)
     uid, owner = shown_by(obj)
     if project is None or not uid or owner != project.uid:
-        _draw_lines(layout, tr("The active object does not show data of this project"), width,
-                    icon="INFO")
+        _draw_lines(layout, not_shown_text(obj), width, icon="INFO")
         return
     _draw_lines(layout, getattr(obj, "name", ""), width, icon="OBJECT_DATA")
     layout.operator(SHOW_ELEMENT, text=tr("Show the element sheet"), icon="PROPERTIES",

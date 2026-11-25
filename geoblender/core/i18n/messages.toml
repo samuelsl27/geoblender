@@ -681,8 +681,8 @@ es = "Disposiciones renovadas: {names}"
 ["Could not open the Blender settings window"]
 es = "No se pudo abrir la ventana de ajustes de Blender"
 
-["There is no Blender workspace in this file to show its settings"]
-es = "Este fichero no tiene un espacio de trabajo de Blender donde mostrar sus ajustes"
+["There is no free Blender workspace for its settings: they are in use in other windows or marked as Geoblender. Close the window that uses «Layout» and try again"]
+es = "No hay un espacio de trabajo de Blender libre para sus ajustes: están en uso en otras ventanas o marcados como de Geoblender. Cierre la ventana que use «Layout» y vuelva a intentarlo"
 
 ["Blender settings…"]
 es = "Ajustes de Blender…"
@@ -1946,6 +1946,9 @@ es = "Elemento activo"
 ["The active object does not show data of this project"]
 es = "El objeto activo no muestra un dato de este proyecto"
 
+["There is no active object"]
+es = "No hay ningún objeto activo"
+
 ["Reading the project data of the active object…"]
 es = "Leyendo del proyecto el dato del objeto activo…"
 
@@ -1969,6 +1972,9 @@ es = "En la vista: sin respaldo en el proyecto"
 
 ["Version: {version}"]
 es = "Versión: {version}"
+
+["Source name: {name}"]
+es = "Nombre de origen: {name}"
 
 ["Operation: {operation}"]
 es = "Operación: {operation}"

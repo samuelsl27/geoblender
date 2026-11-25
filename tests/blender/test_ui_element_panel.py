@@ -324,6 +324,23 @@ class ElementLookPanelTest(ElementPanelTest):
         self.assertNotIn("Fondo de la corta", obj.name)
         self.assertEqual(obj.geoblender.look.label, "")
 
+    def test_card_shows_the_label_and_the_origin_name_as_secondary(self) -> None:
+        """RF-019-07, RF-019-06, UI-07 (T41 a; hallazgo del H3): con un rótulo puesto, la ficha muestra el rótulo como nombre del
+        dato (como el Outliner) y el nombre de origen como dato secundario, sin claves internas; vaciarlo devuelve el nombre."""
+        obj = self.surface()
+        lines = self.lines()
+        readable = lines[1]
+        obj.geoblender.look.label = "T"
+        lines = self.lines()
+        self.assertEqual(lines[1], "T")
+        self.assertIn(f"Nombre de origen: {readable}", lines)
+        self.assertEqual(us.findings(lines), [])
+        self.assertFalse(any("gis_" in line for line in lines), lines)
+        obj.geoblender.look.label = ""
+        lines = self.lines()
+        self.assertEqual(lines[1], readable)
+        self.assertFalse(any(line.startswith("Nombre de origen") for line in lines), lines)
+
     def test_panel_keeps_drawing_once_a_label_is_set(self) -> None:
         """RF-019-07, UI-03 (hallazgo del H3 en pantalla): con un rótulo puesto, el panel de aspecto sigue dibujando todas
         sus filas (``_changed_props`` no lanza porque el predefinido no lleva rótulo) y el rótulo cuenta como cambiado."""
@@ -650,6 +667,7 @@ FOREIGN = "GEOBLENDER_PT_ui_foreign"
 NEW_PROJECT = "geoblender.core_new_project"
 OPEN_PROJECT = "geoblender.core_open_project"
 CLOSE_PROJECT = "geoblender.core_close_project"
+CLOSED = "GEOBLENDER_PT_ui_closed"
 
 
 class ElementEmptyStatesTest(ElementPanelTest):
@@ -688,6 +706,21 @@ class ElementEmptyStatesTest(ElementPanelTest):
         lines = self.lines(PROJECT)
         self.assertIn("No hay ningún proyecto abierto", lines)
         self.assertEqual([op for op in self.operators(PROJECT)], [NEW_PROJECT, OPEN_PROJECT])
+
+    def test_closing_the_project_with_an_element_active_leaves_a_state_in_the_object_tab(self) -> None:
+        """RF-019-11 (T41 c; hallazgo del H3): tras «Cerrar proyecto» con un elemento del proyecto activo, la pestaña Objeto de
+        Propiedades no queda vacía: dice que no hay proyecto y ofrece crear o abrir uno; con proyecto o sin objeto del proyecto, no sale."""
+        grid, _mdt, _derived = self.three()
+        panel = getattr(bpy.types, CLOSED)
+        self.activate(grid.uid)
+        self.assertFalse(panel.poll(bpy.context))
+        self.ps.close()
+        self.panels.on_active_changed()
+        self.assertTrue(panel.poll(bpy.context))
+        self.assertIn("No hay ningún proyecto abierto", self.lines(CLOSED))
+        self.assertEqual(self.operators(CLOSED), [NEW_PROJECT, OPEN_PROJECT])
+        self.foreign("CAMERA")
+        self.assertFalse(panel.poll(bpy.context))
 
     def test_without_element_it_shows_the_project_state(self) -> None:
         """RF-019-11, UI-24/25: con proyecto y sin elemento activo, nombre, EPSG y versión activa, y las acciones

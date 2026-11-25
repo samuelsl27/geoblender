@@ -98,6 +98,7 @@ DERIVED = "Derivada"
 HASH_CHARS = 12
 WIDE_PX = 5000.0  # una barra lateral en la que nada se parte (para leer cada línea entera)
 NOT_OURS = "El objeto activo no muestra un dato de este proyecto"
+NO_ACTIVE = "No hay ningún objeto activo"  # T41 b: sin objeto activo, no «no muestra un dato»
 GONE = "El proyecto ya no tiene el dato de este objeto"
 NO_FIGURES = "Sin cifras registradas"
 # Cifras de la selección (T16).
@@ -414,7 +415,7 @@ class ActiveItemTest(unittest.TestCase):
         data.project.set_read_only(vf.extension("core.project").ReadOnlyCode.REQUESTED,
                                    "prueba")
         self.activate(None)
-        self.assertEqual(self.lines(), [NOT_OURS])
+        self.assertEqual(self.lines(), [NO_ACTIVE])
         self.activate(self.only(mdt.uid))
         self.assertEqual(self.lines()[:3], expected[:3])
         self.assertEqual(self.line(readable(derived.name)).text,

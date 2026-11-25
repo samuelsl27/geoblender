@@ -22,7 +22,7 @@ from typing import Any
 from ...core.i18n import tr
 from ..scene import project_session, views
 from . import labels, view_panels
-from .view_panels import ROW_HEADING, ROW_ITEM, ROW_NONE, ROW_VIEW
+from .view_panels import ROW_HEADING, ROW_ITEM, ROW_NAME, ROW_NONE, ROW_VIEW
 
 BOX_MARGIN_PX = 12.0
 """Lo que quitan a las etiquetas el borde y el relleno de una caja (``layout.box()``)."""
@@ -60,6 +60,26 @@ def split_rows(rows: Any) -> tuple[list[Any], list[Any]]:
     return card, provenance
 
 
+def own_label(obj: Any) -> str:
+    """El rótulo que la persona dio al objeto (``Object.geoblender.look.label``; RF-019-07), '' si no lo hay."""
+    look = getattr(getattr(obj, view_panels.OBJECT_PROPERTY, None), "look", None)
+    return str(getattr(look, "label", "") or "").strip()
+
+
+def with_label(rows: Any, obj: Any) -> list[Any]:
+    """Las filas de la «Ficha» con el rótulo como nombre del dato (como lo ve el Outliner, T41 a) y el nombre de origen
+    como dato secundario justo debajo; sin rótulo, las mismas filas. Es solo cómo se ve: no toca el proyecto."""
+    label = own_label(obj)
+    shown: list[Any] = []
+    for row in rows:
+        if label and row.kind == ROW_NAME:
+            shown.append(view_panels.CardLine(ROW_NAME, label, row.icon, row.alert, row.uid))
+            shown.append(view_panels.CardLine(view_panels.ROW_FIELD, tr("Source name: {name}", name=row.text)))
+        else:
+            shown.append(row)
+    return shown
+
+
 def _draw_rows(layout: Any, rows: Any, obj: Any, width: float) -> None:
     for row in rows:
         if row.kind == ROW_VIEW:
@@ -81,7 +101,7 @@ def draw_card(layout: Any, context: Any) -> None:
     obj = view_panels._active_object(context)  # noqa: SLF001
     uid, owner = view_panels.shown_by(obj)
     if view is None or project is None or not uid or owner != project.uid:
-        draw_lines(layout, tr("The active object does not show data of this project"), width, icon="INFO")
+        draw_lines(layout, view_panels.not_shown_text(obj), width, icon="INFO")
         return
     if view.card_uid != uid or view.card_project != owner:
         draw_lines(layout, tr("Reading the project data of the active object…"), width, icon="TIME")
@@ -92,7 +112,7 @@ def draw_card(layout: Any, context: Any) -> None:
     card, provenance = split_rows(view.card)
     sheet = layout.box()
     sheet.label(text=tr("Element card"), icon="INFO", translate=False)
-    _draw_rows(sheet, card, obj, width)
+    _draw_rows(sheet, with_label(card, obj), obj, width)
     origin = layout.box()
     origin.label(text=tr("Provenance"), icon="NODETREE", translate=False)
     if not any(row.kind == ROW_ITEM for row in provenance) and any(

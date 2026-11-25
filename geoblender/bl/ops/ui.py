@@ -713,7 +713,7 @@ class GEOBLENDER_OT_ui_blender_settings(bpy.types.Operator):
 
         window = context.window
         if switcher.settings_workspace(window) is None:
-            self.report({"WARNING"}, tr("There is no Blender workspace in this file to show its settings"))
+            self.report({"WARNING"}, tr("There is no free Blender workspace for its settings: they are in use in other windows or marked as Geoblender. Close the window that uses «Layout» and try again"))
             return {"CANCELLED"}
         if switcher.open_blender_settings(window) is None:
             self.report({"WARNING"}, tr("Could not open the Blender settings window"))
