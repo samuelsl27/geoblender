@@ -47,16 +47,23 @@ __all__ = ["APPLIERS", "DELAY_S", "MATERIAL_PREFIX", "apply", "blocked_reason", 
 MATERIAL_PREFIX = "Geoblender look · "
 """El comienzo del nombre del material de visualización de un objeto (después, el nombre del objeto)."""
 
+_domain_cache: Any = None
+
+
 def _domain() -> Any:
-    """Los módulos del dominio del aspecto, al usarlos (registrar no los importa: RNF-001-03)."""
-    from ...core.appearance import catalog, merge, model, store
+    """Los módulos del dominio del aspecto, al usarlos (registrar no los importa: RNF-001-03). Se arman una vez: se llama
+    al dibujar el panel con la mezcla de la selección (RNF-019-01) y por cada elemento."""
+    global _domain_cache
+    if _domain_cache is None:
+        from ...core.appearance import catalog, merge, model, store
 
-    class _D:
-        pass
+        class _D:
+            pass
 
-    d = _D()
-    d.catalog, d.merge, d.model, d.store = catalog, merge, model, store  # type: ignore[attr-defined]
-    return d
+        d = _D()
+        d.catalog, d.merge, d.model, d.store = catalog, merge, model, store  # type: ignore[attr-defined]
+        _domain_cache = d
+    return _domain_cache
 
 
 _Applier = Callable[[Any, str], None]
@@ -163,8 +170,15 @@ APPLIERS: dict[str, dict[str, _Applier]] = {
 
 def offered(kind: str) -> tuple[str, ...]:
     """Las propiedades que se ofrecen del tipo ``kind``: las del catálogo que además tienen aplicador (A1; UI-13)."""
-    have = APPLIERS.get(kind, {})
-    return tuple(prop for prop in _domain().catalog.allowed(kind) if prop in have)
+    found = _offered_cache.get(kind)
+    if found is None:
+        have = APPLIERS.get(kind, {})
+        found = _offered_cache[kind] = tuple(prop for prop in _domain().catalog.allowed(kind) if prop in have)
+    return found
+
+
+_offered_cache: dict[str, tuple[str, ...]] = {}
+"""Lo que se ofrece por tipo: el catálogo y los aplicadores no cambian mientras corre la extensión."""
 
 
 def apply(obj: Any, look: Appearance | Mapping[str, object]) -> None:
@@ -183,13 +197,27 @@ def read(obj: Any) -> Appearance:
     """El espejo ``Object.geoblender.look`` de ``obj`` como :class:`Appearance` canónico, solo con lo que se ofrece."""
     look = obj.geoblender.look
     kind = obj.geoblender.kind
-    raw: dict[str, object] = {
-        "label": look.label, "color": _rgb_to_hex(look.color), "transparency": look.transparency,
-        "visible": look.visible, "line_width": look.line_width, "point_size": look.point_size,
-        "labels": look.labels, "wire": look.wire,
-    }
-    return _domain().model.Appearance(kind, tuple((prop, _domain().model.validate(kind, prop, raw[prop], name=obj.name))
-                                  for prop in offered(kind) if prop != "label" or look.label.strip()))
+    label = look.label.strip() if "label" in offered(kind) else ""
+    return _domain().model.Appearance(kind, tuple(
+        (prop, _valid(kind, prop, _rgb_to_hex(look.color) if prop == "color" else getattr(look, prop), obj))
+        for prop in offered(kind) if prop != "label" or label))
+
+
+_valid_cache: dict[tuple[str, str, object], str] = {}
+_VALID_CACHE_MAX = 4096
+
+
+def _valid(kind: str, prop: str, raw: object, obj: Any) -> str:
+    """``model.validate`` con memoria de lo ya validado: los valores del espejo se repiten mucho entre elementos y la mezcla
+    de una selección grande lee cada uno a cada redibujo (RNF-019-01). Un valor inválido no se guarda: lanza como siempre."""
+    key = (kind, prop, raw)
+    found = _valid_cache.get(key)
+    if found is None:
+        found = _domain().model.validate(kind, prop, raw, name=obj.name)
+        if len(_valid_cache) >= _VALID_CACHE_MAX:
+            _valid_cache.clear()
+        _valid_cache[key] = found
+    return found
 
 
 def mirror(obj: Any, look: Appearance) -> None:

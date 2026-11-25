@@ -66,10 +66,11 @@ def common(items: Sequence[Appearance]) -> Appearance | Mixed:
     if len(items) == 1 or (len(kinds) == 1 and all(item == first for item in items)):
         return first
     candidates = PROPERTIES if len(kinds) == 1 else MULTI_KIND_PROPS
-    shared = [prop for prop in candidates if all(prop in item.props for item in items)]
+    tables = [dict(item.values) for item in items]  # una vez por elemento: con 50 elementos se redibuja a cada gesto
+    shared = [prop for prop in candidates if all(prop in table for table in tables)]
     values = []
     for prop in shared:
-        found = {item.get(prop) for item in items}
+        found = {table[prop] for table in tables}
         values.append((prop, found.pop() if len(found) == 1 else None))
     return Mixed(kinds, len(items), tuple(values))
 

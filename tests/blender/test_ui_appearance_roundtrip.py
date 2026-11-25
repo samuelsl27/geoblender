@@ -204,6 +204,54 @@ class AppearanceRoundtripTest(RoundtripCase):
         self.assertTrue(all(_hex(o) == expected for o in extra))
         self.assertLessEqual(min(times), 0.4, f"{min(times):.3f} s")
 
+    def test_b_a_50_element_mix_is_not_much_dearer_than_one_element(self) -> None:
+        """RNF-019-01 (H-7, H1, T14b): la mezcla de 50 elementos seleccionados de valores distintos («varios valores») no
+        encarece el dibujo del panel de aspecto más de 12 veces el de un solo elemento (medido en la misma ejecución: no
+        depende de la CPU; antes de T14b eran unas 40). La cifra absoluta (≤ 0,5 ms) la mide ``tests/rendimiento/blender/
+        perf_ui_mix.py`` con la CPU en reposo."""
+        extra = make_mix_objects(self.data.project.uid, [o.geoblender.dataset_uid for o in self.objs], 50)
+        with mock.patch.object(vf.extension("bl.ui.labels"), "sidebar_width", return_value=1000.0):
+            texts = [item.text for item in draw(bpy.types.GEOBLENDER_PT_ui_element_look, bpy.context).of_kind("label")]
+            self.assertIn("varios valores", texts)
+            mix = draw_ms(bpy.types.GEOBLENDER_PT_ui_element_look)
+            for obj in extra[1:]:
+                obj.select_set(False)
+            one = draw_ms(bpy.types.GEOBLENDER_PT_ui_element_look)
+        print(f"[T14b] panel de aspecto: 50 elementos {mix:.3f} ms, uno {one:.3f} ms")
+        self.assertLessEqual(mix, 12 * one, f"{mix:.3f} ms frente a {one:.3f} ms")
+
+
+def make_mix_objects(project_uid: str, dataset_uids: list[str], count: int) -> list[bpy.types.Object]:
+    """``count`` objetos de rejilla seleccionados, de colores distintos, con el primero activo (la mezcla de la selección)."""
+    extra = []
+    for index in range(count):
+        obj = bpy.data.objects.new(f"mix-{index:03d}", bpy.data.meshes.new(f"mix-{index:03d}"))
+        bpy.context.scene.collection.objects.link(obj)
+        obj.geoblender.kind = "DTM"
+        obj.geoblender.project_uid = project_uid
+        obj.geoblender.dataset_uid = dataset_uids[index % len(dataset_uids)]
+        obj.geoblender.look.color = (0.1 + (index % 5) * 0.1, 0.5, 0.5)
+        extra.append(obj)
+    for other in bpy.data.objects:
+        other.select_set(False)
+    for obj in extra:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = extra[0]
+    return extra
+
+
+def draw_ms(panel: type, *, rounds: int = 5, repeats: int = 100) -> float:
+    """El coste de un dibujo de ``panel``: la mejor de ``rounds`` medianas de ``repeats`` dibujos, en ms."""
+    medians = []
+    for _ in range(rounds):
+        times = []
+        for _ in range(repeats):
+            start = time.perf_counter()
+            draw(panel, bpy.context)
+            times.append((time.perf_counter() - start) * 1000.0)
+        medians.append(sorted(times)[len(times) // 2])
+    return min(medians)
+
 
 def _hex_of_mirror(obj: bpy.types.Object) -> str:
     return "#%02X%02X%02X" % tuple(round(c * 255) for c in obj.geoblender.look.color)
