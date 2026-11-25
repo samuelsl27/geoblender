@@ -111,6 +111,8 @@ def find_dialogs() -> list[tuple[type, ModuleType, str]]:
     for cls in bpy.types.Operator.__subclasses__():
         if not getattr(cls, "bl_idname", "").startswith("geoblender."):
             continue
+        if not getattr(cls, "is_registered", False):  # las de un habilitar anterior, aún sin recolectar: usan el idioma de su módulo (T31)
+            continue
         module = sys.modules[cls.__module__]
         text = _invoke_source(cls, module)
         if any(marker in text for marker in MARKERS):
@@ -211,6 +213,24 @@ class DialogsTest(unittest.TestCase):
         found = {_file_of(klass) for klass, _module, _text in self.dialogs}
         self.assertEqual(sorted(wanted - found), [], "ficheros con una llamada a un diálogo sin ninguna clase descubierta")
         self.assertGreaterEqual(len(self.dialogs), 80)
+
+    def test_a2_a_stale_class_of_an_earlier_enable_is_not_a_dialog(self) -> None:
+        """Spec 019 T31 (la fuga de idioma de ``test_ui_labels_cut``): tras habilitar y deshabilitar la extensión varias veces en un Blender, las clases
+        de antes siguen en ``bpy.types.Operator.__subclasses__()`` mientras el recolector no las libera; su ``draw`` usa el ``tr`` y el idioma de
+        **su** módulo, no el que fija la prueba, y salían en español bajo «en:». Solo cuentan las registradas."""
+
+        class StaleProbe(bpy.types.Operator):
+            bl_idname = "geoblender.zz_stale_probe"
+            bl_label = "Stale probe"
+
+            def invoke(self, context: Any, event: Any) -> set[str]:
+                return context.window_manager.invoke_props_dialog(self)
+
+        self.assertFalse(StaleProbe.is_registered)
+        self.assertIn(StaleProbe, bpy.types.Operator.__subclasses__())
+        found = [klass for klass, _module, _text in find_dialogs()]
+        self.assertNotIn(StaleProbe, found, "una clase sin registrar no es un diálogo")
+        self.assertTrue(all(klass.is_registered for klass in found), "todos los diálogos descubiertos están registrados")
 
     def test_b_every_dialog_is_measured_at_the_three_scales(self) -> None:
         for klass, verdict, tall, width in self.results:

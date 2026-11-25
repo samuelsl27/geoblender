@@ -116,6 +116,12 @@ DEMO_LABEL = "Demo bench years"  # su msgid (la demostración pone su español)
 FIGURE_PROPS = ("uid", "key", "label", "value_text", "unit", "kind")
 
 
+
+def readable(name: str) -> str:
+    """El nombre de un dato como se lee en la ficha (spec 019, T31: ni el nombre estable ni el papel a la vista)."""
+    return vf.extension("core.views.card").readable_name(name)
+
+
 class ActiveItemTest(unittest.TestCase):
     """La extensión habilitada una vez; en cada prueba, un proyecto de la vista con una rejilla."""
 
@@ -349,24 +355,24 @@ class ActiveItemTest(unittest.TestCase):
         op_type, op_version, finished, version = self.operation_of(mdt)
         self.activate(self.only(mdt.uid))
         expected = [
-            mdt.name,
+            readable(mdt.name),
             "Tipo: MDT de origen · ráster · gis",
             "Estado: VIGENTE",
             "En la vista: al día",
             "Versión: —",
-            f"Operación: Importación de un MDT ráster · {op_type} {op_version} · {finished} · "
+            f"Operación: Importación de un MDT ráster · algoritmo {op_version} · {finished} · "
             f"Geoblender {version}",
             "↑ Entradas",
             f"{MDT} · vigente · {entry_hash[:HASH_CHARS]}",
             "↓ Derivados",
-            f"{derived.name} (project_grid) · vigente",
+            f"{readable(derived.name)} · vigente",
             "Cifras",
             NO_FIGURES,
         ]
         self.assertEqual(self.lines(), expected)
         self.assertEqual(op_type, "gis.import_dtm")
         self.assertEqual(self.line(MDT).icon, "IMPORT")
-        self.assertFalse(self.line(derived.name).alert)
+        self.assertFalse(self.line(readable(derived.name)).alert)
         button = self.lineage_button()
         self.assertEqual((button.text, button.properties.item_uid), ("Procedencia", mdt.uid))
 
@@ -374,9 +380,9 @@ class ActiveItemTest(unittest.TestCase):
         self.assertEqual(data.make_stale(), ())  # la rejilla de la prueba no lo lee
         self.assertEqual(self.lines(), expected)
         self.assertEqual(self.ui.indicator_tick(), self.ui.INDICATOR_TICK_S)
-        stale = self.line(derived.name)
+        stale = self.line(readable(derived.name))
         self.assertEqual((stale.text, stale.alert),
-                         (f"{derived.name} (project_grid) · vigente · obsoleto", True))
+                         (f"{readable(derived.name)} · vigente · obsoleto", True))
 
         # «Al día», de view_state del objeto activo (lo pone la marca en vivo).
         props = self.only(mdt.uid).geoblender
@@ -411,8 +417,8 @@ class ActiveItemTest(unittest.TestCase):
         self.assertEqual(self.lines(), [NOT_OURS])
         self.activate(self.only(mdt.uid))
         self.assertEqual(self.lines()[:3], expected[:3])
-        self.assertEqual(self.line(derived.name).text,
-                         f"{derived.name} (project_grid) · vigente · obsoleto")
+        self.assertEqual(self.line(readable(derived.name)).text,
+                         f"{readable(derived.name)} · vigente · obsoleto")
         self.assertEqual(data.change_counter(), changed)
         self.assertEqual(changed, counter + 1)  # solo el parámetro de make_stale
 
@@ -445,7 +451,7 @@ class ActiveItemTest(unittest.TestCase):
         self.assertIn("· B-1 = 2,5 año", lines[start])
         up = lines.index("↑ Entradas") + 1
         self.assertEqual(lines[up:lines.index("↓ Derivados")],
-                         [f"{benches.name} (benches) · vigente · "
+                         [f"{readable(benches.name)} · vigente · "
                           f"{benches.content_sha256[:HASH_CHARS]}"])
         self.assertEqual(lines[lines.index("↓ Derivados") + 1], "Ningún derivado")
         self.assertEqual(lines[0], years.name)
@@ -465,9 +471,9 @@ class ActiveItemTest(unittest.TestCase):
         _work, (sketch, *_rest) = vf.user_objects(bpy.data, bpy.context.scene, count=1)
         self.assertTrue(self.panels.is_subscribed())
         self.activate(self.only(grid.uid))
-        self.assertEqual(self.lines()[0], grid.name)
+        self.assertEqual(self.lines()[0], readable(grid.name))
         self.activate(self.only(mdt.uid))
-        self.assertEqual(self.lines()[0], mdt.name)
+        self.assertEqual(self.lines()[0], readable(mdt.name))
         self.activate(sketch)
         self.assertEqual(self.lines(), [NOT_OURS])
         # Sin acciones de la ficha: solo el acceso «Ajustes de Blender» al pie del panel (spec 019, T19).
@@ -505,9 +511,9 @@ class ActiveItemTest(unittest.TestCase):
         (call,) = [call for call in subscribe.call_args_list
                    if call.kwargs.get("notify") is self.panels.on_active_changed]
         self.assertEqual(call.kwargs["key"], (bpy.types.LayerObjects, "active"))
-        self.assertEqual(self.lines()[0], grid.name)
+        self.assertEqual(self.lines()[0], readable(grid.name))
         self.activate(self.only(mdt.uid))
-        self.assertEqual(self.lines()[0], mdt.name)
+        self.assertEqual(self.lines()[0], readable(mdt.name))
 
     def test_inventory_finds_loads_and_unloads_a_dataset(self) -> None:
         """RF-010-07 (HU-010-3; plan A7, D-15): el inventario da lo registrado, cargado o no
@@ -562,7 +568,7 @@ class ActiveItemTest(unittest.TestCase):
                              ("Procedencia", True, mdt.uid))
             texts = self.label_texts(layout)
             self.assertIn(NOT_LOADED, texts)
-            for expected in (mdt.name, "Tipo: MDT de origen · ráster · gis",
+            for expected in (readable(mdt.name), "Tipo: MDT de origen · ráster · gis",
                              "Estado: VIGENTE", "Versión: —", "No cargado en la escena"):
                 self.assertIn(expected, texts)
 
@@ -780,7 +786,7 @@ class ActiveItemTest(unittest.TestCase):
 
         # La rejilla no tiene cifras: «Sin cifras registradas: …» y nada más (no mide).
         self.assertEqual(self.selection_figures(grid_obj),
-                         [SELECTION_TITLE, grid.name, NONE_RECORDED])
+                         [SELECTION_TITLE, readable(grid.name), NONE_RECORDED])
 
         # Los años por banco (dos objetos del mismo dato: una vez), con sus marcas; se leen
         # con ellas (marks=True), una vez por dato.
@@ -808,7 +814,7 @@ class ActiveItemTest(unittest.TestCase):
         self.assertIn(STALE_FIGURE, stale[1].split(" · "))
         self.assertIn(HYPOTHESIS, stale[1].split(" · "))
         # Las dos a la vez, por nombre: la rejilla dice que no tiene.
-        self.assertEqual(lines, [SELECTION_TITLE, years.name, *stale, grid.name, NO_FIGURES])
+        self.assertEqual(lines, [SELECTION_TITLE, readable(years.name), *stale, readable(grid.name), NO_FIGURES])
 
         # Sin un dato del proyecto seleccionado (un objeto del usuario), lo dice.
         self.assertEqual(self.selection_figures(sketch), [SELECTION_TITLE, NOTHING_SELECTED])

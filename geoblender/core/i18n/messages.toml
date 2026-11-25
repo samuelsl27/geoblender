@@ -1973,6 +1973,12 @@ es = "Versión: {version}"
 ["Operation: {operation}"]
 es = "Operación: {operation}"
 
+["algorithm {version}"]
+es = "algoritmo {version}"
+
+["Operation without a name"]
+es = "Operación sin nombre"
+
 ["↑ Inputs"]
 es = "↑ Entradas"
 

@@ -56,6 +56,7 @@ leen con un recorrido por cada :data:`~.state.CHUNK` operaciones. Python puro (A
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Collection, Iterable, Mapping
 from contextlib import AbstractContextManager
@@ -119,6 +120,20 @@ _FROZEN_FIGURE_STATES = (
     "SELECT item_uid, state FROM gb_revision_item WHERE revision_uid = ? "
     "AND item_kind = 'figure' AND part = 'produced'"
 )
+
+
+_STABLE_NAME = re.compile(r"^(?:gis|des|dh|res|core)_[a-z]{2,5}_(?P<slug>[a-z0-9]+(?:_[a-z0-9]+)*)$")
+
+
+def readable_name(name: str) -> str:
+    """El nombre de un dato como se lee en la interfaz (spec 019, T31; UI-07, UI-08): de su nombre estable (``<módulo>_<familia>_<nombre>``, como
+    ``gis_dtm_rejilla_01``), lo que la persona le puso, sin el prefijo y con espacios (``Rejilla 01``). Un nombre que no es estable se queda como
+    está. No toca el proyecto: es solo cómo se escribe."""
+    found = _STABLE_NAME.match(name)
+    if found is None:
+        return name
+    text = found.group("slug").replace("_", " ")
+    return text[:1].upper() + text[1:]
 
 
 class ReadableProject(Protocol):

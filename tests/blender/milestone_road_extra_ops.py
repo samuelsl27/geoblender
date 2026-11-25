@@ -248,7 +248,11 @@ class RoadExtraOpsTest(road_ops.RoadOpsTest):
             self.assertIn(heading, trace)
         for absent in ("Modo", "Línea de la capa", "Superficie de apoyo"):
             self.assertNotIn(absent, trace)
-        self.assertEqual(len([text for text in trace if text.startswith("HIPÓTESIS: ")]), 8, "ocho de los nueve parámetros de la ruta son hipótesis sin valor por defecto")
+        # Spec 019 T23 (UI-09): el tipo que comparten los ocho se dice **una vez**, «Los demás: …» (el presupuesto tiene el suyo); sigue siendo de los ocho.
+        des_ops = platform_ops._module("bl.ops.des")
+        kinds = [des_ops._route_text(param) for _prop, param, _label in des_ops._route_rows()]
+        self.assertEqual(len([kind for kind in kinds if kind.startswith("HIPÓTESIS: ")]), 8, "ocho de los nueve parámetros de la ruta son hipótesis sin valor por defecto")
+        self.assertEqual(len([text for text in trace if text.endswith("HIPÓTESIS: sin valor por defecto, lo elige usted")]), 1, "el tipo de las ocho, dicho una vez")
         self.assertEqual(len([text for text in trace if text.startswith("Por defecto: ") and text.endswith("· ADOPTADO")]), 1, "el presupuesto de estados tiene su valor por defecto")
         self.assertIn("Abscisa del origen (m)", draw(cls, bpy.context, **{**DEFAULTS, "origin_from": "ROAD"}).texts())
         for heading in ("Cota del destino (m)", "Tolerancia de llegada a la cota (m)", "Zona del destino", "Polígono de la zona"):

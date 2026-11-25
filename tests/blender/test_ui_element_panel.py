@@ -24,6 +24,7 @@ import bpy
 
 from tests.blender.test_dh_import_tabular import assert_fits, at_scales
 from tests.support import blender_ext
+from tests.support import ui_strings as us
 from tests.support import views_fixtures as vf
 from tests.support.fake_layout import FakeLayout, draw
 from tests.support.trees import temp_folder
@@ -57,6 +58,7 @@ class ElementPanelTest(unittest.TestCase):
         self.panels = vf.extension("bl.ui.view_panels")
         self.labels = vf.extension("bl.ui.labels")
         self.ps = vf.extension("bl.scene.project_session")
+        self.card = vf.extension("core.views.card")
         i18n = vf.extension("core.i18n")
         self.addCleanup(i18n.set_language, i18n.language())
         i18n.set_language("es")
@@ -104,7 +106,7 @@ class ElementPanelTest(unittest.TestCase):
             self.activate(record.uid)
             lines = self.lines()
             self.assertEqual(lines[0], CARD_TITLE)
-            self.assertEqual(lines[1], record.name)
+            self.assertEqual(lines[1], self.card.readable_name(record.name))
             for start in ("Tipo: ", "Estado: ", "Versión: ", "Operación: ", "Posición: ", "Cifras"):
                 self.assertEqual(len([line for line in lines if line.startswith(start)]), 1, (start, lines))
             self.assertLess(lines.index(CARD_TITLE), lines.index(PROVENANCE_TITLE))
@@ -116,10 +118,30 @@ class ElementPanelTest(unittest.TestCase):
         lines = self.lines()
         after = lines[lines.index(PROVENANCE_TITLE):]
         self.assertTrue(any(line.startswith(f"{MDT} · vigente") for line in after), after)
-        self.assertTrue(any(line.startswith(derived.name) for line in after), after)
+        self.assertTrue(any(line.startswith(self.card.readable_name(derived.name)) for line in after), after)
         self.assertNotIn(NO_PROVENANCE, lines)
         (button,) = [i for i in self.drawn().of_kind("operator") if i.target == SHOW_LINEAGE]
         self.assertEqual(button.properties.item_uid, mdt.uid)
+
+    def test_card_shows_no_internal_key(self) -> None:
+        """UI-07, UI-08, RF-019-16 (spec 019, T31; el hallazgo de la T09/T24): ni el nombre estable del dato (``gis_dtm_rejilla_01``) como nombre, ni el código de
+        la operación (``gis.resample 1.0``), ni el papel de una salida (``project_grid``) se ven en la ficha de la rejilla, del MDT ni de la derivada; sin entrada en la
+        lista base de ``[strings]``. El nombre es el legible del dato; la operación, su nombre y la versión de su algoritmo."""
+        grid, mdt, derived = self.three()
+        self.data.load(bpy.context, derived.uid)  # la derivada de ``gis.resample``, cargada en la escena
+        stable = {record.name for record in (grid, mdt, derived)}
+        for record in (grid, mdt, derived):
+            self.activate(record.uid)
+            lines = self.lines()
+            self.assertEqual(us.findings(lines), [], f"claves internas a la vista en la ficha de {record.name}")
+            for name in stable:
+                self.assertFalse(any(name in line for line in lines), (name, lines))
+        self.activate(derived.uid)
+        lines = self.lines()
+        self.assertEqual(lines[1], "Derivada")
+        operation = next(line for line in lines if line.startswith("Operación: "))
+        self.assertIn("algoritmo 1.0", operation)
+        self.assertNotIn("gis.resample", operation)
 
     def test_new_element_says_no_provenance_yet(self) -> None:
         """Caso límite de RF-019-06: sin operación, entradas ni derivados, «Sin procedencia aún» (las filas de un

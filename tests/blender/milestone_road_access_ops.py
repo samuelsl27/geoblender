@@ -297,7 +297,10 @@ class RoadAccessOpsTest(platform_ops.CreatePlatformTest):
         for heading in ("Nombre", "Superficie", "Puntos de entrada", "Capa de los puntos de entrada", "Campo del nombre", "Pendiente máxima transitable (%)", "Ancho mínimo transitable (m)",
                         "Área mín. de tramo de berma (m²)"):
             self.assertIn(heading, texts)
-        self.assertEqual(len([text for text in texts if text == "HIPÓTESIS: sin valor por defecto, lo elige usted"]), 3, "los tres umbrales son hipótesis sin valor por defecto")
+        # Spec 019 T23 (UI-09): el tipo que comparten los tres umbrales se dice **una vez** bajo el cuadro; sigue siendo el mismo para los tres.
+        self.assertEqual({self.des_ops._access_text(param) for _prop, param, _label in self.des_ops._access_rows()},
+                         {"HIPÓTESIS: sin valor por defecto, lo elige usted"}, "los tres umbrales dicen el mismo tipo")
+        self.assertEqual(len([text for text in texts if text == "HIPÓTESIS: sin valor por defecto, lo elige usted"]), 1, "los tres umbrales son hipótesis sin valor por defecto, dicho una vez")
         self.assertEqual(self.dprov.ACCESS_COMMAND, cls.COMMAND)
 
     def test_a_b_the_dialogs_of_the_roads_propose_the_exploitation_of_the_quarry_and_the_accessibility_the_last_of_the_chain(self) -> None:

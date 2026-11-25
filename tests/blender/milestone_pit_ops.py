@@ -201,7 +201,13 @@ class PitOpsTest(unittest.TestCase):
         rows = [item for item in shown.items if item.kind in ("prop", "label", "operator", "prop_search")]
         self.assertLessEqual(len(rows), MAX_ROWS, f"{len(rows)} filas")
         hypothesis = [text for text in texts if text.startswith("HIPÓTESIS: ")]
-        self.assertGreaterEqual(len(hypothesis), 2, "las tolerancias del desfase dicen su tipo: sin valor por defecto")
+        # Spec 019 T23 (UI-09, RF-019-19): el tipo que comparten las cuatro tolerancias se dice **una vez** bajo el cuadro, no bajo cada campo. Lo que dice sigue siendo lo mismo:
+        # las cuatro son HIPÓTESIS sin valor por defecto.
+        kinds = {self.des_pit._pit_param_text(param) for _prop, param in self.des_pit._tolerance_rows()}
+        self.assertEqual(len(kinds), 1, "las cuatro tolerancias del desfase comparten el tipo")
+        self.assertTrue(next(iter(kinds)).startswith("HIPÓTESIS: "), "HIPÓTESIS, sin valor por defecto")
+        self.assertEqual(len(hypothesis), 1, "las tolerancias del desfase dicen su tipo una vez: sin valor por defecto")
+        self.assertEqual(hypothesis[0], next(iter(kinds)))
         down = draw(cls, bpy.context, **{**self.fake().__dict__, "mode": "DOWN", "show_more": True}).texts()
         self.assertIn("Cota de fondo (m)", down)
         self.assertNotIn("Campo de cota", down)

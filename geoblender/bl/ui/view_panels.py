@@ -371,8 +371,8 @@ def link_text(link: Link, *, with_hash: bool) -> str:
     («MDT norte · vigente · 3f2a1b4c5d6e»)."""
     from ...core.views import card  # al usarlo: registrar no lo carga
 
-    name = link.name if not link.role or link.role == card.IMPORTED_ROLE else (
-        f"{link.name} ({link.role})")
+    # Un dato, por su nombre legible; el papel (``project_grid``, ``source``) es una clave interna del grafo y no se enseña (UI-08, spec 019 T31).
+    name = card.readable_name(link.name) if link.kind == card.DATASET else link.name
     parts = [name, _link_status(link)]
     if with_hash and link.content_sha256:
         parts.append(link.content_sha256[:HASH_CHARS])
@@ -388,7 +388,8 @@ def operation_text(found: ItemCard) -> str:
     definition = contract.OPERATIONS.get(operation.op_type)
     label = translate(language(), definition.label_msgid) if definition is not None and \
         definition.label_msgid else ""
-    parts = (label, f"{operation.op_type} {operation.op_version}",
+    # Ni el código de la operación (``gis.resample``) ni su nombre sin traducir: el nombre visible y la versión de su algoritmo (UI-08).
+    parts = (label or tr("Operation without a name"), tr("algorithm {version}", version=operation.op_version),
              _local(operation.finished_at), f"Geoblender {operation.geoblender_version}")
     return " · ".join(part for part in parts if part)
 
@@ -454,7 +455,7 @@ def card_lines(found: ItemCard, position: CardLine | None = None) -> list[CardLi
     mark = found.revision  # de un dato de versión: su versión y sus revisiones (spec 009)
     version = (found.version or NO_VALUE) if mark is None else mark.heading(language())
     lines = [
-        CardLine(ROW_NAME, record.name, KIND_ICONS.get(record.kind, OTHER_ICON), uid=record.uid),
+        CardLine(ROW_NAME, card.readable_name(record.name), KIND_ICONS.get(record.kind, OTHER_ICON), uid=record.uid),
         CardLine(ROW_FIELD, tr("Type: {kind}", kind=" · ".join(part for part in kind if part))),
         CardLine(ROW_FIELD, tr("Status: {status}", status=status),
                  alert=found.stale or bool(frozen) or not record.live),
@@ -1152,7 +1153,9 @@ def draw_chosen(layout: Any, row: Any, width: float) -> None:
     """Lo de la fila elegida: su nombre, su tipo, su estado con sus marcas (en alerta), su
     versión, si está en la escena, y Cargar en la vista, Descargar y Procedencia."""
     column = layout.column(align=True)
-    _draw_lines(column, row.name, width, **row_icon(row))
+    from ...core.views import card  # al usarlo: registrar no lo carga
+
+    _draw_lines(column, card.readable_name(row.name), width, **row_icon(row))
     _draw_lines(column, tr("Type: {kind}", kind=inventory_kind_text(row)), width)
     _draw_lines(column, tr("Status: {status}", status=inventory_status_text(row)), width,
                 alert=row.stale or row.input_changed or row.altered
@@ -1258,12 +1261,14 @@ def selection_lines(found: Sequence[DatasetFigures]) -> list[CardLine]:
     su unidad y, debajo, sus marcas de hoy (RF-008-31: «depende de una hipótesis», «obsoleta»…,
     en alerta), o «Sin cifras registradas»; si ninguno tiene, sus nombres y por qué; sin
     ninguno, que la selección no muestra datos del proyecto. Nada se mide."""
+    from ...core.views import card  # al usarlo: registrar no lo carga
+
     shown = language()
     recorded = any(item.figures for item in found)
     lines: list[CardLine] = []
     for item in found:
         record = item.record
-        lines.append(CardLine(ROW_NAME, record.name, KIND_ICONS.get(record.kind, OTHER_ICON),
+        lines.append(CardLine(ROW_NAME, card.readable_name(record.name), KIND_ICONS.get(record.kind, OTHER_ICON),
                               uid=record.uid))
         for figure in item.figures:
             lines.append(CardLine(
