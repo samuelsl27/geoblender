@@ -120,7 +120,7 @@ AREAS: tuple[AreaDecision, ...] = (
     # Vista 3D
     _d("VIEW_3D", "HEADER", "Vista 3D: cabecera (fila 1)", "REPLACED",
        "Los menús nativos (View, Select, Add, Object) se pliegan en «Blender ▾» en modo "
-       "Objeto (T20, pendiente); delante, «Herramientas ▾» y «<Tipo> ▾»; en edición, los "
+       "Objeto (T20, hecha); delante, «Herramientas ▾» y «<Tipo> ▾»; en edición, los "
        "nativos"),
     _d("VIEW_3D", "TOOL_HEADER", "Vista 3D: fila 2", "GEOBLENDER",
        "El acceso rápido de la vista (24 controles) delante de los ajustes de la "

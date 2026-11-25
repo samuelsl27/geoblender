@@ -254,6 +254,8 @@ def on_changed(look_group: Any, prop: str | None = None) -> None:
         return
     if prop in values:
         apply(obj, {prop: values[prop]})
+    elif prop == "label":  # rótulo vaciado a mano: ``read`` no lo ofrece y el objeto vuelve al nombre generado (RF-019-07)
+        _set_label(obj, "")
     mark(obj, prop)
     if not _spreading:
         spread(obj, prop)

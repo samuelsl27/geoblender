@@ -193,16 +193,22 @@ class UiAreasTest(unittest.TestCase):
     def test_document_matches_data(self) -> None:
         """RF-019-01: ``areas-decididas.md`` y los datos coinciden fila por fila (clave,
         decisión y motivo)."""
-        rows: dict[str, tuple[str, str]] = {}
+        rows: dict[str, tuple[str, str, str]] = {}
         for line in docs.read(DOC_RELPATH).splitlines():
             cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
             if line.startswith("| `") and len(cells) == 5:
-                rows[cells[0].strip("`")] = (cells[2], cells[4])
+                rows[cells[0].strip("`")] = (cells[2], cells[3], cells[4])
         self.assertEqual(set(rows), {item.key for item in self.areas.AREAS})
         for item in self.areas.AREAS:
-            label, reason = rows[item.key]
+            label, what, reason = rows[item.key]
             self.assertEqual(label, self.areas.DECISIONS[item.decision], item.key)
             self.assertEqual(reason, item.reason or "—", item.key)
+            self.assertEqual(what, item.what, f"{item.key}: el texto del documento y el de los datos difieren")
+
+    def test_no_row_cites_a_pending_task(self) -> None:
+        """T36 (F-4): ninguna fila de ``AREAS`` dice que una tarea está «pendiente» (el texto envejece al hacerse)."""
+        for item in self.areas.AREAS:
+            self.assertNotIn("pendiente", f"{item.what} {item.reason}".lower(), item.key)
 
     def test_generator_is_reproducible(self) -> None:
         """El generador da el mismo fichero dos veces, y el del repositorio es su salida."""

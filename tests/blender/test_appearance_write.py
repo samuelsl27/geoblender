@@ -193,6 +193,15 @@ class AppearanceWriteTest(unittest.TestCase):
             self.assertEqual(views._own_label([obj]), f"Rótulo {kind}")
             self.assertIn(f"Rótulo {kind}", obj.name)
 
+    def test_clearing_the_label_by_hand_gives_back_the_generated_name(self) -> None:
+        """RF-019-07 (nota de T34): vaciar el rótulo a mano devuelve al Outliner el nombre generado, como «Restablecer»."""
+        uid = self.objs[0].geoblender.dataset_uid
+        generated = self.objs[0].name
+        self.objs[0].geoblender.look.label = "Rótulo vaciado"
+        self.assertIn("Rótulo vaciado", self._only(uid).name)
+        self._only(uid).geoblender.look.label = ""
+        self.assertEqual(self._only(uid).name, generated)
+
     def test_objects_without_data_write_nothing(self) -> None:
         """Un objeto sin dato del proyecto (el ancla de prueba) solo cambia su espejo: nada pendiente."""
         mesh = bpy.data.meshes.new("sin dato")
