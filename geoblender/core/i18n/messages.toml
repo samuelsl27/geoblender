@@ -12635,3 +12635,39 @@ es = "Parte de {surface}, no del terreno: un fondo que no queda por debajo de es
 
 ["It is under «More options» of the dialog; the guide gives starting values"]
 es = "Está en «Más opciones» del diálogo; la guía da valores de partida"
+
+["By bench, kind and part"]
+es = "Por banco, tipo y parte"
+
+["The line is the one of the bench, kind and part below"]
+es = "La línea es la del banco, el tipo y la parte de abajo"
+
+["Bench 1, or the one the layer says"]
+es = "El banco 1, o el que diga la capa"
+
+["The first part, 0"]
+es = "La primera parte, 0"
+
+["Bench {bench} · {kind} · part {part}{level} ({name})"]
+es = "Banco {bench} · {kind} · parte {part}{level} ({name})"
+
+["Bench {bench}"]
+es = "Banco {bench}"
+
+["Bench of the layer"]
+es = "Banco de la capa"
+
+["Part {part}"]
+es = "Parte {part}"
+
+["Part of the bench: 0 is the first, the others only if the bench has several"]
+es = "Parte del banco: la 0 es la primera, las demás solo si el banco tiene varias"
+
+["Line of the layer to expand, from the list (by bench, kind and part: the bench, kind and part below)"]
+es = "Línea de la capa que se expande, de la lista (por banco, tipo y parte: el banco, el tipo y la parte de abajo)"
+
+["Bench of the layer to expand, from the list (automatic: bench 1)"]
+es = "Banco de la capa que se expande, de la lista (automático: el banco 1)"
+
+["Part of the bench, from the list: 0 is the first; the others only if the bench has several parts"]
+es = "Parte del banco, de la lista: la 0 es la primera; las demás solo si el banco tiene varias partes"

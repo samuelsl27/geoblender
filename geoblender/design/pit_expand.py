@@ -34,7 +34,7 @@ from ..gis.masks import access
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.messages import GisError
 from ..gis.store import StoreProject
-from . import entities, pipeline, pit_bench, pit_store, provenance
+from . import entities, entity_store, pipeline, pit_bench, pit_store, provenance
 from .compose import admitted_pair
 from .messages import DesignError
 from .params import PitParam, RoseParam, rose_key
@@ -232,6 +232,45 @@ def source_polyline(lines: Lines3D, request: ExpandRequest) -> Polyline:
         raise _bad(request, label, "indique si es un pie o una cresta")
     bench = int(banks[index]) if banks is not None else (1 if request.bench is None else request.bench)
     return Polyline(kind, bench, ring, sector="" if sectors is None else str(sectors[index] or ""), part=0 if parts is None else int(parts[index]))
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLine:
+    """Una línea de la capa de partida de «Expandir banco…», para ofrecerla en una lista (T40j): su número (``fid``), su nombre (o su número), su ``bench``, su ``kind`` y su ``part`` si la capa los
+    tiene (``des_pbl_`` y ``des_pxb_``), su cota (``level_m``: la Z media de sus vértices; ``None`` sin Z) y si la capa tiene banco y tipo (``columns``)."""
+
+    fid: int
+    name: str
+    bench: int | None
+    kind: str | None
+    part: int | None
+    level_m: float | None
+    columns: bool
+
+
+def describe_lines(lines: Lines3D) -> tuple[SourceLine, ...]:
+    """Las líneas de ``lines`` en el orden de la capa, descritas para las listas del diálogo (T40j). **Solo lee.**"""
+    layer = lines.layer
+    banks, kinds, parts = (_values(lines, key) for key in ("bench", "kind", "part"))
+    names = entity_store._names(layer)
+    found: list[SourceLine] = []
+    for index, fid in enumerate(layer.fids):
+        stored = lines.xyz[index]
+        level = None
+        if stored is not None and stored.ndim == 2 and stored.shape[1] >= 3 and bool(np.isfinite(stored[:, 2]).all()):
+            level = float(np.mean(stored[:, 2]))
+        bench = None if banks is None or banks[index] is None else int(banks[index])
+        part = None if parts is None or parts[index] is None else int(parts[index])
+        kind = None if kinds is None or kinds[index] is None else str(kinds[index])
+        found.append(SourceLine(int(fid), names[index] or str(fid), bench, kind, part, level, banks is not None and kinds is not None))
+    return tuple(found)
+
+
+def source_lines(project: StoreProject, version: Version, layer: str) -> tuple[SourceLine, ...]:
+    """Las líneas de la capa de partida ``layer`` de ``version`` (T40j), descritas con :func:`describe_lines`; ``GisError``/``ValueError`` si no es una capa de líneas de las que admite
+    «Expandir banco…». **Solo lee.**"""
+    request = ExpandRequest("lista", LayerFields(layer, None), "up", "terreno")
+    return describe_lines(_source_record(project, version, request)[1])
 
 
 def _source_record(project: StoreProject, version: Version, request: ExpandRequest) -> Any:

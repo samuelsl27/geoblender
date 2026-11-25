@@ -165,6 +165,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
   - **Un «Calcular» fallido de «Nueva corta…» ya no obliga a rellenarlo todo**: al volver a abrir el diálogo recupera lo escrito (una sola vez, en memoria, sin guardar nada en el proyecto; no
     con otro proyecto u otra versión ni tras un cálculo que sale bien). Y el mensaje de un valor sin dar o fuera de rango dice el **nombre** del valor («Tolerancia de los arcos del desfase»), no
     su clave interna, y, si es una tolerancia del desfase, dónde está («Más opciones») y que la guía da valores de partida.
+  - **«Expandir banco…» se elige de listas**: la línea de partida, el banco y la parte se ofrecen en listas leídas de la capa (cada línea con su banco, su tipo, su parte y su cota) en lugar de pedirlas
+    como texto libre, con una propuesta (el primer banco, su tipo y la parte 0); con una línea elegida no se pide banco, tipo ni parte. La guía explica qué poner en «Parte» (la 0, la primera).
   - **Lo que no hace todavía:** no parte de la concha óptima (R-49) ni diseña la corta de forma automática (R-55); no admite polígonos con huecos; no mezcla bancos por berma distintos entre sectores; la rampa de la
     descendente no se calcula con bancos dobles, con varios límites con rampa ni sobre el primer banco de altura variable; una rampa se ha medido sobre 20 bancos en espiral y 5 en zig-zag. Esta guía
     y lo anterior se han comprobado sin pantalla; falta verlo con el ratón y contrastarlo con el proyecto de referencia. Guía de uso: `docs/usuario/corta-por-bancos.md`.

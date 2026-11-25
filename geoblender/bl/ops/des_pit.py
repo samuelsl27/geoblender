@@ -1351,7 +1351,7 @@ EXPAND_KIND_ITEMS = [(_NOT_CHOSEN, "Not chosen", "The line says what it is (a la
                      ("foot", "Foot", "The line is the foot of a bench: the bench that follows is its crest"),
                      ("crest", "Crest", "The line is the crest of a bench: the bench that follows is its foot")]
 """Lo que **es** la línea de partida si su capa no lo dice (RF-018-22)."""
-_EXPAND_FIELDS = ("name", "source", "name_field", "feature", "bench", "kind", "part", "mode", "start", "profile", "rose", "n_berm", "sector_profiles", "sector_roses", "sector_n_berm", "corner",
+_EXPAND_FIELDS = ("name", "source", "name_field", "feature", "line_pick", "bench", "bench_pick", "kind", "part", "part_pick", "mode", "start", "profile", "rose", "n_berm", "sector_profiles", "sector_roses", "sector_n_berm", "corner",
                   "arc_tol", "simplify", "az_window")
 _EXPAND_LAYERS: list[tuple[str, str, str]] = []
 """Las líneas de partida que ofrece el diálogo de «Expandir banco…» (una lista viva del módulo)."""
@@ -1363,6 +1363,110 @@ def expand_source_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]
     if not _EXPAND_LAYERS:
         _EXPAND_LAYERS.append((_NONE, NOT_SHOWN, tr("There are no layers of 3D lines in the project")))
     return _EXPAND_LAYERS
+
+
+@dataclass
+class _ExpandLines:
+    """Las listas vivas de la línea, el banco y la parte de «Expandir banco…» (T40j), de la capa de partida elegida: lo que leyó :func:`refresh_expand_lines`."""
+
+    lines: list[Any] = field(default_factory=list)
+    line_items: list[tuple[str, str, str]] = field(default_factory=list)
+    bench_items: list[tuple[str, str, str]] = field(default_factory=list)
+    part_items: list[tuple[str, str, str]] = field(default_factory=list)
+
+
+_LINES = _ExpandLines()
+
+
+def _lines_without_layer() -> None:
+    """Sin capa de partida leída: solo la propuesta «automático»."""
+    _LINES.lines = []
+    _LINES.line_items = [(_NONE, tr("By bench, kind and part"), tr("The line is the one of the bench, kind and part below"))]
+    _LINES.bench_items = [(_NONE, tr("Automatic"), tr("Bench 1, or the one the layer says"))]
+    _LINES.part_items = [(_NONE, tr("Automatic"), tr("The first part, 0"))]
+
+
+def expand_line_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las líneas de la capa de partida de «Expandir banco…» (una lista viva del módulo), precedidas por «por banco, tipo y parte»."""
+    if not _LINES.line_items:
+        _lines_without_layer()
+    return _LINES.line_items
+
+
+def expand_bench_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Los bancos que tiene la capa de partida (una lista viva del módulo), o «automático»."""
+    if not _LINES.bench_items:
+        _lines_without_layer()
+    return _LINES.bench_items
+
+
+def expand_part_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las partes que tiene la capa de partida (una lista viva del módulo), o «automático»."""
+    if not _LINES.part_items:
+        _lines_without_layer()
+    return _LINES.part_items
+
+
+def _kind_word(kind: str | None) -> str:
+    return {"foot": tr("Foot"), "crest": tr("Crest")}.get(kind or "", kind or NOT_SHOWN)
+
+
+def refresh_expand_lines(project: Any, layer: str) -> None:
+    """Vuelve a leer de ``project`` las líneas de la capa de partida ``layer`` (T40j): la lista de las líneas (con su banco, su tipo, su parte y su cota si la capa los tiene, o su nombre), la de
+    los bancos y la de las partes. Si no se puede leer (sin capa, sin versión), solo queda «automático»; solo lee."""
+    _lines_without_layer()
+    version = scene_versions.active()
+    if version is None or layer in ("", _NONE):
+        return
+    from ...design import pit_expand  # al usarlo: habilitar no carga el cálculo
+
+    try:
+        found = pit_expand.source_lines(project, version, layer)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.info("No se pudieron leer las líneas de «%s»", layer, exc_info=True)
+        return
+    _LINES.lines = list(found)
+    for item in found:
+        level = "" if item.level_m is None else f" · {_metres(item.level_m)} m"
+        if item.bench is not None and item.kind is not None:
+            label = tr("Bench {bench} · {kind} · part {part}{level} ({name})", bench=item.bench, kind=_kind_word(item.kind), part=item.part or 0, level=level, name=item.name)
+        else:
+            label = f"{item.name}{level}"
+        _LINES.line_items.append((str(item.fid), label, tr("Line of the layer")))
+    benches = sorted({item.bench for item in found if item.bench is not None})
+    parts = sorted({item.part or 0 for item in found if item.bench is not None})
+    if benches:
+        _LINES.bench_items += [(str(number), tr("Bench {bench}", bench=number), tr("Bench of the layer")) for number in benches]
+    if parts:
+        _LINES.part_items += [(str(number), tr("Part {part}", part=number), tr("Part of the bench: 0 is the first, the others only if the bench has several")) for number in parts]
+
+
+def _propose_lines(operator: Any) -> None:
+    """Lo que propone el diálogo de la línea de partida (T40j): el primer banco de la capa, su tipo y la parte 0; sin banco ni tipo en la capa, nada."""
+    first = next((item for item in _LINES.lines if item.bench is not None and item.kind is not None), None)
+    if first is None:
+        return
+    offered = {identifier for identifier, _label, _about in _LINES.bench_items}
+    if str(first.bench) in offered:
+        operator.bench_pick = str(first.bench)
+    if "0" in {identifier for identifier, _label, _about in _LINES.part_items}:
+        operator.part_pick = "0"
+    if first.kind in ("foot", "crest"):
+        operator.kind = first.kind
+
+
+def _source_changed(self: Any, _context: Any) -> None:
+    """El ``update`` de la línea de partida: las listas de la capa anterior no valen; se leen las de la nueva y vuelve la propuesta (T40j)."""
+    self.line_pick = self.bench_pick = self.part_pick = _NONE
+    project = SESSION.project
+    if project is not None:
+        refresh_expand_lines(project, self.source)
+        _propose_lines(self)
+
+
+def _chosen_whole(typed: str, picked: str, label: str) -> int | None:
+    """El número tecleado (manda: viene de un guion) o, sin él, el de la lista (``none``: ninguno)."""
+    return _whole(typed, label) if typed.strip() else (None if picked in ("", _NONE) else int(picked))
 
 
 def refresh_expand_choices(project: Any) -> None:
@@ -1426,13 +1530,19 @@ class GEOBLENDER_OT_des_expand_bench(_CreatesInSteps, _CalculateAndCreate, Desig
         name="Name", description="Name of the expanded bench, unique in the active version: the layer of 3D lines is called after it", options=_FIELD)
     source: EnumProperty(  # type: ignore[valid-type]
         name="Source line", description="Layer of 3D lines the bench is taken from: the polylines of a pit of the active version, an expanded bench, a proposed route or a breakline of the project",
-        items=expand_source_items, options=_FIELD)
+        items=expand_source_items, options=_FIELD, update=_source_changed)
     name_field: StringProperty(  # type: ignore[valid-type]
         name="Name field", description="Field of the layer with the name of each line (empty: the field «nombre» or «name» or, without it, the number (fid))", options=_FIELD)
     feature: StringProperty(  # type: ignore[valid-type]
         name="Line", description="Name or number (fid) of the line of the layer to expand (empty: the bench, kind and part below, if the layer has them)", options=_FIELD)
+    line_pick: EnumProperty(  # type: ignore[valid-type]
+        name="Line", description="Line of the layer to expand, from the list (by bench, kind and part: the bench, kind and part below)", items=expand_line_items, options=_FIELD)
     bench: StringProperty(  # type: ignore[valid-type]
         name="Bench", description="Whole number of the bench to expand, when the layer says it (the polylines of a pit) or when you say it (empty: bench 1)", options=_FIELD)
+    bench_pick: EnumProperty(  # type: ignore[valid-type]
+        name="Bench", description="Bench of the layer to expand, from the list (automatic: bench 1)", items=expand_bench_items, options=_FIELD)
+    part_pick: EnumProperty(  # type: ignore[valid-type]
+        name="Part", description="Part of the bench, from the list: 0 is the first; the others only if the bench has several parts", items=expand_part_items, options=_FIELD)
     kind: EnumProperty(  # type: ignore[valid-type]
         name="Kind of line", description="Whether the line is the foot or the crest of a bench, if its layer does not say it", items=EXPAND_KIND_ITEMS, default=_NOT_CHOSEN, options=_FIELD)
     part: StringProperty(  # type: ignore[valid-type]
@@ -1516,6 +1626,9 @@ class GEOBLENDER_OT_des_expand_bench(_CreatesInSteps, _CalculateAndCreate, Desig
         offered = [item[0] for item in expand_source_items(self, None) if item[0] != _NONE]
         if offered and not given("source"):
             self.source = offered[0]
+        refresh_expand_lines(project, self.source)  # las listas de la línea, el banco y la parte de esa capa, con su propuesta (T40j)
+        if not given("bench_pick") and not given("part_pick") and not given("kind"):
+            _propose_lines(self)
         if not given("start"):
             offered_starts = {item[0] for item in des_panels.platform_start_items(None, None)}
             start = des_panels.platform_default_start()
@@ -1549,10 +1662,11 @@ class GEOBLENDER_OT_des_expand_bench(_CreatesInSteps, _CalculateAndCreate, Desig
         origin = layout.box()
         origin.prop(self, "source", text=tr("Source line"), translate=False)
         origin.prop(self, "name_field", text=tr("Name field"), translate=False)
-        origin.prop(self, "feature", text=tr("Line"), translate=False)
-        origin.prop(self, "bench", text=tr("Bench"), translate=False)
-        origin.prop(self, "kind", text=tr("Kind of line"), translate=False)
-        origin.prop(self, "part", text=tr("Part"), translate=False)
+        origin.prop(self, "line_pick", text=tr("Line"), translate=False)
+        if self.line_pick == _NONE:  # con una línea elegida no hace falta decir su banco, su tipo ni su parte
+            origin.prop(self, "bench_pick", text=tr("Bench"), translate=False)
+            origin.prop(self, "kind", text=tr("Kind of line"), translate=False)
+            origin.prop(self, "part_pick", text=tr("Part"), translate=False)
         layout.prop(self, "mode", text=tr("Mode"), translate=False)
         layout.prop(self, "start", text=tr("Start surface"), translate=False)
         benches = layout.box()
@@ -1589,7 +1703,8 @@ class GEOBLENDER_OT_des_expand_bench(_CreatesInSteps, _CalculateAndCreate, Desig
 
         return pit_expand.ExpandRequest(
             name, road_model.LayerFields(self.source, self.name_field.strip() or None), self.mode.lower(), self.start if self.start != _NONE else "",
-            kind=None if self.kind == _NOT_CHOSEN else self.kind, feature=self.feature.strip() or None, bench=_whole(self.bench, tr("Bench")), part=_whole(self.part, tr("Part")) or 0,
+            kind=None if self.kind == _NOT_CHOSEN else self.kind, feature=self.feature.strip() or (None if self.line_pick in ("", _NONE) else self.line_pick),
+            bench=_chosen_whole(self.bench, self.bench_pick, tr("Bench")), part=_chosen_whole(self.part, self.part_pick, tr("Part")) or 0,
             profile=chosen(self.profile), rose=chosen(self.rose), n_berm=_whole(self.n_berm, tr("Benches per berm")),
             sector_profiles=_pairs(self.sector_profiles, tr("Profiles by sector"), _text), sector_roses=_pairs(self.sector_roses, tr("Roses by sector"), _text),
             sector_n_berm=_pairs(self.sector_n_berm, tr("Benches per berm by sector"), _whole), corner=None if self.corner == "DEFAULT" else self.corner.lower(),

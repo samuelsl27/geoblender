@@ -35,7 +35,7 @@ PIT_NAME = "Corta de la orden"
 EXPANDED = "Cresta 1 expandida"
 HIDDEN = ("confirm", "in_steps")
 PROPERTIES = frozenset({
-    "name", "source", "name_field", "feature", "bench", "kind", "part", "mode", "start", "profile", "rose", "n_berm", "sector_profiles", "sector_roses", "sector_n_berm", "corner", "arc_tol",
+    "name", "source", "name_field", "feature", "line_pick", "bench", "bench_pick", "kind", "part", "part_pick", "mode", "start", "profile", "rose", "n_berm", "sector_profiles", "sector_roses", "sector_n_berm", "corner", "arc_tol",
     "simplify", "az_window"})
 STRINGS = ("name_field", "feature", "bench", "part", "n_berm", "sector_profiles", "sector_roses", "sector_n_berm", "arc_tol", "simplify", "az_window")
 MAX_ROWS = 32
@@ -122,10 +122,54 @@ class PitExpandOpsTest(pit_ops.PitOpsTest):
 
     def fake_expand(self, **values: Any) -> Any:
         """El operador de mentira con todas las propiedades del diálogo en su valor por defecto y lo que se dé."""
-        shown: dict[str, Any] = {"name": "Banco", "source": self.pbl, "name_field": "", "feature": "", "bench": "", "kind": "NONE", "part": "", "mode": "UP",
+        shown: dict[str, Any] = {"name": "Banco", "source": self.pbl, "name_field": "", "feature": "", "line_pick": "none", "bench": "", "bench_pick": "none", "kind": "NONE", "part": "", "part_pick": "none", "mode": "UP",
                                  "start": self.terrain["llano"], "profile": "none", "rose": "none", "n_berm": "", "sector_profiles": "", "sector_roses": "", "sector_n_berm": "",
                                  "corner": "DEFAULT", "arc_tol": "", "simplify": "", "az_window": "", "confirm": False, "in_steps": False}
         return pit_ops.operator_self(self.expand, report=lambda kind, text: None, properties=SimpleNamespace(is_property_set=lambda name: False), **{**shown, **values})
+
+    def test_xe_the_line_the_bench_and_the_part_are_lists_with_a_proposal(self) -> None:
+        """RF-018-22, UI-03, UI-04, T40j (ensayo de CE-018-13: «Línea», «Banco», «Tipo» y «Parte» eran texto libre y la guía no decía qué poner en «Parte»): de la capa de partida se ofrecen en
+        **listas** las líneas (con su banco, su tipo, su parte y su cota), los bancos y las partes que tiene; el diálogo propone el primer banco, su tipo y la parte 0; con una línea elegida no pide
+        banco, tipo ni parte; lo tecleado (desde un guion) manda sobre las listas."""
+        cls = self.expand
+        self.refresh()
+        self.des_pit.refresh_expand_lines(self.project, self.pbl)
+        lines = self.des_pit.expand_line_items(None, None)
+        self.assertEqual(lines[0][0], "none")
+        self.assertEqual(lines[0][1], "Por banco, tipo y parte")
+        labels = [label for _identifier, label, _about in lines[1:]]
+        self.assertTrue(all(label.startswith("Banco ") for label in labels), labels)
+        self.assertTrue(any("Pie" in label and "parte 0" in label for label in labels), labels)
+        self.assertTrue(any("Cresta" in label for label in labels))
+        self.assertTrue(all(" m (" in label for label in labels), "con su cota")
+        benches = [identifier for identifier, _label, _about in self.des_pit.expand_bench_items(None, None)]
+        self.assertEqual(benches[:3], ["none", "0", "1"], benches)
+        self.assertIn("0", [identifier for identifier, _label, _about in self.des_pit.expand_part_items(None, None)])
+        first = self.fake_expand(source=self.pbl, line_pick=lines[1][0], bench_pick="2", part_pick="0", kind="crest")
+        asked = cls._request(first)
+        self.assertEqual(asked.feature, lines[1][0], "la línea elegida en la lista")
+        auto = cls._request(self.fake_expand(source=self.pbl, bench_pick="2", part_pick="0", kind="crest"))
+        self.assertEqual((auto.feature, auto.bench, auto.part, str(auto.kind)), (None, 2, 0, "crest"))
+        typed = cls._request(self.fake_expand(source=self.pbl, bench="3", part="1", feature="X", bench_pick="2", part_pick="0", kind="crest", line_pick=lines[1][0]))
+        self.assertEqual((typed.feature, typed.bench, typed.part), ("X", 3, 1), "lo tecleado manda")
+        proposal = self.fake_expand(name="", source="", profile="none", start="")
+        context = SimpleNamespace(window=platform_ops.window(), selected_objects=(), window_manager=SimpleNamespace(invoke_props_dialog=pit_ops.mock.Mock(return_value={"RUNNING_MODAL"})))
+        cls.invoke(proposal, context, None)
+        self.assertEqual((proposal.source, proposal.bench_pick, proposal.part_pick, proposal.kind), (self.pbl, "0", "0", "foot"), "propone el primer banco, su tipo y la parte 0")
+        shown = draw(cls, bpy.context, **self.fake_expand().__dict__)
+        targets = [item.target for item in shown.items]
+        for wanted in ("line_pick", "bench_pick", "kind", "part_pick"):
+            self.assertIn(wanted, targets)
+        for text_field in ("feature", "bench", "part"):
+            self.assertNotIn(text_field, targets, "la lista, no el texto libre")
+        picked = [item.target for item in draw(cls, bpy.context, **self.fake_expand(line_pick=lines[1][0]).__dict__).items]
+        self.assertIn("line_pick", picked)
+        for hidden in ("bench_pick", "kind", "part_pick"):
+            self.assertNotIn(hidden, picked, "con una línea elegida no se pide")
+        changed = SimpleNamespace(source=self.pbl, line_pick="3", bench_pick="2", part_pick="1", kind="crest")
+        with pit_ops.mock.patch.object(self.des_pit, "refresh_expand_lines"), pit_ops.mock.patch.object(self.des_pit, "_propose_lines"):
+            self.des_pit._source_changed(changed, None)
+        self.assertEqual((changed.line_pick, changed.bench_pick, changed.part_pick), ("none", "none", "none"), "otra capa: las listas vuelven a la propuesta")
 
     # --- b: calcular sin escribir -------------------------------------------------------------
 

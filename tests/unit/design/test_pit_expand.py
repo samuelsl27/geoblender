@@ -211,6 +211,17 @@ class SourcePolylineTest(unittest.TestCase):
         self.refused("indique la línea", kind="foot")
         np.testing.assert_array_equal(road_store.read_lines_3d(self.fake.conn, "des_pxb_x_v01").xyz[0], closed(square()))
 
+    def test_c_the_lines_of_a_layer_are_described_for_the_lists_of_the_dialog(self) -> None:
+        """RF-018-22, T40j (ensayo de CE-018-13): de cada línea de la capa, su número, su nombre, su banco, su tipo, su parte y su cota (la Z de sus vértices; ``None`` si no la tiene), en el orden
+        de la capa, para ofrecerlas en listas en vez de pedir texto libre; **solo lee**."""
+        found = pit_expand.describe_lines(self.fake.lines)
+        self.assertEqual([(item.name, item.bench, item.kind, item.part) for item in found],
+                         [("A", 1, "foot", 0), ("B", 2, "crest", 0), ("C", 2, "crest", 1), ("abierta", 3, "foot", 0), ("no plana", 4, "foot", 0), ("rampa", 5, "ramp", 0)])
+        self.assertEqual([item.fid for item in found], [1, 2, 3, 4, 5, 6])
+        self.assertEqual([item.level_m for item in found[:3]], [100.0, 110.0, 110.0])
+        self.assertAlmostEqual(found[4].level_m, 100.4)
+        self.assertEqual(pit_expand.describe_lines(self.fake.lines)[0].columns, True)
+
 
 if __name__ == "__main__":
     unittest.main()
