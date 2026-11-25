@@ -48,3 +48,21 @@ entries = [
     "bl/ops/ui.py::GEOBLENDER_OT_ui_show_glossary -> height",
     "bl/ops/ui.py::GEOBLENDER_OT_ui_show_shortcuts -> height",
 ]
+
+[labels]
+# UI-28, RF-019-21: etiquetas de diálogos que no caben en el ancho de su diálogo a alguna de las tres escalas (1,0, 1,25 y
+# 1,5556) y se cortarían con «…», «fichero::clase -> idioma:texto (60 caracteres)»; tests/blender/test_ui_labels_cut.py.
+# Recuento por fichero: bl/ops/core.py 2, bl/ops/des.py 2, bl/ops/jobs.py 2, bl/ops/ui.py 4 (10 entradas: 5 etiquetas × es y en;
+# medidas sin proyecto: es un mínimo). Se arreglan con labels.draw_wrapped en la spec 020.
+entries = [
+    "bl/ops/core.py::GEOBLENDER_OT_core_transform_coordinates -> en:One point per line, or points separated by «;»: X Y or X Y Z…",
+    "bl/ops/core.py::GEOBLENDER_OT_core_transform_coordinates -> es:Un punto por línea, o puntos separados por «;»: X Y o X Y Z …",
+    "bl/ops/des.py::GEOBLENDER_OT_des_entity_calculate -> en:Calculating shows its summary and registers nothing: only «C…",
+    "bl/ops/des.py::GEOBLENDER_OT_des_entity_calculate -> es:Calcular enseña su resumen y no registra nada: solo «Crear» …",
+    "bl/ops/jobs.py::GEOBLENDER_OT_jobs_setup_runtime -> en:Folder: <ruta>",
+    "bl/ops/jobs.py::GEOBLENDER_OT_jobs_setup_runtime -> es:Carpeta: <ruta>",
+    "bl/ops/ui.py::GEOBLENDER_OT_ui_run_diagnostics -> en:There is no read-only folder: neither the variable GEOBLENDE…",
+    "bl/ops/ui.py::GEOBLENDER_OT_ui_run_diagnostics -> es:No hay ninguna carpeta de solo lectura: ni la variable GEOBL…",
+    "bl/ops/ui.py::GEOBLENDER_OT_ui_show_about -> en:Contiene datos del EPSG Geodetic Parameter Dataset, propieda…",
+    "bl/ops/ui.py::GEOBLENDER_OT_ui_show_about -> es:Contiene datos del EPSG Geodetic Parameter Dataset, propieda…",
+]
