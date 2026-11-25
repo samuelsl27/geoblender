@@ -201,6 +201,9 @@ es = "El proyecto es del esquema {old}, anterior al de esta versión de Geoblend
 ["A full copy is made first, next to the original: «{backup}»."]
 es = "Antes se hará una copia completa junto al original: «{backup}»."
 
+["It is migrated to schema {new}, which also saves the appearance of the elements; an earlier Geoblender will not be able to open it."]
+es = "Se migra al esquema {new}, que además guarda el aspecto de los elementos; un Geoblender anterior no podrá abrirlo."
+
 ["Tick «Migrate the project» to do it; otherwise it opens read-only."]
 es = "Marque «Migrar el proyecto» para hacerlo; si no, se abre en solo lectura."
 

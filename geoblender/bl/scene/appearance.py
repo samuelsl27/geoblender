@@ -40,7 +40,7 @@ LOGGER = logging.getLogger("geoblender.bl.scene")
 DELAY_S = 0.5
 """Lo que espera la escritura del aspecto desde el último cambio (plan 019, A2)."""
 
-__all__ = ["APPLIERS", "DELAY_S", "MATERIAL_PREFIX", "apply", "discard", "flush", "mirror", "offered", "on_changed",
+__all__ = ["APPLIERS", "DELAY_S", "MATERIAL_PREFIX", "apply", "blocked_reason", "discard", "flush", "mirror", "offered", "on_changed",
            "on_load_pre", "on_save_pre", "read", "reapply", "reconcile", "register", "reset", "reset_message",
            "restore", "selected_elements", "set_clock", "spread", "sweep", "unregister"]
 
@@ -343,7 +343,8 @@ def sweep(now: float) -> int:
     return flush()
 
 
-def _blocked(project: Any) -> str | None:
+def blocked_reason(project: Any) -> str | None:
+    """Por qué el aspecto de este proyecto solo se guarda en el ``.blend`` (solo lectura, esquema anterior al 4) o ``None``."""
     if not project.writable:
         return tr("Appearance saved only in this file: the project is read-only")
     if project.schema_version < 4:
@@ -370,7 +371,7 @@ def flush(project: Any = None) -> int:
     project = project if project is not None else project_session.current()
     if not items or project is None or project.closed:
         return 0
-    reason = _blocked(project)
+    reason = blocked_reason(project)
     if reason is not None:
         _warn_once(reason)
         return 0
@@ -536,7 +537,7 @@ def reset(objects: Iterable[Any], props: Iterable[str] | None = None) -> list[An
     if not _pending:
         _stop_timer()
     if project is not None and rows and not project.closed:
-        reason = _blocked(project)
+        reason = blocked_reason(project)
         if reason is not None:
             _warn_once(reason)
         else:

@@ -194,9 +194,21 @@ def attach(project: Project) -> tuple[str, ...]:
     # La vista cargada sin este proyecto abierto, con su georreferencia: al día (009/T42).
     georef.clear_unopened_view(project)
     georef.sync_scenes(project)
+    _restore_look()
     ensure_heartbeat()
     _changed(project)
     return warnings
+
+
+def _restore_look() -> None:
+    """Al abrir el proyecto, la vista ya cargada en el ``.blend`` toma el aspecto que dice la tabla (spec 019, T14; ADR-0033
+    punto 4). Solo lee; un fallo no impide abrir."""
+    from . import appearance  # al usarlo: appearance usa este módulo
+
+    try:
+        appearance.restore(bpy.data.objects)
+    except Exception:  # noqa: BLE001 - abrir el proyecto no depende del aspecto
+        LOGGER.exception("No se pudo aplicar el aspecto guardado al abrir el proyecto")
 
 
 def close() -> tuple[str, ...]:

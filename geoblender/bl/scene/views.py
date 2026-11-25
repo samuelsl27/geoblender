@@ -1088,6 +1088,17 @@ def _version_rows(project: Any, uids: Collection[str]) -> dict[str, tuple[Any, A
     return {uid: (version, latest.get(uid)) for uid, version in found.items()}
 
 
+def _restore_look(objects: Sequence[bpy.types.Object]) -> None:
+    """Lo guardado del aspecto, a lo recién puesto en la escena (spec 019, T14; ADR-0033 punto 4: manda la tabla), en el
+    mismo gesto y sin crear versión. Solo lee; un fallo no para la carga."""
+    from . import appearance  # al usarlo: appearance usa la sesión del proyecto
+
+    try:
+        appearance.restore(objects)
+    except Exception:  # noqa: BLE001 - la vista ya está en la escena; sin aspecto guardado queda el predefinido
+        LOGGER.exception("No se pudo aplicar el aspecto guardado a la vista")
+
+
 def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[str], *,
            figures: Mapping[str, Sequence[FigureText]],
            replaces: Mapping[str, Sequence[str]], unbacked: Sequence[str],
@@ -1140,6 +1151,8 @@ def _place(scene: Any, project: Any, built: Sequence[_Built], errors: Sequence[s
             if parts.bounds is not None:
                 lows.append(np.asarray(parts.bounds[0], dtype=np.float64))
                 highs.append(np.asarray(parts.bounds[1], dtype=np.float64))
+        if objects:
+            _restore_look(objects)
         if loaded:
             ensure_anchor(project, scene)
         if lows:

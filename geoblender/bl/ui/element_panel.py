@@ -22,7 +22,7 @@ from typing import Any
 import bpy
 
 from ...core.i18n import tr
-from ..scene import project_session
+from ..scene import appearance, project_session
 from . import card, labels, view_panels
 
 TRANSLATION_CONTEXT = "Geoblender"
@@ -201,6 +201,10 @@ class GEOBLENDER_PT_ui_element_look(bpy.types.Panel):
         if obj is None:
             return
         group = _group(context)
+        project = project_session.current()
+        reason = None if project is None else appearance.blocked_reason(project)
+        if reason is not None:  # solo en el espejo del .blend: se dice, no solo se avisa una vez (RF-019-08)
+            card.draw_lines(self.layout, reason, labels.sidebar_width(bpy.context) - card.BOX_MARGIN_PX, icon="INFO")
         draw_look(self.layout, obj, FREQUENT, group, context)
         if _changed_props(obj, FREQUENT + RARE):
             self.layout.operator(RESET_OPERATOR).scope = "SELECTION" if group else "ELEMENT"

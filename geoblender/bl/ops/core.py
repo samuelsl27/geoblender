@@ -381,6 +381,10 @@ class GEOBLENDER_OT_core_open_project(bpy.types.Operator):
                 tr("A full copy is made first, next to the original: «{backup}».",
                    backup=backup.name)
             )
+            lines.append(
+                tr("It is migrated to schema {new}, which also saves the appearance of the elements; "
+                   "an earlier Geoblender will not be able to open it.", new=migrations_mod.SCHEMA_VERSION)
+            )
             lines.append(tr("Tick «Migrate the project» to do it; otherwise it opens read-only."))
         self.notice = "\n".join(lines)
 
