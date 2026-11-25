@@ -36,7 +36,7 @@ import bpy
 
 from tests.blender import milestone_pit_h2 as h2
 from tests.blender import test_platform_ops as platform_ops
-from tests.support import blender_ext, step_modals
+from tests.support import blender_ext, dialog_height, step_modals
 from tests.support.fake_layout import draw, operator_self
 
 PIT = "geoblender.des_create_pit"
@@ -206,16 +206,13 @@ class PitOpsTest(unittest.TestCase):
         self.assertIn("Cota de fondo (m)", down)
         self.assertNotIn("Campo de cota", down)
 
-    ROW_PX, LABEL_PX, BUTTON_PX, BOX_PX, CHROME_PX, WINDOW_PX = 25, 20, 30, 10, 100, 1001
-    """El modelo del diálogo a 1920 × 1001 con las escalas efectivas de la 003: 25 px por campo, 20 por etiqueta, 30 por botón, 10 de margen por caja, 100 de título y botones («Calcular» y
-    «Cancelar»), y la ventana del H3. Calibrado con el diálogo de antes (≈ 1.000 px, hallazgo H3-3)."""
+    WINDOW_PX = dialog_height.WINDOW_PX
+    """El modelo del diálogo a 1920 × 1001 es el compartido (``tests/support/dialog_height.py``, spec 019 T26): 25 px por campo, 20 por etiqueta,
+    30 por botón, 10 de margen por caja, 100 de título y botones, calibrado con el diálogo de antes (≈ 1.000 px, hallazgo H3-3)."""
 
     def height(self, shown: Any) -> int:
         """Lo que mide el diálogo dibujado en ``shown`` según el modelo."""
-        kinds = [item.kind for item in shown.items]
-        boxes = len({id(item.layout) for item in shown.items if item.layout.parent is not None and item.layout.parent.parent is None and item.kind != "operator"})
-        return (kinds.count("prop") + kinds.count("prop_search")) * self.ROW_PX + kinds.count("label") * self.LABEL_PX + kinds.count("operator") * self.BUTTON_PX \
-            + boxes * self.BOX_PX + self.CHROME_PX
+        return dialog_height.height(shown)
 
     def test_a2_the_dialog_fits_the_window_and_folds_what_is_rarely_touched(self) -> None:
         """RF-018-34, H3-3 (M1): «Nueva corta…», en cualquiera de los dos modos, mide menos de 1001 px (los botones «Calcular» y «Cancelar» a la vista) con **lo que casi nunca se toca

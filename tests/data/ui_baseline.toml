@@ -30,3 +30,21 @@ entries = [
     "es:El azimut no está entre 0° y 360°: corríjalo (grados desde el norte, en el sentido de las agujas del reloj). -> unit-glued",
     "es:La inclinación no está entre −90° y 90°: corríjala (grados desde la horizontal, negativa hacia abajo). -> unit-glued",
 ]
+
+[dialogs]
+# UI-01, RF-019-20: diálogos que no caben en 1920 × 1001 a alguna de las tres escalas (1,0, 1,25 y 1,5556) según el modelo de
+# tests/support/dialog_height.py, «fichero::clase -> height | width | unmeasured»; tests/blender/test_ui_dialogs.py. Es la lista
+# real de la spec 020 (R-10). Recuento por fichero: bl/ops/core_constraints.py 2, bl/ops/des.py 4, bl/ops/des_pit.py 1,
+# bl/ops/ui.py 3 (10 de 91 diálogos medidos; medidos sin proyecto y con las listas vacías: es un mínimo).
+entries = [
+    "bl/ops/core_constraints.py::GEOBLENDER_OT_core_complete_constraint -> height",
+    "bl/ops/core_constraints.py::GEOBLENDER_OT_core_create_constraints -> height",
+    "bl/ops/des.py::GEOBLENDER_OT_des_create_road -> height",
+    "bl/ops/des.py::GEOBLENDER_OT_des_design_quarry -> height",
+    "bl/ops/des.py::GEOBLENDER_OT_des_detect_stockpiles -> height",
+    "bl/ops/des.py::GEOBLENDER_OT_des_propose_road -> height",
+    "bl/ops/des_pit.py::GEOBLENDER_OT_des_create_pit -> height",
+    "bl/ops/ui.py::GEOBLENDER_OT_ui_show_aliases -> height",
+    "bl/ops/ui.py::GEOBLENDER_OT_ui_show_glossary -> height",
+    "bl/ops/ui.py::GEOBLENDER_OT_ui_show_shortcuts -> height",
+]
