@@ -86,6 +86,7 @@ classes: tuple[type, ...] = (
     *core_panel.classes,
     *view_panels.classes,
     *element_panel.classes,
+    *headers.classes,
     *quick_access.classes,
     *context.classes,
     *layouts.classes,

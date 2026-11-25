@@ -25,6 +25,7 @@ quita.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import bpy
@@ -46,6 +47,10 @@ OBJECT_MENUS = (
     "OUTLINER_MT_object",
 )
 COLLECTION_MENU = "OUTLINER_MT_collection"
+BLENDER_MENU = "GEOBLENDER_MT_ui_blender"
+# Los menús nativos de la cabecera de la Vista 3D en modo Objeto (View, Select, Add, Object)
+BLENDER_NATIVE_MENUS = ("VIEW3D_MT_view", "VIEW3D_MT_select_object", "VIEW3D_MT_add",
+                        "VIEW3D_MT_object")
 OURS_ATTR = "_gb_headers"  # marca de las funciones añadidas
 
 
@@ -116,6 +121,44 @@ def draw_row1(self: Any, context: Any) -> None:
         _draw_icon(row, context, item)
     pinned = ui_context.pinned(context) is not None
     layout.operator(PIN, text="", icon="PINNED" if pinned else "UNPINNED", depress=pinned)
+
+
+class GEOBLENDER_MT_ui_blender(bpy.types.Menu):
+    """Blender's own menus of the 3D View, grouped"""
+
+    bl_idname = BLENDER_MENU
+    bl_label = "Blender"
+    bl_translation_context = "Geoblender"
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.label(text=tr("Blender menus use Blender's language"), translate=False)
+        layout.separator()
+        for name in BLENDER_NATIVE_MENUS:
+            if hasattr(bpy.types, name):
+                layout.menu(name)
+
+
+classes: tuple[type, ...] = (GEOBLENDER_MT_ui_blender,)
+
+
+def use_blender_menu(context: Any) -> bool:
+    """Verdadero si la cabecera de la Vista 3D agrupa los menús nativos en «Blender ▾»
+    (RF-019-05): modo Geoblender, modo Objeto y los menús de la cabecera sin plegar (plegados,
+    Blender ya los agrupa; en edición hacen falta *Mesh*, *Curve*…)."""
+    if not gate.is_geoblender_workspace(getattr(context, "workspace", None)):
+        return False
+    if getattr(context, "mode", "") != "OBJECT":
+        return False
+    return bool(getattr(getattr(context, "area", None), "show_menus", False))
+
+
+def draw_blender_group(context: Any, layout: Any) -> None:
+    """Lo que dibuja la cabecera en modo Objeto en lugar de los menús nativos: «Blender ▾» y,
+    a su lado, la fila de Geoblender (que de otro modo cuelga de esos menús)."""
+    row = layout.row(align=True)
+    row.menu(BLENDER_MENU, text=tr("Blender"), translate=False)
+    draw_row1(SimpleNamespace(layout=row), context)
 
 
 def draw_context_menu(self: Any, context: Any) -> None:

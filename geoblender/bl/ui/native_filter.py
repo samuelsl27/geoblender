@@ -24,6 +24,12 @@ y registrar de nuevo **en el orden original**.
   recupera de ahí y nunca se envuelve dos veces.
 - :func:`rescan` (Ayuda ▸ Reparar la interfaz, R-7) retira y vuelve a escanear, por si otro
   complemento añadió paneles.
+- **«Blender ▾»** (T20, RF-019-05, plan A4): mismo mecanismo y ciclo de vida. Se sustituye
+  ``draw_collapsible`` de ``VIEW3D_MT_editor_menus`` (heredado de ``Menu``: se pone con
+  ``setattr`` y se retira con ``delattr`` o devolviendo la entrada propia que tuviera) por una
+  función que, en modo Geoblender y en modo Objeto, dibuja el menú «Blender ▾» y, si no, llama
+  al original. No toca el ``draw`` de la cabecera, que es lo que recorre F3. Lleva la misma
+  marca de recuperación tras ``script.reload``.
 - Modo degradado (R-8, ``bl.compat.native_filter_shape``): si el árbol del contexto Objeto no
   tiene la forma esperada o un registro falla, no se filtra nada, se deja todo como estaba y
   se dice una vez en el registro técnico (:func:`degraded_reason`).
@@ -45,6 +51,9 @@ LOGGER = logging.getLogger("geoblender.bl.ui")
 MARK = "_gb_native_filter"  # en la función del poll nuestro: (clase, original propio, original)
 OURS_PREFIX = "GEOBLENDER_"
 SPACE = "PROPERTIES"
+MENU_TARGET = "VIEW3D_MT_editor_menus"  # la cabecera de la Vista 3D (A4)
+MENU_ATTR = "draw_collapsible"
+MENU_MARK = "_gb_blender_menu"  # en la función nuestra: (clase, entrada propia, original ligado)
 
 
 @dataclass
@@ -59,6 +68,7 @@ class Patch:
 
 @dataclass
 class _State:
+    menu: Patch | None = None  # el parche de draw_collapsible (A4)
     patches: dict[type, Patch] = field(default_factory=dict)
     tree: list[type] = field(default_factory=list)  # las clases re-registradas, en su orden
     degraded: str | None = None
@@ -148,6 +158,61 @@ def _restore(patch: Patch) -> None:
         del patch.cls.poll
 
 
+# «Blender ▾» ----------------------------------------------------------------------------
+
+
+def _menu_marked(cls: type) -> Any:
+    own = cls.__dict__.get(MENU_ATTR)
+    return getattr(getattr(own, "__func__", own), MENU_MARK, None)
+
+
+def _make_menu_draw(cls: type, own: Any, bound: Any) -> Any:
+    def draw_collapsible(klass: Any, context: Any, layout: Any) -> None:
+        from . import headers  # diferido: headers no debe cargarse antes que el filtro
+
+        if headers.use_blender_menu(context):
+            headers.draw_blender_group(context, layout)
+        else:
+            bound(context, layout)
+
+    setattr(draw_collapsible, MENU_MARK, (cls, own, bound))
+    return classmethod(draw_collapsible)
+
+
+def menu_installed() -> bool:
+    """Verdadero mientras «Blender ▾» está puesto."""
+    return _STATE.menu is not None
+
+
+def _adopt_menu() -> None:
+    cls = getattr(bpy.types, MENU_TARGET, None)
+    if _STATE.menu is None and cls is not None:
+        marked = _menu_marked(cls)
+        if marked is not None:  # un parche de un módulo anterior (script.reload)
+            _STATE.menu = Patch(cls, marked[1], marked[2])
+
+
+def _install_menu() -> None:
+    _adopt_menu()
+    cls = getattr(bpy.types, MENU_TARGET, None)
+    if _STATE.menu is not None or cls is None or not hasattr(cls, MENU_ATTR):
+        return
+    patch = Patch(cls, cls.__dict__.get(MENU_ATTR), getattr(cls, MENU_ATTR))
+    setattr(cls, MENU_ATTR, _make_menu_draw(cls, patch.own, patch.bound))
+    _STATE.menu = patch
+
+
+def _remove_menu() -> None:
+    _adopt_menu()
+    patch, _STATE.menu = _STATE.menu, None
+    if patch is None:
+        return
+    if patch.own is not None:
+        setattr(patch.cls, MENU_ATTR, patch.own)
+    elif MENU_ATTR in patch.cls.__dict__:
+        delattr(patch.cls, MENU_ATTR)
+
+
 # Instalar y retirar ---------------------------------------------------------------------
 
 
@@ -195,7 +260,9 @@ def _adopt_marked() -> None:
 
 def install() -> bool:
     """Pone el filtro (idempotente). Devuelve verdadero si queda puesto; falso en modo
-    degradado (no se toca nada)."""
+    degradado (no se toca nada). «Blender ▾» (A4) se pone aparte: no depende del árbol de
+    paneles."""
+    _install_menu()
     _adopt_marked()
     if _STATE.patches:
         return True
@@ -231,7 +298,9 @@ def _rollback(patches: dict[type, Patch], tree: list[type]) -> None:
 
 def remove() -> None:
     """Retira el filtro (idempotente): desregistra el árbol, devuelve cada ``poll`` (el mismo
-    objeto, o lo borra si la clase no tenía) y lo registra de nuevo en el orden original."""
+    objeto, o lo borra si la clase no tenía) y lo registra de nuevo en el orden original.
+    Retira también «Blender ▾»."""
+    _remove_menu()
     _adopt_marked()
     patches, tree = _STATE.patches, _STATE.tree
     _STATE.patches, _STATE.tree = {}, []

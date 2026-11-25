@@ -687,6 +687,14 @@ es = "Este fichero no tiene un espacio de trabajo de Blender donde mostrar sus a
 ["Blender settings…"]
 es = "Ajustes de Blender…"
 
+# «Blender ▾» en la Vista 3D (spec 019, T20) --------------------------------------------
+
+["Blender"]
+es = "Blender"
+
+["Blender menus use Blender's language"]
+es = "Los menús de Blender usan el idioma de Blender"
+
 # Menú del tipo activo (spec 003, T26) -------------------------------------------------
 
 ["Selection ({n})"]
