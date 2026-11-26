@@ -156,13 +156,60 @@ class TrapsAdrAndStateTest(unittest.TestCase):
                 self.assertIn("- **Estado:** Aceptada\n", text)
 
     def test_index_and_roadmap_say_the_state_of_the_spec(self) -> None:
-        """Índice de specs y roadmap (T30): R-81 y la 019 dicen «T01 a T30 hechas» y que faltan el H2 y el H3."""
+        """Índice de specs y roadmap (T48): R-81 y la 019 dicen que está **cerrada** por Samuel el 26/11/2026 (spec 0.4), en ``main``, con T01 a T47 hechas, lo abierto de
+        ``verificacion.md`` §10 (la cifra de una persona de IMGA, el ratón real, el tema y los 57 colores, la 020) y que la convergencia sigue en la 020; ninguno la dice
+        en curso, sin cerrar ni con el H2 o el H3 por hacer."""
         for relpath in ("specs/README.md", "docs/producto/roadmap.md"):
-            text = one_line(docs.read(relpath))
+            row = one_line(next(line for line in docs.read(relpath).splitlines() if line.startswith("| 019 |" if relpath == "specs/README.md" else "| R-81 |")))
             with self.subTest(document=relpath):
-                self.assertIn(f"T01 a {LAST_TASK} hechas", text)
-                self.assertIn("H2 (T31)", text)
-                self.assertIn("(T32)", text)
+                for fact in ("cerrada" if relpath != "specs/README.md" else "Cerrada", "26/11/2026", "spec 0.4", "T01 a T47 hechas", "`verificacion.md` §10", "CE-019-01", "CE-019-02",
+                             "ratón real", "57 colores", "la 020", "`areas-decididas.md`"):
+                    self.assertIn(fact, row)
+                for stale in ("faltan el H2", "H2 (T31)", "en curso:", "sin cerrar", "a falta de publicar"):
+                    self.assertNotIn(stale, row)
+        self.assertIn("| **hecha**: la 019 **cerrada** por Samuel el 26/11/2026", docs.read("docs/producto/roadmap.md"))
+
+    def test_the_ledger_has_the_close_of_r81(self) -> None:
+        """Roadmap (T48): una sola línea del registro del 26/11/2026 con el cierre de R-81 y lo abierto, sin ocultarlo."""
+        close = [line for line in docs.read("docs/producto/roadmap.md").splitlines() if line.startswith("| 2026-11-26 | R-81:")]
+        self.assertEqual(len(close), 1)
+        for fact in ("Samuel cierra la spec 019", "spec 0.4", "CE-019-01", "CE-019-02", "ratón real", "57 colores", "spec 020", "`ctypes`", "Ctrl+Z", "`--rendimiento`", "DIFF-019 a, b, c y d"):
+            with self.subTest(close=fact):
+                self.assertIn(fact, close[0])
+
+    def test_agents_and_the_other_documents_say_it_is_closed_not_published(self) -> None:
+        """AGENTS.md, README, ``ui.md`` y la guía (T48): la 019 está **cerrada** el 26/11/2026; ninguno dice «publicada» ni un hash (lo pone la sesión principal tras publicar) y
+        ``AGENTS.md`` la cuenta entre las cerradas con lo abierto."""
+        agents = one_line(docs.read("AGENTS.md"))
+        self.assertIn("001, 013, 014, 015, 016, 017, 018 y 019 cerradas", agents)
+        self.assertIn("la 019, interfaz, R-81, **cerrada** por Samuel el 26/11/2026 (spec 0.4); abierto: CE-019-01 y 02 sin cifra humana; 002,", agents)
+        self.assertNotIn("la 019, interfaz, R-81, **cerrada** por Samuel el 26/11/2026 (spec 0.4) y **publicada**", agents)
+        for relpath, fact in (("README.md", "(spec 019, en `main`; cerrada el 26/11/2026)"), ("docs/arquitectura/modulos/ui.md", "**cerrada** por Samuel el 26/11/2026, spec 0.4, en `main`"),
+                              (USER_GUIDE, "*(Spec 019, cerrada el 26/11/2026.")):
+            with self.subTest(document=relpath):
+                self.assertIn(fact, one_line(docs.read(relpath)))
+        for relpath in ("README.md", "docs/arquitectura/modulos/ui.md"):
+            self.assertNotIn("a falta de publicar", docs.read(relpath))
+        self.assertIn("spec 019, cerrada el 26/11/2026", (ROOT / "README.md").read_text(encoding="utf-8").replace("\n> ", " "))
+
+    def test_the_verification_and_the_spec_list_what_is_open(self) -> None:
+        """Spec 019 §10.2 y ``verificacion.md`` §10 (T48): lo abierto al cierre está escrito, sin ocultar nada, y la spec dice que la cerró Samuel el 26/11/2026."""
+        spec = one_line(docs.read("specs/019-ui-revision-y-rediseno-de-la-interfaz/spec.md"))
+        ver = one_line(docs.read("specs/019-ui-revision-y-rediseno-de-la-interfaz/verificacion.md"))
+        self.assertIn("**Estado:** **Cerrada por Samuel el 26/11/2026** (spec 0.4", spec)
+        self.assertIn("**Versión:** 0.4", spec)
+        self.assertIn("### 10.2 Abierto al cierre", spec)
+        self.assertIn("## 10. Abierto al cierre (26/11/2026)", ver)
+        for fact in ("CE-019-01 y CE-019-02", "4 gestos", "0 desplazamientos", "user interrupt", "57 colores", "`[contrast]`", "`[strings]`", "`[formats]`", "`[dialogs]`", "`[labels]`",
+                     "«Nueva corta…» y «Pista…»", "«Cancel» en inglés", "«Animation»", "«Layout» entero", "«Report: Error»", "`move_column_edge`", "`ctypes`", "DIFF de la T38", "Ctrl+Z",
+                     "D-Z1", "RNF-001-03", "`RampStepsTest`", "`--rendimiento`", "`test_views_link`", "`test_views_live`", "`test_versions_view`", "T43", "DIFF-019 a, b, c y d", "RF-010",
+                     "mayúsculas y acentos", "la spec 020"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, ver)
+        self.assertIn("**Cerrada por Samuel, 26/11/2026, con lo abierto anotado**", spec)
+        self.assertIn("- [ ] **CE-019-01**", spec)
+        self.assertIn("- [ ] **CE-019-02**", spec)
+        self.assertNotIn("- [ ] Todos los RF", spec)
 
     def test_changelog_has_the_entry(self) -> None:
         """CHANGELOG del código (T30): la entrada de la documentación de la interfaz, en ``[Sin publicar]``."""
