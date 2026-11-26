@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -54,6 +55,8 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger("geoblender.bl.scene")
 NOTICES_KEPT = 20  # avisos pendientes que se guardan (los más recientes)
+NOTICE_TTL_S = 15.0  # lo que se ve un aviso en el panel del proyecto (como ``core.notices.DEFAULT_TTL``; spec 019, T42)
+_clock: Callable[[], float] = time.monotonic
 
 type Listener = Callable[[Project | None], object]
 """Lo que se llama al cambiar el proyecto de la sesión: recibe el nuevo o ``None``."""
@@ -67,6 +70,7 @@ class _State:
         self.userdata_root: Path | None = None
         self.project: Project | None = None
         self.notices: list[str] = []
+        self.stamps: dict[str, float] = {}  # cuándo se avisó por última vez de cada texto
         self.listeners: list[Listener] = []
 
 
@@ -115,19 +119,25 @@ def checkout_dir() -> Path:
 
 def notify(message: str) -> None:
     """Deja un aviso para la interfaz y en el registro técnico."""
+    if message in _STATE.notices:  # uno repetido no se duplica: renueva el plazo (UI-09)
+        _STATE.notices.remove(message)
     _STATE.notices.append(message)
+    _STATE.stamps[message] = _clock()  # repetido, renueva el plazo
     del _STATE.notices[:-NOTICES_KEPT]
     LOGGER.warning("%s", message)
 
 
 def notices() -> tuple[str, ...]:
-    """Los avisos pendientes de mostrar (sin vaciarlos)."""
-    return tuple(_STATE.notices)
+    """Los avisos pendientes de mostrar (sin vaciarlos) que no han caducado: a los 15 s dejan de verse, como los de la barra de estado
+    (spec 019, T42); siguen en el registro técnico."""
+    now = _clock()
+    return tuple(text for text in _STATE.notices if now - _STATE.stamps.get(text, now) <= NOTICE_TTL_S)
 
 
 def take_notices() -> list[str]:
     """Los avisos pendientes de mostrar; los vacía."""
     found, _STATE.notices = _STATE.notices, []
+    _STATE.stamps = {}
     return found
 
 

@@ -774,11 +774,11 @@ class PanelTest(OperatorsTestCase):
         blender_ext.load_file(blend)
         layout = draw(self.panel, bpy.context)
         texts = layout.texts()
-        self.assertIn("No hay ningún proyecto abierto", texts)
+        self.assertIn("No hay ningún proyecto abierto", " ".join(texts[:2]))  # partido en líneas si no cabe (spec 019, T42)
         self.assertIn("geoblender.core_new_project", {i.target for i in layout.of_kind("operator")})
         self.assertIn("GEOBLENDER_MT_core_recent", {i.target for i in layout.of_kind("menu")})
         alerts = [item.text for item in layout.items if item.alert and item.kind == "label"]
-        self.assertTrue(any(project.name in text for text in alerts), alerts)
+        self.assertTrue(project.name.split()[0] in " ".join(alerts), alerts)  # el aviso va partido en las líneas que caben (T42)
         self.assertEqual(bpy.ops.geoblender.core_clear_notices("EXEC_DEFAULT"), {"FINISHED"})
         self.assertEqual(self.ps.notices(), ())
 

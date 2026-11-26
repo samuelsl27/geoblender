@@ -123,7 +123,7 @@ class GEOBLENDER_PT_core_project(bpy.types.Panel):
         layout = self.layout
         project = project_session.current()
         if project is None:
-            layout.label(text=tr("No project is open"), icon="INFO", translate=False)
+            _rows(layout.column(align=True), tr("No project is open"), "INFO", labels.sidebar_width(context))
             self.draw_view_offer(context, layout)
             column = layout.column(align=True)
             column.operator("geoblender.core_new_project", text=tr("New project…"),
@@ -132,7 +132,7 @@ class GEOBLENDER_PT_core_project(bpy.types.Panel):
                             icon="FILE_FOLDER", translate=False)
             column.menu("GEOBLENDER_MT_core_recent", text=tr("Open recent"),
                         icon="RECOVER_LAST", translate=False)
-            self.draw_notices(layout)
+            self.draw_notices(layout, context)
             return
         box = layout.box()
         column = box.column(align=True)
@@ -148,7 +148,7 @@ class GEOBLENDER_PT_core_project(bpy.types.Panel):
             row.alert = True
             row.label(text=tr("The view is out of date: reload its data"), icon="ERROR",
                       translate=False)
-        self.draw_notices(layout)
+        self.draw_notices(layout, context)
         column = layout.column(align=True)
         column.operator("geoblender.core_save_project", text=tr("Save"), icon="FILE_TICK",
                         translate=False)
@@ -195,7 +195,7 @@ class GEOBLENDER_PT_core_project(bpy.types.Panel):
         for name, value in offer.properties().items():
             setattr(button, name, value)
 
-    def draw_notices(self, layout: Any) -> None:
+    def draw_notices(self, layout: Any, context: Any = None) -> None:
         """Los últimos avisos pendientes (de los manejadores y del temporizador) y el
         botón para descartarlos."""
         pending = project_session.notices()
@@ -204,8 +204,9 @@ class GEOBLENDER_PT_core_project(bpy.types.Panel):
         box = layout.box()
         column = box.column(align=True)
         column.alert = True
-        for message in pending[-NOTICES_SHOWN:]:
-            column.label(text=message, icon="ERROR", translate=False)
+        width = labels.sidebar_width(context)
+        for message in pending[-NOTICES_SHOWN:]:  # partido en las líneas que caben: no se corta con «…» (spec 019, T42)
+            _rows(column, message, "ERROR", width, alert=True)
         box.operator("geoblender.core_clear_notices", text=tr("Dismiss"), icon="X",
                      translate=False)
 
