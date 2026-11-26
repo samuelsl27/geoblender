@@ -201,18 +201,17 @@ def _draw_prop(layout: Any, look: Any, prop: str, width: float, scale: float, *,
     slider = prop in _SLIDERS
     need = labels.label_px(f"{name}: 100 %" if slider else name, icon=True, scale=scale)
     status = tr("various values") if various else tr("default")
-    extra = RESET_BUTTON_PX if changed else labels.label_px(status, scale=scale)
+    # Lo mismo cambiada o no (T46, H3b-5): el mismo reparto y la misma rama, para que la fila no cambie de alto y de sitio al
+    # cambiar el valor (quien encadena color y transparencia con el ratón apunta donde estaba el control).
+    extra = max(RESET_BUTTON_PX, labels.label_px(status, scale=scale))
     scope = "SELECTION" if group else "PROPERTY"
     if need + extra <= width:
-        if changed:
-            row = layout.row(align=True)
-            row.prop(look, prop, text=name, slider=slider, translate=False)
-            button = row.operator(RESET_OPERATOR, text="", icon="LOOP_BACK")
-        else:
-            row = layout.split(factor=need / (need + extra), align=True)
-            row.prop(look, prop, text=name, slider=slider, translate=False)
+        row = layout.split(factor=need / (need + extra), align=True)
+        row.prop(look, prop, text=name, slider=slider, translate=False)
+        if not changed:
             row.label(text=status, translate=False)
             return
+        button = row.operator(RESET_OPERATOR, text="", icon="LOOP_BACK")
     else:
         column = layout.column(align=True)
         column.prop(look, prop, text=name, slider=slider, translate=False)

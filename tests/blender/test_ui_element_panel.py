@@ -17,6 +17,7 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
 import unittest
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -551,6 +552,24 @@ class ElementMultiPanelTest(ElementLookPanelTest):
             for scale in self.H3_SCALES:
                 with self.subTest(selection="uno cambiado", language=language, scale=scale):
                     self.assertEqual(self.look_cuts(scale), [])
+
+    def test_a_row_keeps_its_shape_when_its_value_changes(self) -> None:
+        """UI-10/35 (spec 019, T46; H3b-5): la fila de una propiedad se dibuja con el mismo reparto (mismo contenedor y mismo factor,
+        con el mismo número de elementos) sin cambiar y cambiada: no sube ni se desplaza al cambiar el color."""
+        i18n = vf.extension("core.i18n")
+        i18n.set_language("es")
+        element_panel = vf.extension("bl.ui.element_panel")
+        for scale in self.H3_SCALES:
+            width = self.PROPERTIES_PX / scale - self.PANEL_MARGIN_PX
+            for prop in ("color", "transparency", "visible"):
+                shapes = []
+                for changed in (False, True):
+                    layout = FakeLayout()
+                    element_panel._draw_prop(layout, SimpleNamespace(), prop, width, scale, various=False, changed=changed, group=False)
+                    first = layout.of_kind("prop")[0].layout
+                    shapes.append((first.kind, first.factor, len([i for i in layout.items if i.layout is first])))
+                with self.subTest(scale=scale, prop=prop):
+                    self.assertEqual(shapes[0], shapes[1])
 
     def test_look_model_reproduces_the_h3_cuts_of_the_old_layout(self) -> None:
         """El control positivo del modelo: el reparto antiguo (la propiedad y su texto de estado, en una fila) deja
