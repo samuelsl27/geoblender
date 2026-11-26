@@ -712,6 +712,9 @@ class GEOBLENDER_OT_ui_blender_settings(bpy.types.Operator):
         from ..ui import switcher
 
         window = context.window
+        if switcher.existing_settings_window() is not None:  # repetida: no abre otra (spec 019, T47)
+            self.report({"INFO"}, tr("The Blender settings window is already open: use it, or close it to open another"))
+            return {"FINISHED"}
         if switcher.settings_workspace(window) is None:
             self.report({"WARNING"}, tr("There is no free Blender workspace for its settings: they are in use in other windows or marked as Geoblender. Close the window that uses «Layout» and try again"))
             return {"CANCELLED"}

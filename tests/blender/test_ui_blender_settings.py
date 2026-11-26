@@ -104,6 +104,27 @@ class BlenderSettingsTest(unittest.TestCase):
         self.assertTrue(any(plain.values()))
         self.assertEqual((self.window.workspace.name, self.switcher.pending(self.window)), before)
 
+    def test_a_second_request_leads_to_the_window_already_open(self) -> None:
+        """RF-019-03 (spec 019, T47; H3b-6): «Ajustes de Blender…» repetida no abre una tercera ventana: avisa de que ya está abierta;
+        si se cerró, la orden abre otra."""
+        reports: list[tuple[set[str], str]] = []
+        operator = bpy.types.GEOBLENDER_OT_ui_blender_settings
+        fake_self = SimpleNamespace(report=lambda kind, text: reports.append((kind, text)))
+        alive = [self.window, self.fake]
+        with mock.patch.object(self.switcher, "_new_window", return_value=self.fake) as opener,                 mock.patch.object(self.switcher, "_live_windows", side_effect=lambda: alive):
+            self.assertEqual(operator.execute(fake_self, SimpleNamespace(window=self.window)), {"FINISHED"})
+            self.switcher.settle_settings(alive)
+            self.assertEqual(operator.execute(fake_self, SimpleNamespace(window=self.window)), {"FINISHED"})
+            self.assertEqual(opener.call_count, 1, "la segunda petición abrió otra ventana")
+            self.assertIs(self.switcher.existing_settings_window(), self.fake)
+            ((kind, text),) = reports
+            self.assertEqual(kind, {"INFO"})
+            self.assertIn("ya está abierta", text)
+            alive.remove(self.fake)  # la cerraron
+            self.assertIsNone(self.switcher.existing_settings_window())
+            self.assertEqual(operator.execute(fake_self, SimpleNamespace(window=self.window)), {"FINISHED"})
+            self.assertEqual(opener.call_count, 2)
+
     def test_without_a_new_window_it_says_so_and_changes_nothing(self) -> None:
         """Sin interfaz (``wm.window_new`` no tiene contexto) la orden informa y no deja pendientes."""
         with bpy.context.temp_override(window=self.window):

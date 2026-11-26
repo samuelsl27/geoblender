@@ -208,10 +208,11 @@ class ModeTest(unittest.TestCase):
         before = state()
         preferences = blender_ext.state_fingerprint()["preferences"]
         self.switcher.window_state(win_a).previous_blender = bl.name
+        # Las ventanas de esta prueba son de mentira y la real de ``-b`` no cuenta: se conmuta con solo ``win_a`` (T40: no se elige un espacio de otra ventana).
         started = time.perf_counter()
-        self.assertEqual(self.switcher.toggle(win_a, "BLENDER").workspace, bl.name, "T21: no conmutó a Blender")
+        self.assertEqual(self.switcher.toggle(win_a, "BLENDER", [win_a]).workspace, bl.name, "T21: no conmutó a Blender")
         self.nf.sync(windows)
-        self.assertEqual(self.switcher.toggle(win_a, "GEOBLENDER").workspace, gb.name, "T21: no volvió a Geoblender")
+        self.assertEqual(self.switcher.toggle(win_a, "GEOBLENDER", [win_a]).workspace, gb.name, "T21: no volvió a Geoblender")
         self.assertTrue(self.nf.sync(windows))
         elapsed = time.perf_counter() - started
         self.assertLessEqual(elapsed, SWITCH_BUDGET_S, f"RNF-019-04: {elapsed:.3f} s")

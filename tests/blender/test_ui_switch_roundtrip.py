@@ -236,6 +236,70 @@ class SwitchRoundTripTest(unittest.TestCase):
         self.assertEqual((result.workspace, result.appended), ("Layout.001", True))
         self.assertTrue(all(w.workspace.name != "Layout.001" for w in others))
 
+    def test_both_windows_in_geoblender_switch_only_the_one_asked(self) -> None:
+        """RF-019-04, M11 (spec 019, T43; H3b-2): el modo es **por ventana**. Con las dos en Geoblender, Ctrl+F10 en A pasa solo A
+        a Blender (a un espacio libre) y B se queda donde estaba; pedir «Geoblender» a una ventana que ya está en él no hace nada ni
+        toca a la otra."""
+        copy = SimpleNamespace(name="Geoblender.001")  # el espacio de la segunda ventana (una copia anexada)
+        win_a, win_b = FakeWindow(self.gb), FakeWindow(copy)
+        windows = [win_a, win_b]
+        self.assertIsNone(self.switcher.toggle(win_a, "GEOBLENDER", windows).workspace)  # ya está: nada
+        self.assertIs(win_b.workspace, copy)
+        result = self.switcher.toggle(win_a, "BLENDER", windows)
+        self.assertFalse(bpy.data.workspaces[result.workspace].geoblender_mode)
+        self.assertIs(win_b.workspace, copy)
+        self.assertEqual(self.switcher.window_state(win_b).pending, None)
+        win_a.workspace = bpy.data.workspaces[result.workspace]
+        self.assertIsNone(self.switcher.toggle(win_a, "BLENDER", windows).workspace)  # ya está en Blender: nada
+        self.assertIs(win_b.workspace, copy)
+
+    def test_the_copy_a_toggle_appended_is_retired_when_nobody_uses_it(self) -> None:
+        """RF-019-04 (spec 019, T44; H3b-3): la copia «Geoblender.001» que anexó la vuelta con otra ventana en el principal se retira
+        (con sus pantallas) cuando ninguna ventana la usa; no se toca ningún espacio que no anexó el conmutador."""
+        main = self.switcher.main_workspace()
+        if main not in bpy.data.workspaces:  # el fichero de pruebas aún no tiene el principal: otra ventana lo usaría
+            original = self.switcher.load_workspace(main)
+            self.addCleanup(lambda: bpy.data.batch_remove({original}) if original.name in bpy.data.workspaces else None)
+        names_before = {ws.name for ws in bpy.data.workspaces}
+        screens_before = {sc.name for sc in bpy.data.screens}
+        pointers = {sc.as_pointer() for sc in bpy.data.screens}
+        copy = self.switcher.load_workspace(main)  # lo que anexa el conmutador cuando el principal lo usa otra ventana
+        self.assertNotEqual(copy.name, main)
+        self.switcher.track_copy(copy, pointers, main)
+        user = FakeWindow(self.bl)
+        mine = FakeWindow(copy)
+        self.assertEqual(self.switcher.retire_copies([mine, user]), [])  # la usa una ventana: se queda
+        self.assertIn(copy.name, [ws.name for ws in bpy.data.workspaces])
+        mine.workspace = self.bl
+        retired = self.switcher.retire_copies([mine, user])
+        self.assertEqual(len(retired), 1)
+        self.assertEqual({ws.name for ws in bpy.data.workspaces}, names_before)
+        self.assertEqual({sc.name for sc in bpy.data.screens}, screens_before)
+        self.assertEqual(self.switcher.retire_copies([mine, user]), [])
+
+    def test_a_workspace_the_switcher_did_not_append_is_never_retired(self) -> None:
+        """T44: el primer anexado (con su nombre) y lo del usuario se quedan."""
+        pointers = {sc.as_pointer() for sc in bpy.data.screens}
+        first = self.switcher.load_workspace(self.switcher.main_workspace())
+        user = self.switcher.load_workspace(self.switcher.main_workspace())  # «.001»: parece una copia, pero no la anexó el conmutador
+        self.addCleanup(lambda: bpy.data.batch_remove({ws for ws in (user, first) if ws.name in bpy.data.workspaces}))
+        self.switcher.track_copy(first, pointers, first.name)  # lo anexado se llama como se pidió: no es una copia
+        self.assertEqual(self.switcher.retire_copies([FakeWindow(self.bl)]), [])
+        self.assertIn(user.name, [ws.name for ws in bpy.data.workspaces])
+        self.assertIn(first.name, [ws.name for ws in bpy.data.workspaces])
+
+    def test_the_outdated_layout_notice_has_no_glyphs_the_font_draws_badly(self) -> None:
+        """UI-34 (spec 019, T47; H3b-6): el aviso de la disposición anterior no lleva «▾ ▸» (la fuente de Blender los pinta como un
+        punto y una flecha): lo dice con palabras, en español y en inglés."""
+        i18n = _module("core.i18n")
+        self.addCleanup(i18n.set_language, i18n.language())
+        for language in ("es", "en"):
+            i18n.set_language(language)
+            text = i18n.tr("The layout of this file is older: open Layouts and choose Update the layout")
+            self.assertNotRegex(text, "[▾▸]")
+        i18n.set_language("es")
+        self.assertIn("abra Disposición", i18n.tr("The layout of this file is older: open Layouts and choose Update the layout"))
+
     def test_choose_target_skips_what_another_window_uses(self) -> None:
         """T40: la función pura no elige un espacio ocupado, ni a Blender ni a Geoblender."""
         choose = self.switcher.choose_target

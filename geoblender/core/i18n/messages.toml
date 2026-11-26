@@ -655,8 +655,8 @@ es = "Se ha restaurado la disposición «{name}»"
 
 # Actualizar la disposición (spec 019, T18) -----------------------------------------
 
-["The layout of this file is older: Layouts ▾ ▸ Update the layout"]
-es = "La disposición de este fichero es anterior: Disposición ▾ ▸ Actualizar la disposición"
+["The layout of this file is older: open Layouts and choose Update the layout"]
+es = "La disposición de este fichero es anterior: abra Disposición y elija «Actualizar la disposición»"
 
 ["The layout of this file is already up to date"]
 es = "La disposición de este fichero ya está al día"
@@ -677,6 +677,9 @@ es = "«{name}»"
 es = "Disposiciones renovadas: {names}"
 
 # Ajustes de Blender (spec 019, T19) -------------------------------------------------
+
+["The Blender settings window is already open: use it, or close it to open another"]
+es = "La ventana de ajustes de Blender ya está abierta: úsela, o ciérrela para abrir otra"
 
 ["Could not open the Blender settings window"]
 es = "No se pudo abrir la ventana de ajustes de Blender"

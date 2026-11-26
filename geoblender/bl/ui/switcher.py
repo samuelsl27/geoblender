@@ -121,6 +121,8 @@ class _Session:
     layout_notified: bool = False  # el aviso de la disposición anterior, una vez por fichero
     attempts: int = 0
     settings: list[tuple[int, str]] = field(default_factory=list)  # (ventana nueva, espacio) por fijar
+    opened: list[int] = field(default_factory=list)  # las ventanas de «Ajustes de Blender» abiertas (T47)
+    copies: dict[str, list[str]] = field(default_factory=dict)  # copias que anexó el conmutador -> sus pantallas (T44)
 
 
 _SESSION = _Session()
@@ -143,6 +145,8 @@ def forget() -> None:
     _SESSION.seen.clear()
     _SESSION.layout_notified = False
     _SESSION.settings.clear()
+    _SESSION.copies.clear()
+    _SESSION.opened.clear()
 
 
 # Avisar de que se conmutó a Blender ------------------------------------------------------------
@@ -221,13 +225,51 @@ def append_workspace(window: Any, name: str) -> Any:
     """Anexa el espacio ``name`` de ``resources/geoblender_ui.blend`` y lo devuelve
     (``workspace.append_activate``, con el contexto de la ventana)."""
     before = {ws.as_pointer() for ws in bpy.data.workspaces}
+    screens = {sc.as_pointer() for sc in bpy.data.screens}
     with bpy.context.temp_override(window=window):
         bpy.ops.workspace.append_activate(idname=name, filepath=str(RESOURCES))
     added = [ws for ws in bpy.data.workspaces if ws.as_pointer() not in before]
     if not added:
         raise RuntimeError(f"no se pudo anexar el espacio «{name}» de {RESOURCES.name}")
     forget_resources_library()
+    track_copy(added[0], screens, name)
     return added[0]
+
+
+def track_copy(workspace: Any, screens_before: Collection[int], requested: str) -> None:
+    """Si Blender dio al espacio anexado otro nombre que el pedido («Geoblender.001»: el principal ya lo usa otra ventana), es una **copia
+    del conmutador**: se apunta, con las pantallas que trajo, para retirarla cuando nadie la use (:func:`retire_copies`; spec 019, T44). El
+    primer anexado de un fichero (con su nombre) se queda: es la interfaz de Geoblender del fichero."""
+    if workspace.name == requested:
+        return
+    _SESSION.copies[workspace.name] = [sc.name for sc in bpy.data.screens if sc.as_pointer() not in screens_before]
+
+
+def retire_copies(windows: Any = None) -> list[str]:
+    """Retira las copias que anexó el conmutador (:func:`track_copy`) y que ninguna ventana usa, con las pantallas que trajeron y que se
+    quedan sin usuarios; nada que no anexara él. Devuelve los nombres retirados; ``windows``, solo para probar."""
+    if not _SESSION.copies:
+        return []
+    if windows is None:
+        windows = bpy.context.window_manager.windows
+    in_use = {w.workspace.name for w in windows if w.workspace is not None}
+    in_use |= {state.pending for state in _SESSION.windows.values() if state.pending}
+    retired = []
+    for name, screens in list(_SESSION.copies.items()):
+        workspace = bpy.data.workspaces.get(name)
+        if workspace is None:
+            del _SESSION.copies[name]
+            continue
+        if name in in_use:
+            continue
+        bpy.data.batch_remove({workspace})  # ``bpy.data.workspaces`` no tiene ``remove``
+        for screen_name in screens:
+            screen = bpy.data.screens.get(screen_name)
+            if screen is not None and screen.users == 0:
+                bpy.data.batch_remove({screen})
+        del _SESSION.copies[name]
+        retired.append(name)
+    return retired
 
 
 def load_workspace(name: str) -> Any:
@@ -278,7 +320,7 @@ def notify_outdated_layout() -> bool:
     _SESSION.layout_notified = True
     from . import notices  # diferido: notices importa este módulo
 
-    notices.post("info", tr("The layout of this file is older: Layouts ▾ ▸ Update the layout"),
+    notices.post("info", tr("The layout of this file is older: open Layouts and choose Update the layout"),
                  ttl=notices.UNDO_TTL)  # 10 s (spec 019, T18; la cola de T22)
     return True
 
@@ -388,6 +430,18 @@ def settings_workspace(window: Any) -> Any | None:
     return bpy.data.workspaces.get(choice.target) if choice.target else None
 
 
+def _live_windows() -> list[Any]:
+    return list(bpy.context.window_manager.windows)
+
+
+def existing_settings_window() -> Any | None:
+    """La ventana de «Ajustes de Blender» que ya está abierta (la que abrió :func:`open_blender_settings` y no se ha cerrado), o ``None``
+    (spec 019, T47: repetir la orden no abre otra)."""
+    live = {w.as_pointer(): w for w in _live_windows()}
+    _SESSION.opened[:] = [pointer for pointer in _SESSION.opened if pointer in live]
+    return live[_SESSION.opened[-1]] if _SESSION.opened else None
+
+
 def open_blender_settings(window: Any) -> Any | None:
     """Abre la ventana de «Ajustes de Blender»: una ventana nueva que pasa, **en el ciclo siguiente**
     (:func:`settle_settings`), a un espacio no marcado. ``window`` no se toca. Devuelve la ventana nueva o ``None``."""
@@ -398,6 +452,7 @@ def open_blender_settings(window: Any) -> Any | None:
     if new is None:
         return None
     _SESSION.settings.append((new.as_pointer(), workspace.name))
+    _SESSION.opened.append(new.as_pointer())
     if not bpy.app.timers.is_registered(settle_settings):
         bpy.app.timers.register(settle_settings, first_interval=SETTINGS_DELAY_S)
     return new
@@ -449,6 +504,7 @@ def check_pending() -> float | None:
             waiting = True
     if changed:
         native_filter.sync()  # ADR-0032 punto 2, P-5: el filtro vive mientras haya una ventana
+        retire_copies()  # la copia que dejó la ventana que volvió a Blender (T44)
     _SESSION.attempts += 1
     if waiting and _SESSION.attempts < CHECK_ATTEMPTS:
         return CHECK_INTERVAL_S
